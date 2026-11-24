@@ -1,34 +1,50 @@
 name: CI
-
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust-native:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Normalize formatting in CI workspace
-        run: cargo fmt --all
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - name: Rust unit tests
         run: cargo test --locked
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
-  arm64-qemu:
-    runs-on: ubuntu-24.04
+  arm64-native:
+    # Hosted AArch64 runner is available for private repos. Not Pi 5 hardware.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: Build ARM64 Docker image under QEMU
-        run: docker buildx build --platform linux/arm64 --load -f ci/Dockerfile.arm64 -t t3box:arm64 .
-      - name: ARM64 synthetic audio/video pipeline smoke test
-        run: docker run --rm --platform linux/arm64 t3box:arm64 /bin/bash ci/smoke.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install media tools only when missing
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+      - name: ARM64 unit tests and release binary
+        run: |
+          test "$(uname -m)" = aarch64
+          cargo test --locked
+          cargo build --release --locked
+      - name: ARM64 synthetic A/V stream smoke test
+        run: T3BOX_ROOT="$GITHUB_WORKSPACE" bash ci/smoke.sh
