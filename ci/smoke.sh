@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-cd /work
+cd "${T3BOX_ROOT:-/work}"
 file target/release/t3box
 cargo test
 # Prove that the CLI and HTTP controller execute on ARM64 and run a synthetic

@@ -1,23 +1,30 @@
-# Raspberry Pi 5 CI scope
+# CI strategy — native AArch64
 
-GitHub Actions uses Docker Buildx and QEMU to run **Linux AArch64** binaries.
-This is an ARM64 container, not a virtual Raspberry Pi 5: the VideoCore, HDMI
-capture device, USB audio ADC, GPIO pins, Wi-Fi radio, EDID and PSU are not simulated.
+The normal CI workflow now uses a GitHub-hosted `ubuntu-24.04-arm`
+runner for real ARM64 user-space execution, instead of repeatedly compiling
+Rust inside an emulated ARM64 Docker image with QEMU.
 
-`rust-native` checks formatting, Clippy and unit tests.
-`arm64-qemu` compiles the Rust controller inside an ARM64 Docker image and checks
-a synthetic FFmpeg H.264/AAC FLV pipeline plus the local HTTP start/stop API.
+The standard ARM64 runner is available to private repositories as of
+January 2026. This is still **not an actual Raspberry Pi 5**.
 
-Passing CI is **not** proof that a Raspberry Pi 5 can sustain 1080p/30fps.
-The CI synthetic case deliberately uses 640x360 to avoid conflating emulator speed
-with real hardware performance.
+- `rust-native`: x86_64 Rust unit tests and Clippy, with Cargo cache.
+- `arm64-native`: ARM64 unit tests, native release build, and synthetic
+  FFmpeg H.264/AAC + HTTP controller integration test.
+- Cache: cargo registry/build artifacts (`Swatinem/rust-cache`).
+- Duplicate push and PR checks: avoided with push-on-main, PR-on-features.
+- Superseded checks: canceled via a per-branch/workflow concurrency group.
+- The old `ci/Dockerfile.arm64` remains as an optional manual reproduction
+  route and is no longer built on every PR.
 
-## Real-Pi acceptance criteria (still required)
+## Required hardware acceptance
 
-- UGREEN HDMI capture mode negotiation at 1920x1080/30fps and stable passthrough
-- Audio input gain, clipping/noise and sample clock drift over 3+ hours
-- H.264 encoding without frame drops, thermals/power under continuous load
-- RTMPS upload stability on actual venue Wi-Fi; reconnect and packet loss
-- HDMI unplug/replug, media-input recovery, and projector behavior with Pi unpowered
-- Anker USB-C power compatibility across the entire device
-- GPIO physical start/stop, secure Wi-Fi onboarding and local UI
+Native ARM64 CI cannot validate UVC/ALSA peripheral timing, Pi 5 RP1,
+HDMI loop-through or EDID, Raspberry Pi power, GPIO, thermal throttling or
+actual venue Wi-Fi. See [the physical acceptance criteria](../docs/ACCEPTANCE.md)
+and the manual `hardware.yml` workflow with a Pi 5 self-hosted runner.
+
+## Measuring improvements
+
+Compare job durations in the GitHub Actions run API (each job's
+`started_at` and `completed_at`), not just the commit-to-run completion time.
+Cache-warm and cache-cold runs should be distinguished.
