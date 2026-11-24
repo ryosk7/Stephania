@@ -1,13 +1,15 @@
-//! T3Box Raspberry Pi 5 controller and streaming supervisor.
-//! Loopback-only API. The video pipeline uses FFmpeg until a custom codec is validated.
+//! T3Box Pi 5 stream control, diagnostics and loopback-only configuration UI.
 mod stream;
+mod wifi;
+#[allow(dead_code)] // Pipeline primitives are tested before being wired to a native media backend.
+mod policy;
+mod html;
 
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use stream::{Config, Controller};
 
 fn video_devices() -> Vec<String> {
@@ -84,37 +86,125 @@ fn status_json(controller: &Controller) -> String {
     )
 }
 
-fn respond(mut stream: TcpStream, status: &str, body: &str) {
+fn url_decode(value: &str) -> Result<String, String> {
+    let input = value.as_bytes();
+    let mut data = Vec::with_capacity(input.len());
+    let mut i=0;
+    while i<input.len() {
+        match input[i] {
+            b'+' => data.push(b' '),
+            b'%' if i+2<input.len() => {
+                let v1=(input[i+1] as char).to_digit(16).ok_or("invalid url escape")?;
+                let v2=(input[i+2] as char).to_digit(16).ok_or("invalid url escape")?;
+                data.push(((v1<<4)|v2) as u8);i+=2;
+            },
+            b'%' => return Err("incomplete url escape".into()),
+            x => data.push(x),
+        }
+        i+=1;
+    }
+    String::from_utf8(data).map_err(|_| "invalid UTF-8".into())
+}
+
+fn form_field(form: &str, name: &str) -> Result<Option<String>, String> {
+    for pair in form.split('&') {
+        if let Some((key,value))=pair.split_once('=') {
+            if url_decode(key)?==name {return Ok(Some(url_decode(value)?))}
+        }
+    }
+    Ok(None)
+}
+
+fn write_response(mut stream: TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'; base-uri 'none'; frame-ancestors 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());
 }
 
 fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-    let mut buffer = [0u8; 4096];
-    let Ok(n) = stream.read(&mut buffer) else { return };
-    let line = String::from_utf8_lossy(&buffer[..n]);
-    let request_line = line.lines().next().unwrap_or("");
-    let (status, body) = match request_line {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+    // Max 4 KiB headers+body; intended for short Wi-Fi credentials only.
+    let mut buf=Vec::new();
+    let mut tmp=[0u8; 1024];
+    let mut header_end=None;
+    let mut needed=0usize;
+    loop {
+        let Ok(n)=stream.read(&mut tmp) else {return};
+        if n==0 { break; }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len()>4096 { write_response(stream,"413 Payload Too Large","application/json","{\"error\":\"request_too_large\"}");return }
+        if header_end.is_none() {
+            if let Some(end)=buf.windows(4).position(|x|x==b"\r\n\r\n") {
+                header_end=Some(end+4);
+                let header=String::from_utf8_lossy(&buf[..end]);
+                needed=header.lines().find_map(|s| {
+                    let (key,val)=s.split_once(':')?;
+                    if key.eq_ignore_ascii_case("content-length"){val.trim().parse::<usize>().ok()} else {None}
+                }).unwrap_or(0);
+                if needed>2048 {write_response(stream,"413 Payload Too Large","application/json","{\"error\":\"request_too_large\"}");return}
+            }
+        }
+        if let Some(end)=header_end {
+            if buf.len()>=end+needed {break}
+        }
+    }
+    let Some(end)=header_end else {return};
+    let header=String::from_utf8_lossy(&buf[..end]);
+    let request_line=header.lines().next().unwrap_or("");
+    // Browser-initiated cross-site requests must not control an unauthenticated
+    // loopback server (local network access does not imply permission).
+    let origin = header.lines().filter_map(|line| {
+        let (key,value)=line.split_once(':')?;
+        key.eq_ignore_ascii_case("origin").then_some(value.trim())
+    }).next();
+    if let Some(origin) = origin {
+        if origin != "http://127.0.0.1:8787" && origin != "http://localhost:8787" {
+            write_response(stream,"403 Forbidden","application/json","{\"error\":\"cross_origin_forbidden\"}");
+            return;
+        }
+    }
+    let body=std::str::from_utf8(&buf[end..]).unwrap_or("");
+    let (status,content_type,result) = match request_line {
+        "GET / HTTP/1.1" | "GET / HTTP/1.0" =>
+            ("200 OK","text/html; charset=utf-8",html::INDEX.to_string()),
         "GET /health HTTP/1.1" | "GET /health HTTP/1.0" =>
-            ("200 OK", "{\"ok\":true}".to_owned()),
+            ("200 OK","application/json","{\"ok\":true}".to_owned()),
         "GET /status HTTP/1.1" | "GET /status HTTP/1.0" =>
-            ("200 OK", status_json(&controller)),
+            ("200 OK","application/json",status_json(&controller)),
+        "GET /wifi/networks HTTP/1.1" | "GET /wifi/networks HTTP/1.0" =>
+            match wifi::networks() {
+                Ok(networks) => ("200 OK","application/json",
+                    format!("{{\"networks\":[{}]}}", networks.iter()
+                        .map(|s|format!("\"{}\"",escape_json(s))).collect::<Vec<_>>().join(","))),
+                Err(error) => ("503 Service Unavailable","application/json",
+                    format!("{{\"error\":\"{}\"}}",escape_json(&error)))
+            },
+        "POST /wifi/connect HTTP/1.1" | "POST /wifi/connect HTTP/1.0" => {
+            let ssid=form_field(body,"ssid");
+            let password=form_field(body,"password");
+            match (ssid,password) {
+                (Ok(Some(s)),Ok(Some(p))) => match wifi::connect(&s,&p) {
+                    Ok(()) => ("200 OK","application/json","{\"connected\":true}".into()),
+                    Err(e) => ("422 Unprocessable Content","application/json",format!("{{\"error\":\"{}\"}}",escape_json(&e)))
+                },
+                _ => ("400 Bad Request","application/json","{\"error\":\"invalid_credentials\"}".into())
+            }
+        }
         "POST /stream/start HTTP/1.1" | "POST /stream/start HTTP/1.0" =>
             match controller.start() {
-                Ok(()) => ("202 Accepted", "{\"streaming_requested\":true,\"youtube_ingest_confirmed\":false}".to_owned()),
-                Err(e) => ("503 Service Unavailable", format!("{{\"error\":\"{}\"}}", escape_json(&e))),
+                Ok(()) => ("202 Accepted","application/json","{\"streaming_requested\":true,\"youtube_ingest_confirmed\":false}".into()),
+                Err(e) => ("503 Service Unavailable","application/json",format!("{{\"error\":\"{}\"}}",escape_json(&e)))
             },
         "POST /stream/stop HTTP/1.1" | "POST /stream/stop HTTP/1.0" => {
             controller.stop();
-            ("200 OK", "{\"streaming_requested\":false}".to_owned())
+            ("200 OK","application/json","{\"streaming_requested\":false}".into())
         }
-        _ => ("404 Not Found", "{\"error\":\"not_found\"}".to_owned()),
+        _ => ("404 Not Found","application/json","{\"error\":\"not_found\"}".into())
     };
-    respond(stream, status, &body);
+    write_response(stream,status,content_type,&result);
 }
 
 fn main() -> std::io::Result<()> {
@@ -125,10 +215,10 @@ fn main() -> std::io::Result<()> {
             std::process::exit(2);
         }
     };
-    // Deliberately loopback-only: no authentication or CSRF protection yet.
+    // Loopback-only by design; the control API has no authentication yet.
     let controller = Arc::new(Controller::new(config));
     let listener = TcpListener::bind("127.0.0.1:8787")?;
-    println!("T3Box controller listening on http://127.0.0.1:8787");
+    println!("T3Box local dashboard: http://127.0.0.1:8787");
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -145,11 +235,11 @@ fn main() -> std::io::Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn escapes_json() {
-        assert_eq!(escape_json("a\"b\\c"), "a\\\"b\\\\c");
-    }
+    fn escapes_json() {assert_eq!(escape_json("a\"b\\c"),"a\\\"b\\\\c");}
     #[test]
-    fn video_device_filter_is_numeric() {
-        assert!(format!("/dev/{}", "video0").starts_with("/dev/video"));
+    fn url_form_roundtrip() {
+        assert_eq!(url_decode("Hello+%E6%97%A5%E6%9C%AC").unwrap(),"Hello 日本");
+        assert_eq!(form_field("ssid=LT+Event&password=p%40ssw0rd","ssid").unwrap().unwrap(),"LT Event");
+        assert!(url_decode("%").is_err());
     }
 }
