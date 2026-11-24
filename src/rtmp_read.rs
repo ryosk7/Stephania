@@ -82,12 +82,11 @@ impl ChunkReader {
                 part.in_progress = true;
             }
 
-            let mut ts24 = 0u32;
             match fmt {
                 0 => {
                     let mut header = [0u8; 11];
                     reader.read_exact(&mut header)?;
-                    ts24 = read24(&header[..3]);
+                    let ts24 = read24(&header[..3]);
                     part.length = read24(&header[3..6]) as usize;
                     part.type_id = header[6];
                     part.stream_id = u32::from_le_bytes(header[7..11].try_into().unwrap());
@@ -99,7 +98,7 @@ impl ChunkReader {
                 1 if part.has_header => {
                     let mut header = [0u8; 7];
                     reader.read_exact(&mut header)?;
-                    ts24 = read24(&header[..3]);
+                    let ts24 = read24(&header[..3]);
                     part.length = read24(&header[3..6]) as usize;
                     part.type_id = header[6];
                     part.extended = ts24 == 0x00ff_ffff;
@@ -108,7 +107,7 @@ impl ChunkReader {
                 2 if part.has_header => {
                     let mut header = [0u8; 3];
                     reader.read_exact(&mut header)?;
-                    ts24 = read24(&header);
+                    let ts24 = read24(&header);
                     part.delta = ts24;
                     part.extended = ts24 == 0x00ff_ffff;
                 }
