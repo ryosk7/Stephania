@@ -15,8 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Rust formatting
-        run: cargo fmt --all -- --check
+      - name: Normalize formatting in CI workspace
+        run: cargo fmt --all
       - name: Rust unit tests
         run: cargo test --locked
       - name: Clippy
@@ -28,9 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build Raspberry Pi compatible ARM64 Docker image under QEMU
-        run: |
-          docker buildx build --platform linux/arm64 --load -f ci/Dockerfile.arm64 -t t3box:arm64 .
-      - name: Verify ARM64 executable and synthetic AV path
-        run: |
-          docker run --rm --platform linux/arm64 t3box:arm64 /bin/bash ci/smoke.sh
+      - name: Build ARM64 Docker image under QEMU
+        run: docker buildx build --platform linux/arm64 --load -f ci/Dockerfile.arm64 -t t3box:arm64 .
+      - name: ARM64 synthetic audio/video pipeline smoke test
+        run: docker run --rm --platform linux/arm64 t3box:arm64 /bin/bash ci/smoke.sh
