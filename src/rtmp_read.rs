@@ -27,6 +27,7 @@ struct Partial {
     extended: bool,
     payload: Vec<u8>,
     has_header: bool,
+    in_progress: bool,
 }
 
 pub struct ChunkReader {
@@ -72,11 +73,14 @@ impl ChunkReader {
                 return Err(invalid("too many RTMP chunk streams"));
             }
             let part = self.streams.entry(csid).or_default();
-            let pending = part.has_header && part.payload.len() < part.length;
+            let pending = part.in_progress;
             if pending && fmt != 3 {
                 return Err(invalid("new RTMP message header before previous is complete"));
             }
-            if !pending { part.payload.clear(); }
+            if !pending {
+                part.payload.clear();
+                part.in_progress = true;
+            }
 
             let mut ts24 = 0u32;
             match fmt {
@@ -132,6 +136,7 @@ impl ChunkReader {
                 reader.read_exact(&mut part.payload[before..])?;
             }
             if part.payload.len() == part.length {
+                part.in_progress = false;
                 return Ok(Message {
                     stream_id: part.stream_id,
                     type_id: part.type_id,
