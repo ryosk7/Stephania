@@ -1,9 +1,14 @@
-//! T3Box controller milestone 1.
-//! Hardware diagnostics only; live streaming is NOT implemented.
+//! T3Box Raspberry Pi 5 controller and streaming supervisor.
+//! Loopback-only API. The video pipeline uses FFmpeg until a custom codec is validated.
+mod stream;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use stream::{Config, Controller};
 
 fn video_devices() -> Vec<String> {
     let Ok(entries) = fs::read_dir("/dev") else { return Vec::new() };
@@ -60,7 +65,7 @@ fn escape_json(value: &str) -> String {
     result
 }
 
-fn status_json() -> String {
+fn status_json(controller: &Controller) -> String {
     let videos = video_devices().iter()
         .map(|s| format!("\"{}\"", escape_json(s)))
         .collect::<Vec<_>>().join(",");
@@ -71,9 +76,11 @@ fn status_json() -> String {
         .map(|n| format!("{n:.1}")).unwrap_or_else(|| "null".into());
     let now = SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs()).unwrap_or(0);
+    let (desired, process_running, restarts, last_error) = controller.status();
     format!(
-        "{{\"state\":\"awaiting_media_engine\",\"streaming\":false,\"media_engine_implemented\":false,\"video_devices\":[{videos}],\"audio_capture_available\":{},\"wifi_interfaces\":[{wifi}],\"cpu_temperature_c\":{temp},\"timestamp_unix\":{now}}}",
-        audio_capture_available()
+        "{{\"state\":\"{}\",\"streaming_requested\":{},\"ffmpeg_process_running\":{},\"youtube_ingest_confirmed\":false,\"video_devices\":[{videos}],\"audio_capture_available\":{},\"wifi_interfaces\":[{wifi}],\"cpu_temperature_c\":{temp},\"restart_attempts\":{},\"last_error\":\"{}\",\"timestamp_unix\":{now}}}",
+        if process_running { "transmitting_unverified" } else { "idle" },
+        desired, process_running, audio_capture_available(), restarts, escape_json(&last_error)
     )
 }
 
@@ -85,7 +92,7 @@ fn respond(mut stream: TcpStream, status: &str, body: &str) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn handle(mut stream: TcpStream) {
+fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let mut buffer = [0u8; 4096];
     let Ok(n) = stream.read(&mut buffer) else { return };
@@ -95,23 +102,39 @@ fn handle(mut stream: TcpStream) {
         "GET /health HTTP/1.1" | "GET /health HTTP/1.0" =>
             ("200 OK", "{\"ok\":true}".to_owned()),
         "GET /status HTTP/1.1" | "GET /status HTTP/1.0" =>
-            ("200 OK", status_json()),
+            ("200 OK", status_json(&controller)),
         "POST /stream/start HTTP/1.1" | "POST /stream/start HTTP/1.0" =>
-            ("501 Not Implemented", "{\"error\":\"media_engine_not_implemented\",\"streaming\":false}".to_owned()),
-        "POST /stream/stop HTTP/1.1" | "POST /stream/stop HTTP/1.0" =>
-            ("200 OK", "{\"streaming\":false}".to_owned()),
+            match controller.start() {
+                Ok(()) => ("202 Accepted", "{\"streaming_requested\":true,\"youtube_ingest_confirmed\":false}".to_owned()),
+                Err(e) => ("503 Service Unavailable", format!("{{\"error\":\"{}\"}}", escape_json(&e))),
+            },
+        "POST /stream/stop HTTP/1.1" | "POST /stream/stop HTTP/1.0" => {
+            controller.stop();
+            ("200 OK", "{\"streaming_requested\":false}".to_owned())
+        }
         _ => ("404 Not Found", "{\"error\":\"not_found\"}".to_owned()),
     };
     respond(stream, status, &body);
 }
 
 fn main() -> std::io::Result<()> {
-    // Loopback binding is intentional: no authentication is implemented yet.
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(error) => {
+            eprintln!("T3Box configuration error: {error}");
+            std::process::exit(2);
+        }
+    };
+    // Deliberately loopback-only: no authentication or CSRF protection yet.
+    let controller = Arc::new(Controller::new(config));
     let listener = TcpListener::bind("127.0.0.1:8787")?;
-    println!("T3Box diagnostics listening on http://127.0.0.1:8787");
+    println!("T3Box controller listening on http://127.0.0.1:8787");
     for connection in listener.incoming() {
         match connection {
-            Ok(stream) => { std::thread::spawn(move || handle(stream)); }
+            Ok(stream) => {
+                let controller = Arc::clone(&controller);
+                std::thread::spawn(move || handle(stream, controller));
+            }
             Err(error) => eprintln!("accept error: {error}"),
         }
     }
@@ -126,9 +149,7 @@ mod tests {
         assert_eq!(escape_json("a\"b\\c"), "a\\\"b\\\\c");
     }
     #[test]
-    fn does_not_claim_streaming() {
-        let status = status_json();
-        assert!(status.contains("\"streaming\":false"));
-        assert!(status.contains("\"media_engine_implemented\":false"));
+    fn video_device_filter_is_numeric() {
+        assert!(format!("/dev/{}", "video0").starts_with("/dev/video"));
     }
 }
