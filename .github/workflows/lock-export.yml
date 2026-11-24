@@ -1,0 +1,19 @@
+name: Export temporary lockfile
+on:
+  push:
+    branches: [feat/rtmps-rustls-transport]
+permissions:
+  contents: read
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate and print lockfile
+        run: |
+          cargo generate-lockfile
+          echo 'BEGIN_T3BOX_LOCK'
+          base64 -w0 Cargo.lock
+          echo
+          echo 'END_T3BOX_LOCK'
