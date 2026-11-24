@@ -1,46 +1,50 @@
 # T3Box
 
-A Raspberry Pi 5-based portable LT streaming box: HDMI in and passthrough to a projector, venue audio capture, and eventual YouTube Live streaming over Wi-Fi.
+Rust-based Raspberry Pi 5 LT event streaming box.
 
-## Current implementation: milestone 1 (diagnostics only)
+## Current implementation (prototype, not event-ready)
 
-This repository currently provides a **Rust standard-library-only diagnostic controller**, not a video streaming application. Do **not** use this milestone to run an event.
+- Rust controller and HTTP API on `127.0.0.1:8787` (`/health`, `/status`, `/stream/start`, `/stream/stop`).
+- Device diagnostics (Linux video nodes, ALSA capture presence, Wi-Fi interface, CPU temperature).
+- Rust process supervisor launching FFmpeg with V4L2 HDMI capture, ALSA audio, libx264 video, AAC audio, FLV muxing and RTMPS output.
+- Synthetic A/V input option for ARM64 QEMU CI. Automatic FFmpeg process restart attempts.
+- An ARM64 Docker build and simulated-input test in GitHub Actions.
 
-- `GET http://127.0.0.1:8787/health` — local health endpoint
-- `GET http://127.0.0.1:8787/status` — Linux `/dev/video*` presence, ALSA capture presence, Wi-Fi interface link state, CPU temperature
-- `POST /stream/start` — returns HTTP 501 (media engine is not implemented)
-- `POST /stream/stop` — reports not streaming
+The media pipeline **currently uses FFmpeg**, which is open source but not a custom Rust codec. A custom encoder would need considerable work and comparative benchmarks; an unproven implementation cannot be called better quality. The subprocess being alive **does not prove YouTube ingested the stream**.
 
-Status results are diagnostic hints only. Video nodes are not necessarily HDMI capture nodes; interface `operstate=up` does not prove internet connectivity.
+## Setup on Raspberry Pi OS Lite (64-bit)
 
-### Build and run (Raspberry Pi OS Lite 64-bit)
+Install Rust, FFmpeg with libx264, `v4l-utils` and `alsa-utils`. Confirm device paths with `v4l2-ctl --list-formats-ext` and `arecord -l`.
 
-Install Rust using a trusted package/toolchain source:
-
-```sh
+```bash
 cargo test
 cargo build --release
+export T3BOX_VIDEO=/dev/video0
+export T3BOX_AUDIO=plughw:1,0
+export T3BOX_WIDTH=1920 T3BOX_HEIGHT=1080 T3BOX_FPS=30
+export T3BOX_BITRATE_KBPS=8000 T3BOX_PRESET=ultrafast
+export T3BOX_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'
 ./target/release/t3box
-curl http://127.0.0.1:8787/status
 ```
 
-For deployment, create an unprivileged system account named `t3box`, install the binary at `/usr/local/bin/t3box`, and use `systemd/t3box.service`. The HTTP service is bound to loopback until authentication, authorization and CSRF protection are implemented. Never expose this API directly to an untrusted network.
+In a separate terminal on the Pi:
 
-### Proposed hardware
+```bash
+curl http://127.0.0.1:8787/status
+curl -X POST http://127.0.0.1:8787/stream/start
+curl -X POST http://127.0.0.1:8787/stream/stop
+```
 
-- Raspberry Pi 5, 8GB (already owned)
-- USB HDMI UVC capture with HDMI passthrough (verify Linux V4L2 output modes and projector compatibility)
-- USB class-compliant line-input audio ADC for a venue mixer's REC/LINE output
-- Active cooling, adequate power supply (power bank compatibility needs verification)
-- Venue Wi-Fi for eventual RTMPS upload
+Test without HDMI/audio hardware using `T3BOX_TEST_SOURCES=1 T3BOX_WIDTH=640 T3BOX_HEIGHT=360 T3BOX_OUTPUT=file:/tmp/t3box-test.flv cargo run` and then the same start/stop commands.
 
-### Next engineering milestones
+**Security:** Do not commit stream keys. The current prototype passes RTMPS URL in FFmpeg process arguments; other local users may be able to inspect it. The API is loopback-only until authentication is added. Do not deploy on untrusted networks without completing authentication and secret management.
 
-1. V4L2 capture: capability negotiation, timestamps, hotplug/recovery.
-2. ALSA capture and PCM levels with deterministic audio/video timestamp handling.
-3. H.264 encode feasibility benchmarks at 1080p30 on Pi 5; compare custom code against proven implementations, prioritizing quality.
-4. AAC, FLV muxing, secure RTMPS transport, YouTube ingest tests.
-5. Safe start/stop state machine, Wi-Fi provisioning, local UI, GPIO status indicators.
-6. Three-hour hardware soak test, thermal and frame drop metrics, slide sharpness, A/V sync, reconnection and power interruption tests.
+## Hardware and CI limits
 
-No live encoding, HDMI pass-through firmware control, microphone recording, Wi-Fi provisioning, or streaming has been implemented yet.
+Presenter HDMI → HDMI capture with hardware HDMI passthrough → projector. Capture USB → Raspberry Pi 5; venue mixer LINE/REC → USB audio ADC → Pi 5; venue Wi-Fi → YouTube.
+
+Docker/QEMU runs Linux ARM64 userspace, **not a full Raspberry Pi 5 VM**. Real HDMI capture, EDID/passthrough, GPIO, venue Wi-Fi, Anker power delivery, real-time 1080p30 and thermal behavior require Pi 5 hardware. See [CI acceptance checklist](ci/README.md).
+
+## Remaining features
+
+Wi-Fi setup portal, physical button/LED, audio levels and clip alarms, HDMI disconnection fallback slate, secure smartphone UI, secure RTMPS key storage, YouTube ingest confirmation, native Rust media pipeline, throughput/temperature benchmarking and power management are not implemented.
