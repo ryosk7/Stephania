@@ -52,7 +52,8 @@ impl Target {
 }
 
 fn valid_hostname(host: &str) -> bool {
-    if host.is_empty() || host.len() > 253 || !host.contains('.') { return false; }
+    if host.is_empty() || host.len() > 253 || !host.contains('.') ||
+        host.parse::<std::net::Ipv4Addr>().is_ok() { return false; }
     host.split('.').all(|label| {
         !label.is_empty() && label.len() <= 63 &&
         !label.starts_with('-') && !label.ends_with('-') &&
