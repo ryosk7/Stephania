@@ -1,0 +1,7 @@
+# AArch64 userspace emulation, not complete Raspberry Pi 5 hardware virtualization.
+FROM --platform=linux/arm64 rust:bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+COPY . .
+RUN cargo test && cargo build --release
+CMD ["/work/target/release/t3box"]
