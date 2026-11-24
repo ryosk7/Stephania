@@ -6,3 +6,5 @@ description = "Raspberry Pi 5 LT stream box controller foundation"
 license = "MIT"
 
 [dependencies]
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0.11"
