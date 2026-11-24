@@ -1,6 +1,7 @@
 //! T3Box Pi 5 stream control, diagnostics and loopback-only configuration UI.
 mod stream;
 mod wifi;
+#[allow(dead_code)] // Pipeline primitives are tested before being wired to a native media backend.
 mod policy;
 mod html;
 
