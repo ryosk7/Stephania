@@ -3,3 +3,4 @@ pub mod flv;
 pub mod rtmp;
 pub mod handshake;
 pub mod amf0;
+pub mod amf0_decode;
