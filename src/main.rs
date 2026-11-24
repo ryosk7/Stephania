@@ -104,7 +104,7 @@ fn url_decode(value: &str) -> Result<String, String> {
     String::from_utf8(data).map_err(|_| "invalid UTF-8".into())
 }
 
-fn form_field<'a>(form: &'a str, name: &str) -> Result<Option<String>, String> {
+fn form_field(form: &str, name: &str) -> Result<Option<String>, String> {
     for pair in form.split('&') {
         if let Some((key,value))=pair.split_once('=') {
             if url_decode(key)?==name {return Ok(Some(url_decode(value)?))}
@@ -152,6 +152,18 @@ fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
     let Some(end)=header_end else {return};
     let header=String::from_utf8_lossy(&buf[..end]);
     let request_line=header.lines().next().unwrap_or("");
+    // Browser-initiated cross-site requests must not control an unauthenticated
+    // loopback server (local network access does not imply permission).
+    let origin = header.lines().filter_map(|line| {
+        let (key,value)=line.split_once(':')?;
+        key.eq_ignore_ascii_case("origin").then_some(value.trim())
+    }).next();
+    if let Some(origin) = origin {
+        if origin != "http://127.0.0.1:8787" && origin != "http://localhost:8787" {
+            write_response(stream,"403 Forbidden","application/json","{\"error\":\"cross_origin_forbidden\"}");
+            return;
+        }
+    }
     let body=std::str::from_utf8(&buf[end..]).unwrap_or("");
     let (status,content_type,result) = match request_line {
         "GET / HTTP/1.1" | "GET / HTTP/1.0" =>
