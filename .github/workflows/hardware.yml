@@ -1,0 +1,19 @@
+name: Physical Raspberry Pi hardware test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pi5-hardware:
+    runs-on: [self-hosted, Linux, ARM64, t3box-pi5]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify board and peripherals
+        run: |
+          grep -qi 'Raspberry Pi 5' /proc/device-tree/model
+          uname -m | grep -Eq 'aarch64|arm64'
+          ls -l /dev/video*
+          arecord -l
+      - name: Capture physical video + audio
+        run: bash tests/hardware.sh
