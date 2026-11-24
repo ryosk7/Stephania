@@ -82,7 +82,6 @@ mod tests {
         assert_eq!(peer.writes[0], 3);
         assert_eq!(peer.writes.len(), 1 + BLOCK * 2);
         assert_eq!(&peer.writes[BLOCK+1..], &peer.reads.get_ref()[1..BLOCK+1]);
-        assert_eq!(&peer.writes[BLOCK+1-1536+8..BLOCK+1-1536+1536].len(), &1528usize);
     }
 
     #[test]
