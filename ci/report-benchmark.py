@@ -29,7 +29,7 @@ for perf in sorted(root.glob("*.performance.json")):
     rows.append(f"| {name} | {p['fps']:.1f} | {p['p95_ms']:.1f} | {rss/1024:.1f} | {mbps:.2f} | {psnr:.2f} | {ssim:.4f} | {ocr:.1%} | {vmaf} |")
     # Provisional minimum integrity thresholds, not perceptual acceptance.
     assert psnr >= 25 and ssim >= 0.85, f"{name}: quality floor failed"
-assert len(rows) == 4
+assert len(rows) == (int(sys.argv[2]) if len(sys.argv) > 2 else 4)
 report = "\n".join(["# ARM64 resource-constrained native codec benchmark",
     "", "| Profile | FPS | p95 ms | Peak RSS MiB | Actual Mbps | PSNR dB | SSIM | Worst OCR similarity | VMAF |",
     "|---|---:|---:|---:|---:|---:|---:|---:|---:|", *rows,

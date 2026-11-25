@@ -1,0 +1,9 @@
+name: Native dependencies
+description: Install shared native capture and codec development dependencies
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config

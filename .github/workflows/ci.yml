@@ -5,10 +5,6 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      extended:
-        description: Run full quality matrix and physical-time network scenarios
-        type: boolean
-        default: false
       soak:
         description: Run three-hour paced native codec soak (manual only)
         type: boolean
@@ -22,45 +18,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust-native:
+  # Independent runners: no competition between codec measurements, netem,
+  # Clippy and simulation. No cross-job build/artifact dependency.
+  rust-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [unit, clippy]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install native capture development headers
+        with:
+          key: ${{ matrix.task }}
+      - uses: ./.github/actions/native-deps
+      - name: Execute selected check
+        env:
+          TASK: ${{ matrix.task }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config
-      - name: Rust unit tests (including native capture)
-        run: cargo test --locked --all-features
-      - name: Clippy
-        run: cargo clippy --all-targets --locked --all-features -- -D warnings
+          if [[ "$TASK" == unit ]]; then
+            cargo test --locked --all-features -- --skip accelerated_ci::
+          else
+            cargo clippy --all-targets --locked --all-features -- -D warnings
+          fi
 
-  arm64-native:
-    # Hosted AArch64 runner is available for private repos. Not Pi 5 hardware.
+  arm64-logical:
+    strategy:
+      fail-fast: false
+      matrix:
+        test: [accelerated_three_hour_clock_and_framing, accelerated_transition_matches_real_pcm_path, accelerated_venue_fault_scenarios]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install media tools only when missing
-        run: |
-          if ! command -v ffmpeg >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends ffmpeg
-          fi
-          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config
-      - name: ARM64 unit tests and release binary
-        run: |
-          test "$(uname -m)" = aarch64
-          cargo test --locked --all-features
-          cargo build --release --locked --all-features
-      - name: Build optimized accelerated tests (outside test execution budget)
+        with:
+          key: logical-${{ matrix.test }}
+      - name: Build optimized test executable
         run: |
           cargo test --release --locked --lib --no-run --message-format=json > /tmp/fast-build.jsonl
           python3 - <<'PY' >> "$GITHUB_ENV"
@@ -70,52 +69,107 @@ jobs:
               if x.get('reason')=='compiler-artifact' and x.get('profile',{}).get('test') and x.get('executable') and x.get('target',{}).get('name')=='t3box':
                   print('FAST_TEST_BIN='+x['executable'])
           PY
-      - name: Accelerated 3h logical gate (60s hard timeout)
-        run: bash ci/fast-gate.sh "$FAST_TEST_BIN"
+      - name: Accelerated logical shard
+        env:
+          TEST: ${{ matrix.test }}
+        run: |
+          mkdir -p fast-results
+          /usr/bin/time -f 'elapsed_seconds=%e' -o fast-results/timing.txt timeout 60 "$FAST_TEST_BIN" "accelerated_ci::$TEST" --exact --nocapture | tee fast-results/simulation.txt
+          grep -q '1 passed; 0 failed' fast-results/simulation.txt
+          cat fast-results/timing.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: accelerated-logical-gate
+          name: logical-${{ matrix.test }}
           path: fast-results/
-      - name: ARM64 synthetic A/V stream smoke test
-        if: github.event_name == 'workflow_dispatch' && inputs.extended
-        run: T3BOX_ROOT="$GITHUB_WORKSPACE" bash ci/smoke.sh
 
-      - name: Virtual A/V RTMPS reconnect with network impairment
-        if: github.event_name == 'workflow_dispatch' && inputs.extended
+  arm64-unit:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm-unit
+      - uses: ./.github/actions/native-deps
+      - run: cargo test --locked --all-features -- --skip accelerated_ci::
+
+  arm64-transport:
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [controller, baseline, venue]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: transport-${{ matrix.scenario }}
+      - uses: ./.github/actions/native-deps
+      - run: sudo apt-get install -y --no-install-recommends ffmpeg iproute2 openssl stress-ng
+      - name: Build only required binary
+        env:
+          SCENARIO: ${{ matrix.scenario }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends iproute2 openssl stress-ng
-          bash ci/virtual-rtmps.sh
+          if [[ "$SCENARIO" == controller ]]; then
+            cargo build --release --locked --bin t3box
+          else
+            cargo build --release --locked --all-features --bin t3box-native-av
+          fi
+      - name: Run isolated transport scenario (60s)
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+          T3BOX_ROOT: ${{ github.workspace }}
+        run: |
+          mkdir -p e2e-results
+          if [[ "$SCENARIO" == controller ]]; then
+            timeout 60 bash ci/smoke.sh
+          elif [[ "$SCENARIO" == baseline ]]; then
+            timeout 60 bash ci/virtual-rtmps.sh
+          else
+            T3BOX_CI_WIDTH=1920 T3BOX_CI_HEIGHT=1080 T3BOX_CI_BITRATE=6000 T3BOX_CI_FRAMES=300 T3BOX_CI_DYNAMIC=1 T3BOX_CI_LOAD=1 timeout 60 bash ci/virtual-rtmps.sh
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: arm64-virtual-rtmps
+          name: transport-${{ matrix.scenario }}
           path: e2e-results/
-      - name: 1080p30 virtual venue scenario (dynamic network and competing load)
-        if: github.event_name == 'workflow_dispatch' && inputs.extended
-        run: |
-          mv e2e-results e2e-baseline
-          T3BOX_CI_WIDTH=1920 T3BOX_CI_HEIGHT=1080 T3BOX_CI_BITRATE=6000 T3BOX_CI_FRAMES=300 T3BOX_CI_DYNAMIC=1 T3BOX_CI_LOAD=1 bash ci/virtual-rtmps.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
+
+  arm64-quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [ultrafast, veryfast]
+        bitrate: [6000, 8000]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: arm64-venue-scenario
-          path: e2e-results/
-      - name: Pi 5 resource-envelope native codec benchmark
-        if: github.event_name == 'workflow_dispatch' && inputs.extended
+          key: quality-${{ matrix.preset }}-${{ matrix.bitrate }}
+      - uses: ./.github/actions/native-deps
+      - run: sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
+      - run: cargo build --release --locked --features native-aac,native-x264 --bin t3box-ci-encode
+      - name: Prepare constrained encoder image
+        run: docker build -t t3box-bench -f ci/Dockerfile.benchmark .
+      - name: Measure isolated quality profile (60s)
+        env:
+          T3BOX_BENCH_PRESET: ${{ matrix.preset }}
+          T3BOX_BENCH_BITRATE: ${{ matrix.bitrate }}
+          T3BOX_BENCH_PREBUILT: "1"
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
-          bash ci/pi5-benchmark.sh ci-results
+          timeout 60 bash ci/pi5-benchmark.sh ci-results
           cat ci-results/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload objective quality and performance evidence
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: arm64-native-media-benchmark
+          name: quality-${{ matrix.preset }}-${{ matrix.bitrate }}
           path: ci-results/
-          retention-days: 14
 
   arm64-soak:
     if: github.event_name == 'workflow_dispatch' && inputs.soak

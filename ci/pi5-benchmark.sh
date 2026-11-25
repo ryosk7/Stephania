@@ -18,9 +18,9 @@ ffmpeg -version > "$out/ffmpeg.txt"
 cpus="$(nproc)"
 if (( cpus > 4 )); then cpus=4; fi
 printf "%s\n" "$cpus" > "$out/cpu-quota.txt"
-docker build -t t3box-bench -f ci/Dockerfile.benchmark .
-for preset in ultrafast veryfast; do
-  for bitrate in 6000 8000; do
+if [[ "${T3BOX_BENCH_PREBUILT:-0}" != 1 ]]; then docker build -t t3box-bench -f ci/Dockerfile.benchmark .; fi
+for preset in ${T3BOX_BENCH_PRESET:-ultrafast veryfast}; do
+  for bitrate in ${T3BOX_BENCH_BITRATE:-6000 8000}; do
     name="$preset-$bitrate"
     docker run --name "t3box-bench-$name" --cpus="$cpus" --memory=4g --memory-swap=4g \
       --network=none --user "$(id -u):$(id -g)" -v "$work:/fixture:ro" -v "$out:/results" t3box-bench \
@@ -48,4 +48,6 @@ for preset in ultrafast veryfast; do
     fi
   done
 done
-python3 ci/report-benchmark.py "$out"
+expected=4
+if [[ -n "${T3BOX_BENCH_PRESET:-}" && -n "${T3BOX_BENCH_BITRATE:-}" ]]; then expected=1; fi
+python3 ci/report-benchmark.py "$out" "$expected"

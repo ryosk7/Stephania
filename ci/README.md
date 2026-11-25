@@ -99,3 +99,16 @@ and processing rate are models. No claim is made that the full video codec
 or transport processed three hours of data. The extended manual workflow
 retains physical-time network and objective quality tests, and soak=true
 retains the optional paced codec test. Actual timing must be read from CI.
+
+## Parallel fast CI
+
+Normal PR/push CI uses independent matrix runners for x86 unit/Clippy,
+ARM64 unit, three logical shards, three transport scenarios, and four
+quality profiles. Quality and transport are default gates, not manual-only.
+Each logical, transport and quality execution step has a 60s timeout;
+install, compile, Docker preparation, scheduling and artifact upload are
+outside that budget. Quality profiles run on separate hosts to avoid CPU
+contention. Per-shard Cargo caches reduce repeated warm builds; cold builds
+are deliberately independent and duplicate some work. GitHub account
+concurrency limits may serialize jobs; a 60s whole-workflow SLA is not
+guaranteed. The optional physical-time soak remains manual and independent.
