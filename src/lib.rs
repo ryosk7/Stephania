@@ -11,3 +11,5 @@ pub mod media_output;
 pub mod flv_input;
 pub mod flv_relay;
 pub mod media_core;
+
+pub mod colorspace;
