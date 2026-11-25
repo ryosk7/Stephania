@@ -22,10 +22,14 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Rust unit tests
-        run: cargo test --locked
+      - name: Install native capture development headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev pkg-config
+      - name: Rust unit tests (including native capture)
+        run: cargo test --locked --all-features
       - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked --all-features -- -D warnings
 
   arm64-native:
     # Hosted AArch64 runner is available for private repos. Not Pi 5 hardware.
@@ -41,10 +45,11 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
+          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev pkg-config
       - name: ARM64 unit tests and release binary
         run: |
           test "$(uname -m)" = aarch64
-          cargo test --locked
-          cargo build --release --locked
+          cargo test --locked --all-features
+          cargo build --release --locked --all-features
       - name: ARM64 synthetic A/V stream smoke test
         run: T3BOX_ROOT="$GITHUB_WORKSPACE" bash ci/smoke.sh
