@@ -133,6 +133,7 @@ fn capture_video_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
             sequence: u64::from(meta.sequence),
             width: actual.width,
             height: actual.height,
+            row_stride_bytes: actual.stride as usize,
             format: settings.preferred_format,
             bytes: buffer.to_vec(),
         };
