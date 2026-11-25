@@ -25,7 +25,7 @@ jobs:
       - name: Install native capture development headers
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev libx264-dev pkg-config
       - name: Rust unit tests (including native capture)
         run: cargo test --locked --all-features
       - name: Clippy
@@ -45,7 +45,7 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
-          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libasound2-dev libclang-dev libx264-dev pkg-config
       - name: ARM64 unit tests and release binary
         run: |
           test "$(uname -m)" = aarch64

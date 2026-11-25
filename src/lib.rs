@@ -16,3 +16,6 @@ pub mod media_core;
 pub mod native_capture;
 
 pub mod colorspace;
+
+#[cfg(feature = "native-x264")]
+pub mod native_x264;
