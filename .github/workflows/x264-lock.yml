@@ -1,0 +1,19 @@
+name: Generate x264 lockfile
+on:
+  push:
+    branches: [feat/direct-libx264-encoder]
+permissions:
+  contents: read
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate pinned dependency lock
+        run: |
+          cargo generate-lockfile
+          echo 'BEGIN_T3BOX_X264_LOCK'
+          base64 -w0 Cargo.lock
+          echo
+          echo 'END_T3BOX_X264_LOCK'
