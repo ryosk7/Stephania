@@ -19,3 +19,6 @@ pub mod colorspace;
 
 #[cfg(feature = "native-x264")]
 pub mod native_x264;
+
+#[cfg(all(feature = "native-capture", feature = "native-x264"))]
+pub mod native_video;
