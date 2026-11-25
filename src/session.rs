@@ -27,6 +27,31 @@ impl<T: Read + Write> PublishSession<T> {
     pub fn state(&self) -> State { self.state }
     pub fn into_inner(self) -> T { self.transport }
 
+    /// Send already packetized AVC (type 9) or AAC (type 8) FLV tag bodies.
+    /// Only permitted after the server confirms NetStream.Publish.Start.
+    /// This does not include the FLV file header or PreviousTagSize.
+    pub fn send_media(&mut self, type_id: u8, timestamp_ms: u32, payload: &[u8]) -> io::Result<()> {
+        let State::Publishing(stream_id) = self.state else {
+            return Err(invalid("media output requires confirmed RTMP publication"));
+        };
+        let chunk_stream_id = match type_id {
+            8 => 4,
+            9 => 6,
+            _ => return Err(invalid("unsupported media message type")),
+        };
+        if payload.is_empty() || payload.len() > 1024 * 1024 {
+            return Err(invalid("invalid media message length"));
+        }
+        let mut writer = RtmpChunkWriter::new(&mut self.transport, 128)?;
+        writer.message(chunk_stream_id, type_id, stream_id, timestamp_ms, payload)?;
+        self.transport.flush()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport_mut_for_test(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
     fn send_command(&mut self, stream_id: u32, command: &[u8]) -> io::Result<()> {
         let mut writer = RtmpChunkWriter::new(&mut self.transport, 128)?;
         writer.message(3, 20, stream_id, 0, command)?;
