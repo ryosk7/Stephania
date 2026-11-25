@@ -32,7 +32,83 @@ struct Settings {
     max_frames: u32,
 }
 
-fn publish(url: &str, s: &Settings, video: &V4lVideoSource, audio: &AlsaAudioSource) -> io::Result<()> {
+enum Sources {
+    Hardware(V4lVideoSource, AlsaAudioSource),
+    #[cfg(feature = "ci-virtual")]
+    Virtual(VirtualCapture),
+}
+impl Sources {
+    fn open(s: &Settings) -> io::Result<Self> {
+        #[cfg(feature = "ci-virtual")]
+        if env::var_os("T3BOX_CI_VIRTUAL").is_some() {
+            return Ok(Self::Virtual(VirtualCapture {
+                origin: timestamp_us(), video_index: 0, audio_index: 0,
+                width: s.capture.width, height: s.capture.height, fps: s.fps,
+            }));
+        }
+        Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, AlsaAudioSource::open(s.capture.clone())?))
+    }
+    fn video(&mut self) -> io::Result<Option<t3box::media_core::VideoFrame>> {
+        match self {
+            Self::Hardware(v, _) => v.try_next_frame(),
+            #[cfg(feature = "ci-virtual")]
+            Self::Virtual(v) => Ok(v.video()),
+        }
+    }
+    fn audio(&mut self) -> io::Result<Option<t3box::media_core::AudioFrame>> {
+        match self {
+            Self::Hardware(_, a) => a.try_next_frame(),
+            #[cfg(feature = "ci-virtual")]
+            Self::Virtual(v) => Ok(v.audio()),
+        }
+    }
+}
+#[cfg(feature = "ci-virtual")]
+struct VirtualCapture {
+    origin: u64,
+    video_index: u64,
+    audio_index: u64,
+    width: u32,
+    height: u32,
+    fps: u32,
+}
+#[cfg(feature = "ci-virtual")]
+impl VirtualCapture {
+    fn video(&mut self) -> Option<t3box::media_core::VideoFrame> {
+        let now = timestamp_us();
+        let available = (now.saturating_sub(self.origin)) * u64::from(self.fps) / 1_000_000;
+        if self.video_index > available { return None; }
+        self.video_index = available + 1;
+        let timestamp_us = self.origin + available * 1_000_000 / u64::from(self.fps);
+        let mut bytes = vec![0; self.width as usize * self.height as usize * 2];
+        for (i, pixel) in bytes.chunks_exact_mut(4).enumerate() {
+            let y = (16 + ((i / 32 + available as usize * 3) % 200)) as u8;
+            pixel.copy_from_slice(&[y, 128, y, 128]);
+        }
+        Some(t3box::media_core::VideoFrame { timestamp_us, sequence: available,
+            width: self.width, height: self.height, row_stride_bytes: self.width as usize * 2,
+            format: PixelFormat::Yuyv422, bytes })
+    }
+    fn audio(&mut self) -> Option<t3box::media_core::AudioFrame> {
+        let now = timestamp_us();
+        let available = now.saturating_sub(self.origin) * 48000 / 1_000_000 / 1024;
+        if self.audio_index >= available { return None; }
+        // Bound backlog after a blocked network write to four periods.
+        self.audio_index = self.audio_index.max(available.saturating_sub(4));
+        let index = self.audio_index;
+        self.audio_index += 1;
+        let samples = (0..1024).flat_map(|j| {
+            let v = ((((index * 1024 + j) % 109) as i16) - 54) * 200;
+            [v,v]
+        }).collect();
+        Some(t3box::media_core::AudioFrame {
+            timestamp_us: self.origin + (index * 1024 * 1_000_000).div_ceil(48000),
+            sample_rate: 48000, channels: 2, samples,
+        })
+    }
+}
+
+fn publish(url: &str, s: &Settings, sources: &mut Sources) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let session = rtmps_tls::begin_publish(url)?;
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
@@ -46,7 +122,7 @@ fn publish(url: &str, s: &Settings, video: &V4lVideoSource, audio: &AlsaAudioSou
     let mut last_audio = Instant::now();
     loop {
         let mut progress = false;
-        if let Some(mut frame) = audio.try_next_frame()? {
+        if let Some(mut frame) = sources.audio()? {
             progress = true;
             if frame.timestamp_us >= origin {
                 last_audio = Instant::now();
@@ -57,7 +133,7 @@ fn publish(url: &str, s: &Settings, video: &V4lVideoSource, audio: &AlsaAudioSou
                 }
             }
         }
-        if let Some(mut frame) = video.try_next_frame()? {
+        if let Some(mut frame) = sources.video()? {
             progress = true;
             if frame.timestamp_us >= origin {
                 last_video = Instant::now();
@@ -99,12 +175,11 @@ fn run() -> io::Result<()> {
     AacBackend::new(s.audio_bitrate)?;
     t3box::native_x264::X264Backend::new(s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate, true)?;
-    let video = V4lVideoSource::open(s.capture.clone())?;
-    let audio = AlsaAudioSource::open(s.capture.clone())?;
+    let mut sources = Sources::open(&s)?;
     let mut failures = 0u32;
     loop {
         let started = Instant::now();
-        match publish(&url, &s, &video, &audio) {
+        match publish(&url, &s, &mut sources) {
             Ok(()) => return Ok(()),
             Err(e) if !reconnect::retryable(&e) => return Err(e),
             Err(e) => {
@@ -116,8 +191,8 @@ fn run() -> io::Result<()> {
                 // Keep draining capture queues during backoff; never replay stale media.
                 let until = Instant::now() + delay;
                 while Instant::now() < until {
-                    let _ = video.try_next_frame();
-                    let _ = audio.try_next_frame();
+                    let _ = sources.video();
+                    let _ = sources.audio();
                     thread::sleep(Duration::from_millis(5));
                 }
             }

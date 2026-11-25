@@ -59,7 +59,18 @@ jobs:
       - name: ARM64 synthetic A/V stream smoke test
         run: T3BOX_ROOT="$GITHUB_WORKSPACE" bash ci/smoke.sh
 
+      - name: Virtual A/V RTMPS reconnect with network impairment
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends iproute2 openssl
+          bash ci/virtual-rtmps.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arm64-virtual-rtmps
+          path: e2e-results/
       - name: Pi 5 resource-envelope native codec benchmark
+        if: always()
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends fonts-dejavu-core tesseract-ocr tesseract-ocr-eng

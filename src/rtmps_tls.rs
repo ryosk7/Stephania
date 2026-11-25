@@ -82,6 +82,17 @@ pub fn tls_connect(target: &Target) -> io::Result<StreamOwned<ClientConnection, 
     stream.set_nodelay(true)?;
 
     let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    #[cfg(feature = "ci-virtual")]
+    let roots = {
+        let mut roots = roots;
+        if target.host == "t3box-ci.test" {
+            if let Some(path) = std::env::var_os("T3BOX_CI_CA_DER") {
+                roots.add(rustls::pki_types::CertificateDer::from(std::fs::read(path)?))
+                    .map_err(io::Error::other)?;
+            }
+        }
+        roots
+    };
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();

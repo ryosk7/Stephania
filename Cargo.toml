@@ -11,6 +11,7 @@ default = []
 native-capture = ["dep:v4l", "dep:alsa"]
 native-x264 = ["dep:x264"]
 native-aac = []
+ci-virtual = []
 
 [dependencies]
 v4l = { version = "0.14.0", optional = true }
@@ -28,3 +29,4 @@ required-features = ["native-capture", "native-x264", "native-aac"]
 name = "t3box-ci-encode"
 path = "src/bin/t3box-ci-encode.rs"
 required-features = ["native-x264", "native-aac"]
+

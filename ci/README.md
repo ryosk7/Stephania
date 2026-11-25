@@ -58,3 +58,17 @@ explicitly N/A. Manual CI workflow input soak=true runs 324000 paced frames
 and fails when processing falls more than ten seconds behind at minute
 boundaries. It loops a short source and discards encoded bytes, so it is
 a codec soak, not a full live-network or device soak.
+
+## Virtual capture and local RTMPS fault injection
+
+The optional ci-virtual feature supplies clock-paced YUYV and PCM frames
+to the same native publishing/retry loop. It is a userspace substitute,
+not a V4L2 or ALSA kernel device. A local Python TLS/RTMP peer records FLV,
+forces a connection close, then checks new sequence headers, initial IDR,
+monotonic per-track timestamps and decoded recovery. The test uses a
+temporary private CA trusted only for t3box-ci.test in ci-virtual builds;
+production certificate validation is not disabled. Linux netem on the
+ephemeral runner adds delay, jitter, loss and rate limiting. The test uses
+640x360 for bounded CI runtime; the separate offline benchmark uses 1080p.
+Do not enable ci-virtual in production. Real kernel device and venue network
+acceptance remain necessary.
