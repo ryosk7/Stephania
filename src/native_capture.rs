@@ -115,7 +115,7 @@ fn capture_video(settings: &CaptureSettings, tx: &SyncSender<io::Result<VideoFra
 }
 
 fn capture_video_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<VideoFrame>>) -> io::Result<()> {
-    let mut device = Device::with_path(&settings.video_path)?;
+    let device = Device::with_path(&settings.video_path)?;
     let mut format = device.format()?;
     format.width = settings.width;
     format.height = settings.height;
@@ -230,11 +230,10 @@ mod tests {
     }
     #[test]
     fn invalid_capture_parameters_fail_before_device_access() {
-        let mut s=CaptureSettings::default();
-        s.frame_queue = 0;
-        assert!(s.validate().is_err());
-        s.frame_queue = 4; s.sample_rate = 1;
-        assert!(s.validate().is_err());
+        let invalid_queue = CaptureSettings { frame_queue: 0, ..CaptureSettings::default() };
+        assert!(invalid_queue.validate().is_err());
+        let invalid_rate = CaptureSettings { sample_rate: 1, ..CaptureSettings::default() };
+        assert!(invalid_rate.validate().is_err());
     }
     #[test]
     fn fourcc_matches_video_source_formats() {
