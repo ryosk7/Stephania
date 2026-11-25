@@ -122,7 +122,7 @@ mod tests {
     fn raw_yuyv_to_h264_to_native_rtmp_video_packets() {
         let mut p=NativeVideoPipeline::new(mock_session(),64,64,30,800).unwrap();
         let mut data=vec![0u8;64*64*2];
-        for x in data.chunks_exact_mut(4) { x.copy_from_slice(&[82,128,82,128]); }
+        for x in data.as_chunks_mut::<4>().0 { x.copy_from_slice(&[82,128,82,128]); }
         for i in 0..4 {
             p.push_frame(&VideoFrame {
                 timestamp_us: i*33_333,
