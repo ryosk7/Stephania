@@ -19,3 +19,5 @@ pub mod colorspace;
 
 #[cfg(feature = "native-x264")]
 pub mod native_x264;
+
+pub mod pcm_framer;
