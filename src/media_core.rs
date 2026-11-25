@@ -17,6 +17,8 @@ pub struct VideoFrame {
     pub sequence: u64,
     pub width: u32,
     pub height: u32,
+    /// Bytes per image row in the source buffer; MJPEG is compressed and does not use it.
+    pub row_stride_bytes: usize,
     pub format: PixelFormat,
     pub bytes: Vec<u8>,
 }
@@ -150,7 +152,7 @@ pub fn suggested_profile(dropped_frames_percent: f32, cpu_temp_c: f32, sustained
 mod tests {
     use super::*;
     fn frame(ts: u64) -> VideoFrame {
-        VideoFrame { timestamp_us: ts, sequence: ts, width: 2, height: 2, format: PixelFormat::Yuyv422, bytes: vec![0;8] }
+        VideoFrame { timestamp_us: ts, sequence: ts, width: 2, height: 2, row_stride_bytes: 4, format: PixelFormat::Yuyv422, bytes: vec![0;8] }
     }
     #[test]
     fn queue_drops_stale_video_not_newest() {
