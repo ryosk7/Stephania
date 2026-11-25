@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      extended:
+        description: Run full quality matrix and physical-time network scenarios
+        type: boolean
+        default: false
       soak:
         description: Run three-hour paced native codec soak (manual only)
         type: boolean
@@ -56,10 +60,29 @@ jobs:
           test "$(uname -m)" = aarch64
           cargo test --locked --all-features
           cargo build --release --locked --all-features
+      - name: Build optimized accelerated tests (outside test execution budget)
+        run: |
+          cargo test --release --locked --lib --no-run --message-format=json > /tmp/fast-build.jsonl
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          for line in open('/tmp/fast-build.jsonl'):
+              x=json.loads(line)
+              if x.get('reason')=='compiler-artifact' and x.get('profile',{}).get('test') and x.get('executable') and x.get('target',{}).get('name')=='t3box':
+                  print('FAST_TEST_BIN='+x['executable'])
+          PY
+      - name: Accelerated 3h logical gate (60s hard timeout)
+        run: bash ci/fast-gate.sh "$FAST_TEST_BIN"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: accelerated-logical-gate
+          path: fast-results/
       - name: ARM64 synthetic A/V stream smoke test
+        if: github.event_name == 'workflow_dispatch' && inputs.extended
         run: T3BOX_ROOT="$GITHUB_WORKSPACE" bash ci/smoke.sh
 
       - name: Virtual A/V RTMPS reconnect with network impairment
+        if: github.event_name == 'workflow_dispatch' && inputs.extended
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends iproute2 openssl stress-ng
@@ -70,6 +93,7 @@ jobs:
           name: arm64-virtual-rtmps
           path: e2e-results/
       - name: 1080p30 virtual venue scenario (dynamic network and competing load)
+        if: github.event_name == 'workflow_dispatch' && inputs.extended
         run: |
           mv e2e-results e2e-baseline
           T3BOX_CI_WIDTH=1920 T3BOX_CI_HEIGHT=1080 T3BOX_CI_BITRATE=6000 T3BOX_CI_FRAMES=300 T3BOX_CI_DYNAMIC=1 T3BOX_CI_LOAD=1 bash ci/virtual-rtmps.sh
@@ -79,7 +103,7 @@ jobs:
           name: arm64-venue-scenario
           path: e2e-results/
       - name: Pi 5 resource-envelope native codec benchmark
-        if: always()
+        if: github.event_name == 'workflow_dispatch' && inputs.extended
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends fonts-dejavu-core tesseract-ocr tesseract-ocr-eng

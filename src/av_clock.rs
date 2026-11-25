@@ -26,19 +26,8 @@ impl AudioClock {
             !(2..=8192).contains(&n) || frame.samples.len() != n * 2 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid stereo PCM period"));
         }
-        let observed = u64::try_from(u128::from(frame.timestamp_us) * u128::from(RATE) / 1_000_000)
-            .map_err(|_| io::Error::other("audio clock overflow"))?;
-        let next = self.next_sample.unwrap_or(observed);
-        let error = i128::from(observed) - i128::from(next);
-        if error.abs() > MAX_GAP {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "audio capture discontinuity"));
-        }
-        self.correction_credit += n;
-        let allowance = self.correction_credit / 1000;
-        self.correction_credit %= 1000;
-        let delta = if error > DEAD_BAND { allowance as isize }
-            else if error < -DEAD_BAND { -(allowance as isize) } else { 0 };
-        let count = n.checked_add_signed(delta).ok_or_else(|| io::Error::other("PCM size overflow"))?;
+        let (timestamp_us, count) = self.advance_period(frame.timestamp_us, n)?;
+        let delta = count as isize - n as isize;
         let samples = if delta == 0 { frame.samples.clone() } else {
             let mut out = Vec::with_capacity(count * 2);
             for i in 0..count {
@@ -54,14 +43,36 @@ impl AudioClock {
             }
             out
         };
+        Ok(AudioFrame { timestamp_us, sample_rate: frame.sample_rate, channels: 2, samples })
+    }
+    /// Shared sample-clock transition, independent of PCM payload. The live
+    /// corrector and accelerated CI use exactly the same integer arithmetic.
+    pub fn advance_period(&mut self, timestamp_us: u64, n: usize) -> io::Result<(u64, usize)> {
+        if !(2..=8192).contains(&n) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid PCM period"));
+        }
+        let observed = u64::try_from(u128::from(timestamp_us) * u128::from(RATE) / 1_000_000)
+            .map_err(|_| io::Error::other("audio clock overflow"))?;
+        let next = self.next_sample.unwrap_or(observed);
+        let error = i128::from(observed) - i128::from(next);
+        if error.abs() > MAX_GAP {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "audio capture discontinuity"));
+        }
+        self.correction_credit += n;
+        let allowance = self.correction_credit / 1000;
+        self.correction_credit %= 1000;
+        let delta = if error > DEAD_BAND { allowance as isize }
+            else if error < -DEAD_BAND { -(allowance as isize) } else { 0 };
+        let count = n.checked_add_signed(delta).ok_or_else(|| io::Error::other("PCM size overflow"))?;
         if delta > 0 { self.inserted += delta as u64; }
         if delta < 0 { self.removed += (-delta) as u64; }
         self.next_sample = Some(next.checked_add(count as u64).ok_or_else(|| io::Error::other("audio clock overflow"))?);
         // Round UP so PCM framer's conversion back to samples is exact.
         let timestamp_us = u64::try_from((u128::from(next) * 1_000_000).div_ceil(u128::from(RATE)))
             .map_err(|_| io::Error::other("audio timestamp overflow"))?;
-        Ok(AudioFrame { timestamp_us, sample_rate: frame.sample_rate, channels: 2, samples })
+        Ok((timestamp_us, count))
     }
+
 }
 
 #[cfg(test)]

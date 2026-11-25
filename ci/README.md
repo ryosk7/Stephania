@@ -85,3 +85,17 @@ cross-track packet timestamp skew. The provisional 500 ms end-timestamp
 difference bound is not a lip-sync measurement (capture markers are needed).
 The test does not emulate HDMI/USB replug, resolution renegotiation, YouTube
 transcoding, real Wi-Fi radio, or a three-hour network stream.
+
+## Accelerated gate
+
+The default ARM64 workflow runs an optimized logical gate with a 60-second
+execution timeout, excluding provisioning, compilation and artifact upload.
+It evaluates five full three-hour audio sample-clock trajectories using the
+same arithmetic as the live PCM corrector, checks scalar/PCM equivalence
+and actual framing over a shorter window, and runs 16 seeded three-hour
+video queue/retry scenarios without image payloads or sleeps. The queue is
+a library component, not the native capture channel; network availability
+and processing rate are models. No claim is made that the full video codec
+or transport processed three hours of data. The extended manual workflow
+retains physical-time network and objective quality tests, and soak=true
+retains the optional paced codec test. Actual timing must be read from CI.
