@@ -25,7 +25,7 @@ impl I420Frame {
 
 fn validate(width: usize, height: usize, stride: usize, minimum: usize, length: usize) -> io::Result<()> {
     if width < 2 || height < 2 || width > 3840 || height > 2160 ||
-        width % 2 != 0 || height % 2 != 0 || stride < minimum ||
+        !width.is_multiple_of(2) || !height.is_multiple_of(2) || stride < minimum ||
         stride.checked_mul(height).is_none_or(|need| need > length) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid image geometry, stride or buffer length"));
     }
@@ -60,8 +60,8 @@ pub fn yuyv422_to_i420(
             y[y1]=input[i1];
             y[y1+1]=input[i1+2];
             let chroma_index=pair_y*(width/2)+pair_x;
-            u[chroma_index]=((u16::from(input[i0+1])+u16::from(input[i1+1])+1)/2) as u8;
-            v[chroma_index]=((u16::from(input[i0+3])+u16::from(input[i1+3])+1)/2) as u8;
+            u[chroma_index]=(u16::from(input[i0+1])+u16::from(input[i1+1])).div_ceil(2) as u8;
+            v[chroma_index]=(u16::from(input[i0+3])+u16::from(input[i1+3])).div_ceil(2) as u8;
         }
     }
     Ok(I420Frame {width,height,timestamp_us,bytes:data})
@@ -74,10 +74,10 @@ pub fn nv12_to_i420(
     input: &[u8], width: usize, height: usize,
     y_stride: usize, uv_stride: usize, timestamp_us: u64,
 ) -> io::Result<I420Frame> {
-    let y_bytes=y_stride.checked_mul(height).ok_or_else(||invalid())?;
-    let uv_bytes=uv_stride.checked_mul(height/2).ok_or_else(||invalid())?;
-    let required=y_bytes.checked_add(uv_bytes).ok_or_else(||invalid())?;
-    if width<2 || height<2 || width>3840 || height>2160 || width%2!=0 || height%2!=0 ||
+    let y_bytes=y_stride.checked_mul(height).ok_or_else(invalid)?;
+    let uv_bytes=uv_stride.checked_mul(height/2).ok_or_else(invalid)?;
+    let required=y_bytes.checked_add(uv_bytes).ok_or_else(invalid)?;
+    if width<2 || height<2 || width>3840 || height>2160 || !width.is_multiple_of(2) || !height.is_multiple_of(2) ||
         y_stride<width || uv_stride<width || input.len()<required {
         return Err(invalid());
     }
