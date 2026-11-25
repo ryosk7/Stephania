@@ -153,14 +153,8 @@ mod tests {
     fn surfaces_transport_disconnection() {
         let mut mux=FlvMuxer::new(Vec::new()).unwrap();
         mux.aac_configuration(0,&[0x11,0x90]).unwrap();
-        let mut source=FlvReader::new(mux.into_inner().as_slice().to_vec().as_slice());
-        // Make the input own its bytes to avoid temporary borrow issues.
-        let bytes= {
-            let mut output=FlvMuxer::new(Vec::new()).unwrap();
-            output.aac_configuration(0,&[0x11,0x90]).unwrap();
-            output.into_inner()
-        };
-        source=FlvReader::new(bytes.as_slice()).unwrap();
+        let bytes=mux.into_inner();
+        let mut source=FlvReader::new(bytes.as_slice()).unwrap();
         let mut s=session();
         s.transport_mut_for_test().fail=true;
         assert_eq!(relay(&mut source,&mut s,false).unwrap_err().kind(),io::ErrorKind::BrokenPipe);
