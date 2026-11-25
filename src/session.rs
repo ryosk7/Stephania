@@ -27,7 +27,7 @@ impl<T: Read + Write> PublishSession<T> {
     pub fn state(&self) -> State { self.state }
     pub fn into_inner(self) -> T { self.transport }
 
-    /// Send already packetized AVC (type 9) or AAC (type 8) FLV tag bodies.
+    /// Send already packetized AVC (9), AAC (8), or metadata (18) FLV tag bodies.
     /// Only permitted after the server confirms NetStream.Publish.Start.
     /// This does not include the FLV file header or PreviousTagSize.
     pub fn send_media(&mut self, type_id: u8, timestamp_ms: u32, payload: &[u8]) -> io::Result<()> {
@@ -37,6 +37,7 @@ impl<T: Read + Write> PublishSession<T> {
         let chunk_stream_id = match type_id {
             8 => 4,
             9 => 6,
+            18 => 5,
             _ => return Err(invalid("unsupported media message type")),
         };
         if payload.is_empty() || payload.len() > 1024 * 1024 {
