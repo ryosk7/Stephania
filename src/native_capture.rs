@@ -74,7 +74,7 @@ fn recv<T>(rx: &Receiver<io::Result<T>>) -> io::Result<T> {
         .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e))?
 }
 
-fn timestamp_us() -> u64 {
+pub fn timestamp_us() -> u64 {
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     ORIGIN.get_or_init(Instant::now).elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
@@ -199,7 +199,7 @@ fn capture_audio_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
         if frames == 0 { continue; }
         let len = frames * usize::from(settings.audio_channels);
         let frame = AudioFrame {
-            timestamp_us: timestamp_us(),
+            timestamp_us: timestamp_us().saturating_sub((frames as u64 * 1_000_000) / u64::from(actual_rate)),
             sample_rate: actual_rate,
             channels: settings.audio_channels,
             samples: samples[..len].to_vec(),
@@ -240,5 +240,23 @@ mod tests {
     fn fourcc_matches_video_source_formats() {
         assert_eq!(pixel_fourcc(PixelFormat::Yuyv422), FourCC::new(b"YUYV"));
         assert_eq!(pixel_fourcc(PixelFormat::Mjpeg), FourCC::new(b"MJPG"));
+    }
+}
+
+impl V4lVideoSource {
+    pub fn try_next_frame(&self) -> io::Result<Option<VideoFrame>> {
+        poll(&self.rx)
+    }
+}
+impl AlsaAudioSource {
+    pub fn try_next_frame(&self) -> io::Result<Option<AudioFrame>> {
+        poll(&self.rx)
+    }
+}
+fn poll<T>(rx: &Receiver<io::Result<T>>) -> io::Result<Option<T>> {
+    match rx.try_recv() {
+        Ok(result) => result.map(Some),
+        Err(mpsc::TryRecvError::Empty) => Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "capture worker exited")),
     }
 }

@@ -62,6 +62,15 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
         Ok(())
     }
 
+    /// Send AAC on the same confirmed RTMP session as video.
+    pub fn configure_audio(&mut self, asc: &[u8]) -> io::Result<()> {
+        self.publisher.aac_configuration(0, asc)
+    }
+
+    pub fn push_aac(&mut self, timestamp_ms: u32, raw: &[u8]) -> io::Result<()> {
+        self.publisher.aac_frame(timestamp_ms, raw)
+    }
+
     /// Push delayed frames before disconnecting.
     pub fn finish(mut self) -> io::Result<(PublishSession<T>, u64)> {
         for unit in self.encoder.finish()? {

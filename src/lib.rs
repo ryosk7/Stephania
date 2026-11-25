@@ -24,3 +24,11 @@ pub mod native_x264;
 pub mod native_video;
 
 pub mod pcm_framer;
+
+pub mod aac_adts;
+
+pub mod av_clock;
+pub mod reconnect;
+
+#[cfg(feature = "native-aac")]
+pub mod native_aac;
