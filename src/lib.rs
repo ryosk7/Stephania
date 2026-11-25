@@ -32,3 +32,6 @@ pub mod reconnect;
 
 #[cfg(feature = "native-aac")]
 pub mod native_aac;
+
+#[cfg(test)]
+mod accelerated_ci;

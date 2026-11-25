@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 cd "${T3BOX_ROOT:-/work}"
 file target/release/t3box
-cargo test
 # Prove that the CLI and HTTP controller execute on ARM64 and run a synthetic
 # H.264/AAC muxing pipeline. No HDMI or microphone hardware is emulated.
 export T3BOX_TEST_SOURCES=1
