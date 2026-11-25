@@ -16,3 +16,5 @@ pub mod media_core;
 pub mod native_capture;
 
 pub mod colorspace;
+
+pub mod pcm_framer;
