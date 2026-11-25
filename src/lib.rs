@@ -14,3 +14,5 @@ pub mod media_core;
 
 #[cfg(all(target_os = "linux", feature = "native-capture"))]
 pub mod native_capture;
+
+pub mod colorspace;
