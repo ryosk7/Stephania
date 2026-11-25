@@ -7,3 +7,4 @@ pub mod amf0_decode;
 pub mod rtmp_read;
 pub mod session;
 pub mod rtmps_tls;
+pub mod media_output;
