@@ -82,7 +82,8 @@ impl X264Backend {
     pub fn finish(&mut self) -> io::Result<Vec<EncodedAccessUnit>> {
         let encoder = self.encoder.take().ok_or_else(||invalid("encoder already flushed"))?;
         let mut result = Vec::new();
-        for frame in encoder.flush() {
+        let mut flush = encoder.flush();
+        while let Some(frame) = flush.next() {
             let (data, pic) = frame.map_err(codec_error)?;
             if !data.entirety().is_empty() {
                 result.push(access_unit(data.entirety(), pic.pts(), pic.dts(), pic.keyframe())?);
