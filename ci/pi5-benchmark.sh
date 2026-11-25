@@ -48,6 +48,7 @@ for preset in ${T3BOX_BENCH_PRESET:-ultrafast veryfast}; do
     fi
   done
 done
-expected=4
-if [[ -n "${T3BOX_BENCH_PRESET:-}" && -n "${T3BOX_BENCH_BITRATE:-}" ]]; then expected=1; fi
+read -ra presets <<< "${T3BOX_BENCH_PRESET:-ultrafast veryfast}"
+read -ra rates <<< "${T3BOX_BENCH_BITRATE:-6000 8000}"
+expected=$(("${#presets[@]}" * "${#rates[@]}"))
 python3 ci/report-benchmark.py "$out" "$expected"

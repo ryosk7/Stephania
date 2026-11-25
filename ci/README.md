@@ -112,3 +112,18 @@ contention. Per-shard Cargo caches reduce repeated warm builds; cold builds
 are deliberately independent and duplicate some work. GitHub account
 concurrency limits may serialize jobs; a 60s whole-workflow SLA is not
 guaranteed. The optional physical-time soak remains manual and independent.
+
+## Cost-aware CI (supersedes 13-job matrix)
+
+A conservative path planner selects no heavy jobs for Markdown-only PRs,
+one representative quality profile for explicitly controller-only PRs,
+and all four profiles for unknown or other code changes. Push to main and
+manual runs always use full coverage. Full runs use six worker jobs:
+x86 checks, ARM64 unit+logical, two transport and two quality jobs.
+A lightweight planner and final aggregate gate add two jobs. The controller
+and RTMPS tests are retained; related workloads share setup/build/fixtures.
+Execution suites retain 60-second timeouts. Three-day artifacts exclude
+raw quality bitstreams on success. Actual billable usage and wall time
+depend on account limits, rounding and cache; job-count reduction is not a
+measured cost reduction. Required check should be ci-gate after validating
+branch protection; this change does not modify repository rules.
