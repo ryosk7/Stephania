@@ -1,6 +1,6 @@
 //! Offline benchmark of production color conversion and native encoders.
-//! Raw YUYV input, H.264 Annex B and AAC/AVC FLV output. No device or network.
-use std::{env, fs::File, io::{self, BufReader, BufWriter, Read, Write}, time::Instant};
+//! Raw YUYV input, H.264 Annex B and AAC ADTS output. No device or network.
+use std::{env, fs::File, io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write}, time::Instant};
 use t3box::{colorspace, native_x264::X264Backend, native_aac::AacBackend,
     av_clock::AudioClock, media_core::AudioFrame, pcm_framer::PcmFramer};
 
@@ -21,11 +21,17 @@ fn main() -> io::Result<()> {
     let (sps,pps) = encoder.configuration()?;
     for nal in [&sps,&pps] { out.write_all(&[0,0,0,1])?; out.write_all(nal)?; }
     let mut raw = vec![0;1920*1080*2];
+    let soak = env::var_os("T3BOX_CI_SOAK").is_some();
     let mut durations = Vec::new();
     let mut emitted = 0u64;
     let mut audio_packets = 0u64;
     let start = Instant::now();
     for i in 0..frames {
+        if soak && i % 120 == 0 { input.seek(SeekFrom::Start(0))?; }
+        if soak {
+            let deadline = start + std::time::Duration::from_micros(i * 1_000_000 / 30);
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        }
         let tick = Instant::now();
         input.read_exact(&mut raw)?;
         let frame = colorspace::yuyv422_to_i420(&raw,1920,1080,3840,100000+i*1000000/30)?;
@@ -45,6 +51,12 @@ fn main() -> io::Result<()> {
             }
         }
         durations.push(tick.elapsed().as_secs_f64()*1000.0);
+        if soak && i % 1800 == 1799 {
+            eprintln!("soak frames={} elapsed_s={:.2}", i+1, start.elapsed().as_secs_f64());
+            if start.elapsed().as_secs_f64() > (i+1) as f64 / 30.0 + 10.0 {
+                return Err(io::Error::other("soak missed real-time deadline by >10s"));
+            }
+        }
     }
     for unit in encoder.finish()? {
         for nal in unit.nals { out.write_all(&[0,0,0,1])?; out.write_all(&nal)?; }

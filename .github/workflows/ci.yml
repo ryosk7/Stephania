@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      soak:
+        description: Run three-hour paced native codec soak (manual only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,7 +39,7 @@ jobs:
   arm64-native:
     # Hosted AArch64 runner is available for private repos. Not Pi 5 hardware.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -57,7 +62,7 @@ jobs:
       - name: Pi 5 resource-envelope native codec benchmark
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
           bash ci/pi5-benchmark.sh ci-results
           cat ci-results/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload objective quality and performance evidence
@@ -67,3 +72,23 @@ jobs:
           name: arm64-native-media-benchmark
           path: ci-results/
           retention-days: 14
+
+  arm64-soak:
+    if: github.event_name == 'workflow_dispatch' && inputs.soak
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 220
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg libx264-dev libavcodec-dev libavutil-dev pkg-config
+      - run: cargo build --release --locked --features native-aac,native-x264 --bin t3box-ci-encode
+      - run: bash ci/soak.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arm64-three-hour-soak
+          path: soak-results/

@@ -220,6 +220,25 @@ fn audio_error(error: alsa::Error) -> io::Error {
     io::Error::other(error.to_string())
 }
 
+
+impl V4lVideoSource {
+    pub fn try_next_frame(&self) -> io::Result<Option<VideoFrame>> {
+        poll(&self.rx)
+    }
+}
+impl AlsaAudioSource {
+    pub fn try_next_frame(&self) -> io::Result<Option<AudioFrame>> {
+        poll(&self.rx)
+    }
+}
+fn poll<T>(rx: &Receiver<io::Result<T>>) -> io::Result<Option<T>> {
+    match rx.try_recv() {
+        Ok(result) => result.map(Some),
+        Err(mpsc::TryRecvError::Empty) => Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "capture worker exited")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,23 +259,5 @@ mod tests {
     fn fourcc_matches_video_source_formats() {
         assert_eq!(pixel_fourcc(PixelFormat::Yuyv422), FourCC::new(b"YUYV"));
         assert_eq!(pixel_fourcc(PixelFormat::Mjpeg), FourCC::new(b"MJPG"));
-    }
-}
-
-impl V4lVideoSource {
-    pub fn try_next_frame(&self) -> io::Result<Option<VideoFrame>> {
-        poll(&self.rx)
-    }
-}
-impl AlsaAudioSource {
-    pub fn try_next_frame(&self) -> io::Result<Option<AudioFrame>> {
-        poll(&self.rx)
-    }
-}
-fn poll<T>(rx: &Receiver<io::Result<T>>) -> io::Result<Option<T>> {
-    match rx.try_recv() {
-        Ok(result) => result.map(Some),
-        Err(mpsc::TryRecvError::Empty) => Ok(None),
-        Err(mpsc::TryRecvError::Disconnected) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "capture worker exited")),
     }
 }

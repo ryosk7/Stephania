@@ -47,3 +47,14 @@ floors (25 dB PSNR and 0.85 SSIM) are not a guarantee of readable text;
 the reference is post-4:2:0 conversion. Inspect previews and compare
 against a calibrated real Pi and representative presentations.
 No VMAF, OCR, live RTMPS, device timing, thermal or soak test is implied.
+
+## Readability and long-duration coverage
+
+OCR uses Tesseract on four samples of the 14-pixel text line, reports the
+worst normalized text similarity (not exact character recognition rate).
+VMAF is reported only when the installed FFmpeg exposes libvmaf; otherwise
+explicitly N/A. Manual CI workflow input soak=true runs 324000 paced frames
+(three hours at 30 fps) with 4 vCPU / 4 GiB, samples container CPU and RAM,
+and fails when processing falls more than ten seconds behind at minute
+boundaries. It loops a short source and discards encoded bytes, so it is
+a codec soak, not a full live-network or device soak.
