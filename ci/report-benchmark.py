@@ -33,7 +33,7 @@ assert len(rows) == 4
 report = "\n".join(["# ARM64 resource-constrained native codec benchmark",
     "", "| Profile | FPS | p95 ms | Peak RSS MiB | Actual Mbps | PSNR dB | SSIM | Worst OCR similarity | VMAF |",
     "|---|---:|---:|---:|---:|---:|---:|---:|---:|", *rows,
-    "", "4 vCPU quota / 4 GiB memory; not Pi 5 CPU or bandwidth calibration.",
+    "", f"{(root / 'cpu-quota.txt').read_text().strip()} vCPU quota / 4 GiB memory limit; not Pi 5 CPU or bandwidth calibration.",
     "Throughput is offline, not real-time capture or network latency."]) + "\n"
 (root / "summary.md").write_text(report)
 print(report)

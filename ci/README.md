@@ -72,3 +72,16 @@ ephemeral runner adds delay, jitter, loss and rate limiting. The test uses
 640x360 for bounded CI runtime; the separate offline benchmark uses 1080p.
 Do not enable ci-virtual in production. Real kernel device and venue network
 acceptance remain necessary.
+
+## Venue scenario and runner limits
+
+The hosted ARM64 runner actually exposed two CPUs in CI run 45720024622.
+The codec and soak containers now use min(nproc,4), and record the actual
+quota; a two-core run is not a four-core Pi 5 equivalent. The 4 GiB memory
+limit is a ceiling, not a reservation. A separate 1080p30 scenario adds
+changing network latency/loss/bandwidth and competing CPU/memory load.
+The local receiver records first/last timestamps and maximum observed
+cross-track packet timestamp skew. The provisional 500 ms end-timestamp
+difference bound is not a lip-sync measurement (capture markers are needed).
+The test does not emulate HDMI/USB replug, resolution renegotiation, YouTube
+transcoding, real Wi-Fi radio, or a three-hour network stream.

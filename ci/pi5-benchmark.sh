@@ -15,11 +15,14 @@ lscpu > "$out/cpu.txt"
 free -b > "$out/host-memory.txt"
 uname -a > "$out/kernel.txt"
 ffmpeg -version > "$out/ffmpeg.txt"
+cpus="$(nproc)"
+if (( cpus > 4 )); then cpus=4; fi
+printf "%s\n" "$cpus" > "$out/cpu-quota.txt"
 docker build -t t3box-bench -f ci/Dockerfile.benchmark .
 for preset in ultrafast veryfast; do
   for bitrate in 6000 8000; do
     name="$preset-$bitrate"
-    docker run --name "t3box-bench-$name" --cpus=4 --memory=4g --memory-swap=4g \
+    docker run --name "t3box-bench-$name" --cpus="$cpus" --memory=4g --memory-swap=4g \
       --network=none --user "$(id -u):$(id -g)" -v "$work:/fixture:ro" -v "$out:/results" t3box-bench \
       /usr/bin/time -v -o "/results/$name.resource.txt" /app/t3box-ci-encode \
       /fixture/input.yuv "/results/$name.h264" 120 "$bitrate" "$preset" "/results/$name.aac" \

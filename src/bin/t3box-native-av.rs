@@ -81,7 +81,7 @@ impl VirtualCapture {
         self.video_index = available + 1;
         let timestamp_us = self.origin + available * 1_000_000 / u64::from(self.fps);
         let mut bytes = vec![0; self.width as usize * self.height as usize * 2];
-        for (i, pixel) in bytes.chunks_exact_mut(4).enumerate() {
+        for (i, pixel) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let y = (16 + ((i / 32 + available as usize * 3) % 200)) as u8;
             pixel.copy_from_slice(&[y, 128, y, 128]);
         }

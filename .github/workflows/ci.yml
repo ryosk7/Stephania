@@ -62,12 +62,21 @@ jobs:
       - name: Virtual A/V RTMPS reconnect with network impairment
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends iproute2 openssl
+          sudo apt-get install -y --no-install-recommends iproute2 openssl stress-ng
           bash ci/virtual-rtmps.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: arm64-virtual-rtmps
+          path: e2e-results/
+      - name: 1080p30 virtual venue scenario (dynamic network and competing load)
+        run: |
+          mv e2e-results e2e-baseline
+          T3BOX_CI_WIDTH=1920 T3BOX_CI_HEIGHT=1080 T3BOX_CI_BITRATE=6000 T3BOX_CI_FRAMES=300 T3BOX_CI_DYNAMIC=1 T3BOX_CI_LOAD=1 bash ci/virtual-rtmps.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arm64-venue-scenario
           path: e2e-results/
       - name: Pi 5 resource-envelope native codec benchmark
         if: always()

@@ -6,8 +6,11 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"; docker rm -f t3box-soak >/dev/null 2>&1 || true' EXIT
 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1920x1080:rate=30' -frames:v 120 -threads 1 -pix_fmt yuyv422 -f rawvideo "$work/input.yuv"
 chmod 755 "$work"
+cpus="$(nproc)"
+if (( cpus > 4 )); then cpus=4; fi
+printf "%s\n" "$cpus" > "$out/cpu-quota.txt"
 docker build -t t3box-bench -f ci/Dockerfile.benchmark .
-docker run --name t3box-soak --cpus=4 --memory=4g --memory-swap=4g --network=none \
+docker run --name t3box-soak --cpus="$cpus" --memory=4g --memory-swap=4g --network=none \
   --user "$(id -u):$(id -g)" -e T3BOX_CI_SOAK=1 -v "$work:/fixture:ro" -v "$out:/results" t3box-bench \
   /usr/bin/time -v -o /results/resources.txt /app/t3box-ci-encode /fixture/input.yuv /dev/null 324000 6000 ultrafast /dev/null \
   > "$out/performance.json" 2> "$out/progress.log" &

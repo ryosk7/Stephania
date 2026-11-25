@@ -9,6 +9,9 @@ import pathlib
 import json
 
 out = pathlib.Path(sys.argv[1])
+import os
+sessions = int(os.environ.get("T3BOX_CI_SESSIONS", "2"))
+first_limit = int(os.environ.get("T3BOX_CI_FIRST_LIMIT", "30"))
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(out / "server.pem", out / "server.key")
 
@@ -67,6 +70,8 @@ def serve(s, index):
     config = set()
     first_key = False
     last = {}
+    first = {}
+    max_skew_ms = 0
     with (out / f"session-{index}.flv").open("wb") as f:
         f.write(b"FLV\x01\x05\0\0\0\x09\0\0\0\0")
         while True:
@@ -85,10 +90,16 @@ def serve(s, index):
                 if kind == 9 and not counts[key]:
                     first_key = payload[0] >> 4 == 1
                 counts[key] += 1
+                first.setdefault(key, ts)
+                if 8 in last and 9 in last:
+                    max_skew_ms = max(max_skew_ms, abs(last[8] - last[9]))
             f.write(bytes([kind])+len(payload).to_bytes(3,"big")+(ts&0xffffff).to_bytes(3,"big")+bytes([ts>>24])+b"\0\0\0"+payload+struct.pack(">I",11+len(payload)))
-            if index == 1 and counts["video"] >= 30 and counts["audio"] >= 20:
+            if index == 1 and counts["video"] >= first_limit and counts["audio"] >= 20:
                 break
     assert config == {8,9} and first_key and min(counts.values()) > 0
+    counts["first_pts_ms"] = first
+    counts["last_pts_ms"] = {"audio": last[8], "video": last[9]}
+    counts["max_packet_timestamp_skew_ms"] = max_skew_ms
     (out / f"session-{index}.json").write_text(json.dumps(counts))
 
 with socket.socket() as listener:
@@ -97,7 +108,7 @@ with socket.socket() as listener:
     listener.listen(2)
     listener.settimeout(90)
     (out / "ready").touch()
-    for index in (1,2):
+    for index in range(1,sessions+1):
         conn,_ = listener.accept()
         with conn:
             conn.settimeout(60)
