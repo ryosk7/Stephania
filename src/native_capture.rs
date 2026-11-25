@@ -7,6 +7,7 @@
 use crate::media_core::{AudioFrame, AudioSource, PixelFormat, VideoFrame, VideoSource};
 use std::io;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -73,6 +74,11 @@ fn recv<T>(rx: &Receiver<io::Result<T>>) -> io::Result<T> {
         .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e))?
 }
 
+fn timestamp_us() -> u64 {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+
 fn invalid(text: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, text)
 }
@@ -120,11 +126,10 @@ fn capture_video_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
         return Err(invalid("V4L2 driver did not accept requested capture format"));
     }
     let mut stream = Stream::with_buffers(&device, Type::VideoCapture, 4)?;
-    let started = Instant::now();
     loop {
         let (buffer, meta) = stream.next()?;
         let frame = VideoFrame {
-            timestamp_us: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+            timestamp_us: timestamp_us(),
             sequence: u64::from(meta.sequence),
             width: actual.width,
             height: actual.height,
@@ -176,7 +181,6 @@ fn capture_audio_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
     if actual_rate != settings.sample_rate {
         return Err(invalid("ALSA device did not support exact capture sample rate"));
     }
-    let started = Instant::now();
     let mut samples = vec![0i16; settings.audio_period_frames * usize::from(settings.audio_channels)];
     loop {
         let frames = match pcm.io_i16().map_err(audio_error)?.readi(&mut samples) {
@@ -194,7 +198,7 @@ fn capture_audio_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
         if frames == 0 { continue; }
         let len = frames * usize::from(settings.audio_channels);
         let frame = AudioFrame {
-            timestamp_us: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+            timestamp_us: timestamp_us(),
             sample_rate: actual_rate,
             channels: settings.audio_channels,
             samples: samples[..len].to_vec(),
@@ -234,7 +238,7 @@ mod tests {
     }
     #[test]
     fn fourcc_matches_video_source_formats() {
-        assert_eq!(pixel_fourcc(PixelFormat::Yuyv422).str().unwrap(), "YUYV");
-        assert_eq!(pixel_fourcc(PixelFormat::Mjpeg).str().unwrap(), "MJPG");
+        assert_eq!(pixel_fourcc(PixelFormat::Yuyv422), FourCC::new(b"YUYV"));
+        assert_eq!(pixel_fourcc(PixelFormat::Mjpeg), FourCC::new(b"MJPG"));
     }
 }
