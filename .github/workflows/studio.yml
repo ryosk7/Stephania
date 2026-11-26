@@ -91,4 +91,8 @@ jobs:
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
       - run: npm ci --no-audit --no-fund
+      - name: Generated API types match contracts/openapi.yaml
+        run: npm run check:api
+      - name: Unit and shared-fixture tests
+        run: npm test
       - run: npm run build
