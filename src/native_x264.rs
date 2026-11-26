@@ -1,10 +1,47 @@
-//! Direct libx264 encoder through Rust bindings. No FFmpeg process.
+//! Direct libx264 encoder through a narrow C bridge. No FFmpeg process.
 //! This backend is intentionally optional: libx264 is GPL-licensed and must be
 //! evaluated for distribution obligations and Pi 5 real-time performance.
 //! Output is length-prefixed AVC NALs suitable for T3Box's RTMP packetizer.
 use crate::colorspace::I420Frame;
-use std::io;
-use x264::{Colorspace, Encoder, Image, Plane, Preset, Setup, Tune};
+use std::{ffi::c_void, io, ptr::NonNull};
+
+#[repr(C)]
+struct Packet {
+    data: *const u8,
+    pts: i64,
+    dts: i64,
+    keyframe: i32,
+}
+
+impl Packet {
+    fn new() -> Self {
+        Self { data: std::ptr::null(), pts: 0, dts: 0, keyframe: 0 }
+    }
+
+    // Only called immediately after a successful encoder call, before
+    // another call can invalidate libx264-owned NAL storage.
+    unsafe fn bytes(&self, size: i32) -> io::Result<&[u8]> {
+        if size <= 0 || size as usize > MAX_ACCESS_UNIT || self.data.is_null() {
+            return Err(invalid("invalid x264 output size"));
+        }
+        Ok(unsafe { std::slice::from_raw_parts(self.data, size as usize) })
+    }
+}
+
+extern "C" {
+    fn t3x264_open(width: i32, height: i32, fps: i32, bitrate: i32, fast: i32) -> *mut c_void;
+    fn t3x264_close(handle: *mut c_void);
+    fn t3x264_headers(handle: *mut c_void, out: *mut Packet) -> i32;
+    fn t3x264_encode(handle: *mut c_void, data: *const u8, width: i32, height: i32,
+        pts: i64, out: *mut Packet) -> i32;
+    fn t3x264_delayed(handle: *mut c_void) -> i32;
+    fn t3x264_rate_control(handle: *mut c_void, bitrate: i32) -> i32;
+}
+
+struct Encoder(NonNull<c_void>);
+impl Drop for Encoder {
+    fn drop(&mut self) { unsafe { t3x264_close(self.0.as_ptr()); } }
+}
 
 const MAX_DIMENSION: usize = 3840;
 const MAX_ACCESS_UNIT: usize = 2 * 1024 * 1024;
@@ -31,23 +68,20 @@ impl X264Backend {
             !(1..=60).contains(&fps) || !(500..=30_000).contains(&bitrate_kbps) {
             return Err(invalid("invalid x264 resolution, fps or bitrate"));
         }
-        let preset = if fast { Preset::Ultrafast } else { Preset::Veryfast };
-        let encoder = Setup::preset(preset, Tune::None, false, true)
-            .fps(fps, 1)
-            .timebase(1, 1_000_000)
-            .bitrate(bitrate_kbps as i32)
-            // Bound decoder recovery and match the controller's two-second GOP.
-            .max_keyframe_interval((fps * 2) as i32)
-            .annexb(false)
-            .build(Colorspace::I420, width as i32, height as i32)
-            .map_err(codec_error)?;
+        let encoder = Encoder(NonNull::new(unsafe {
+            t3x264_open(width as i32, height as i32, fps as i32, bitrate_kbps as i32, i32::from(fast))
+        }).ok_or_else(|| io::Error::other("x264 encoder initialization failed"))?);
+        if unsafe { t3x264_rate_control(encoder.0.as_ptr(), bitrate_kbps as i32) } != 1 {
+            return Err(io::Error::other("x264 rate control was not applied"));
+        }
         Ok(Self { encoder: Some(encoder), width, height, last_input_us: None })
     }
 
     pub fn configuration(&mut self) -> io::Result<(Vec<u8>, Vec<u8>)> {
         let encoder = self.encoder.as_mut().ok_or_else(||invalid("encoder was flushed"))?;
-        let headers = encoder.headers().map_err(codec_error)?;
-        let mut nals = avcc_nals(headers.entirety())?;
+        let mut packet = Packet::new();
+        let size = unsafe { t3x264_headers(encoder.0.as_ptr(), &mut packet) };
+        let mut nals = avcc_nals(unsafe { packet.bytes(size)? })?;
         let sps_index = nals.iter().position(|n| n[0] & 0x1f == 7)
             .ok_or_else(||invalid("x264 did not provide SPS"))?;
         let sps = nals.swap_remove(sps_index);
@@ -65,18 +99,16 @@ impl X264Backend {
             return Err(invalid("I420 frame has invalid geometry, length or timestamp"));
         }
         let encoder = self.encoder.as_mut().ok_or_else(||invalid("encoder was flushed"))?;
-        let y_stride = self.width as i32;
-        let uv_stride = (self.width / 2) as i32;
-        let planes = [
-            Plane { stride: y_stride, data: frame.y() },
-            Plane { stride: uv_stride, data: frame.u() },
-            Plane { stride: uv_stride, data: frame.v() },
-        ];
-        let image = Image::new(Colorspace::I420, self.width as i32, self.height as i32, &planes);
-        let (data, pic) = encoder.encode(frame.timestamp_us as i64, image).map_err(codec_error)?;
-        let bytes = data.entirety();
-        let result = if bytes.is_empty() { None } else {
-            Some(access_unit(bytes, pic.pts(), pic.dts(), pic.keyframe())?)
+        let mut packet = Packet::new();
+        // x264 reads the validated I420 planes synchronously, copying input
+        // into its own frame storage. It does not retain the caller's pointer.
+        let size = unsafe { t3x264_encode(encoder.0.as_ptr(), frame.bytes.as_ptr(),
+            self.width as i32, self.height as i32, frame.timestamp_us as i64, &mut packet) };
+        let result = match size {
+            0 => None,
+            n if n < 0 => return Err(io::Error::other("x264 encode failed")),
+            _ => Some(access_unit(unsafe { packet.bytes(size)? }, packet.pts, packet.dts,
+                packet.keyframe != 0)?),
         };
         self.last_input_us = Some(frame.timestamp_us);
         Ok(result)
@@ -86,11 +118,14 @@ impl X264Backend {
     pub fn finish(&mut self) -> io::Result<Vec<EncodedAccessUnit>> {
         let encoder = self.encoder.take().ok_or_else(||invalid("encoder already flushed"))?;
         let mut result = Vec::new();
-        let mut flush = encoder.flush();
-        while let Some(frame) = flush.next() {
-            let (data, pic) = frame.map_err(codec_error)?;
-            if !data.entirety().is_empty() {
-                result.push(access_unit(data.entirety(), pic.pts(), pic.dts(), pic.keyframe())?);
+        while unsafe { t3x264_delayed(encoder.0.as_ptr()) } > 0 {
+            let mut packet = Packet::new();
+            let size = unsafe { t3x264_encode(encoder.0.as_ptr(), std::ptr::null(),
+                self.width as i32, self.height as i32, 0, &mut packet) };
+            if size < 0 { return Err(io::Error::other("x264 flush failed")); }
+            if size > 0 {
+                result.push(access_unit(unsafe { packet.bytes(size)? }, packet.pts,
+                    packet.dts, packet.keyframe != 0)?);
             }
         }
         Ok(result)
@@ -128,9 +163,6 @@ pub fn avcc_nals(data: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     Ok(nals)
 }
 
-fn codec_error(error: x264::Error) -> io::Error {
-    io::Error::other(format!("libx264 error: {error:?}"))
-}
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -190,6 +222,17 @@ mod tests {
             assert_eq!(keys.first(), Some(&0));
             assert!(keys.windows(2).all(|pair| pair[1] - pair[0] <= 60));
             assert!(units.len() - 1 - keys.last().unwrap() < 60);
+        }
+    }
+
+    #[test]
+    fn abr_and_vbv_match_requested_bitrate() {
+        for fast in [true, false] {
+            for bitrate in [6000, 8000] {
+                let encoder = X264Backend::new(1920, 1080, 30, bitrate, fast).unwrap();
+                let handle = encoder.encoder.as_ref().unwrap().0;
+                assert_eq!(unsafe { t3x264_rate_control(handle.as_ptr(), bitrate as i32) }, 1);
+            }
         }
     }
 
