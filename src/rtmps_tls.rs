@@ -142,3 +142,12 @@ mod tests {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+impl PublishSession<StreamOwned<ClientConnection, TcpStream>> {
+    /// Duplicate the socket handle for read-only telemetry, not TLS I/O.
+    /// The monitor must be dropped with the session; it shares socket lifetime.
+    pub fn tcp_monitor(&self) -> io::Result<TcpStream> {
+        self.transport().sock.try_clone()
+    }
+}

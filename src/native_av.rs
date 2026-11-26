@@ -122,6 +122,8 @@ impl VirtualCapture {
 fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn() -> bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
+    let telemetry = session.tcp_monitor().ok();
+    let mut next_sample = Instant::now();
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate)?;
     pipeline.configure_audio(&aac.configuration()?)?;
@@ -133,6 +135,16 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
     let mut last_audio = Instant::now();
     loop {
         if cancelled() { return Ok(()); }
+        if Instant::now() >= next_sample {
+            next_sample = Instant::now() + Duration::from_secs(1);
+            if let Some(socket) = &telemetry {
+                if let Ok(sample) = crate::tcp_telemetry::TcpSample::read(socket) {
+                    eprintln!("native TCP rtt_us={} rttvar_us={} retrans_total={} unacked_segments={} send_queue_bytes={} not_sent_bytes={}",
+                        sample.rtt_us, sample.rtt_variance_us, sample.retransmitted_segments,
+                        sample.unacked_segments, sample.send_queue_bytes, sample.not_sent_bytes);
+                }
+            }
+        }
         let mut progress = false;
         if let Some(mut frame) = stage(sources.audio(), "audio capture")? {
             progress = true;

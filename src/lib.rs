@@ -7,6 +7,8 @@ pub mod amf0_decode;
 pub mod rtmp_read;
 pub mod session;
 pub mod rtmps_tls;
+#[cfg(target_os = "linux")]
+pub mod tcp_telemetry;
 pub mod media_output;
 pub mod flv_input;
 pub mod flv_relay;
