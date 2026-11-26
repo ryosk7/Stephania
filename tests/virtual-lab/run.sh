@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-mkdir -p evidence
-out="$(realpath evidence)"
+mkdir -p "${LAB_OUT:-evidence}"
+out="$(realpath "${LAB_OUT:-evidence}")"
+[[ -z "$(ls -A "$out")" ]] || { echo "evidence must be empty"; exit 2; }
 work="$(mktemp -d)"
-peer= controller= feeder=
+peer= controller= feeder= monitor=
 cleanup() {
-  for pid in "$controller" "$peer" "$feeder"; do
+  for pid in "$monitor" "$controller" "$peer" "$feeder"; do
     if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
   done
   for f in "$work"/session-*; do [[ ! -f "$f" ]] || cp "$f" "$out/"; done
@@ -26,7 +27,10 @@ test -f "$work/ready"
 export T3BOX_CI_CA_DER="$work/ca.der" T3BOX_OUTPUT=rtmps://t3box-ci.test:19443/live/lab
 export T3BOX_WIDTH=1920 T3BOX_HEIGHT=1080 T3BOX_FPS=30 T3BOX_BITRATE_KBPS=6000
 export T3BOX_PARALLEL_MEDIA=1 T3BOX_ADAPTIVE_RATE=1 T3BOX_DEADLINE_TRANSPORT=1 T3BOX_CONTENT_AWARE=1
-if [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
+if [[ "${LAB_INPUT:-virtual}" == physical ]]; then
+  unset T3BOX_CI_VIRTUAL
+  export T3BOX_VIDEO="${T3BOX_VIDEO:-/dev/video0}" T3BOX_AUDIO="${T3BOX_AUDIO:-plughw:1,0}"
+elif [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
   unset T3BOX_CI_VIRTUAL
   sudo modprobe vivid n_devs=1 multiplanar=1
   sudo modprobe snd-aloop
@@ -40,10 +44,17 @@ if [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
   feeder=$!
 else
   export T3BOX_CI_VIRTUAL=1
+  if [[ "${LAB_MEDIA:-synthetic}" == mixed ]]; then
+    python3 tests/virtual-lab/fixture.py "$work"
+    export T3BOX_LAB_VIDEO="$work/mixed.yuyv" T3BOX_LAB_MARKERS=1
+    cp "$work/fixture.json" "$out/"
+  fi
 fi
 if [[ "${LAB_NETWORK:-clean}" == venue ]]; then sudo tc qdisc replace dev lo root netem delay 40ms 10ms loss 0.2% rate 12mbit; fi
 target/release/t3box > "$out/controller.log" 2>&1 &
 controller=$!
+python3 tests/virtual-lab/monitor.py "$controller" "$out" &
+monitor=$!
 api() { curl --fail --silent --max-time 4 "$@"; }
 for i in $(seq 1 50); do api http://127.0.0.1:8787/health > "$out/health.json" && break; sleep .1; done
 api http://127.0.0.1:8787/status > "$out/initial.json"
@@ -76,3 +87,4 @@ for f in "$out"/session-*.flv; do
   ffmpeg -v error -xerror -i "$f" -f null -
 done
 python3 tests/virtual-lab/report.py "$out"
+if [[ "${LAB_MEDIA:-synthetic}" == mixed ]]; then python3 tests/virtual-lab/markers.py "$out" "$work/mixed.yuyv"; fi
