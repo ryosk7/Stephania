@@ -28,6 +28,9 @@ impl<T: Read + Write> PublishSession<T> {
     pub fn state(&self) -> State { self.state }
     pub fn into_inner(self) -> T { self.transport }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn transport(&self) -> &T { &self.transport }
+
     /// Send already packetized AVC (9), AAC (8), or metadata (18) FLV tag bodies.
     /// Only permitted after the server confirms NetStream.Publish.Start.
     /// This does not include the FLV file header or PreviousTagSize.

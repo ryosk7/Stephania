@@ -115,6 +115,15 @@ pub fn begin_publish(url: &str) -> io::Result<PublishSession<StreamOwned<ClientC
     Ok(session)
 }
 
+#[cfg(target_os = "linux")]
+impl PublishSession<StreamOwned<ClientConnection, TcpStream>> {
+    /// Duplicate the socket handle for read-only telemetry, not TLS I/O.
+    /// The monitor must be dropped with the session; it shares socket lifetime.
+    pub fn tcp_monitor(&self) -> io::Result<TcpStream> {
+        self.transport().sock.try_clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,3 +151,4 @@ mod tests {
         }
     }
 }
+
