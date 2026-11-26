@@ -8,13 +8,14 @@ permissions:
 jobs:
   realtime:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         media: [photo, people, animation, mixed]
         rate: [6000, 8000]
         network: [clean, venue]
+        repeat: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -26,14 +27,15 @@ jobs:
           MEDIA: ${{ matrix.media }}
           RATE: ${{ matrix.rate }}
           NETWORK: ${{ matrix.network }}
+          REPEAT: ${{ matrix.repeat }}
         run: |
           mkdir -p evidence
           lscpu > evidence/cpu.txt
           git rev-parse HEAD > evidence/commit.txt
-          python3 benchmarks/realtime/run.py "$MEDIA" "$RATE" "$NETWORK"
+          python3 benchmarks/realtime/run.py "$MEDIA" "$RATE" "$NETWORK" evidence/measurement
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: realtime-${{ matrix.media }}-${{ matrix.rate }}-${{ matrix.network }}
+          name: realtime-${{ matrix.media }}-${{ matrix.rate }}-${{ matrix.network }}-${{ matrix.repeat }}
           path: evidence/
           retention-days: 3

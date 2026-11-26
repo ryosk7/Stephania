@@ -1,5 +1,5 @@
 //! Benchmark-only paced file source through the production RTMPS pipeline.
-use std::{env,fs::File,io::{self,Read},thread,time::{Instant,Duration}};
+use std::{env,fs::File,io::{self,Read},thread,time::{Instant,Duration,SystemTime,UNIX_EPOCH}};
 use t3box::{native_video::NativeVideoPipeline,native_aac::AacBackend,pcm_framer::PcmBlock,media_core::{VideoFrame,PixelFormat},rtmps_tls};
 
 fn main()->io::Result<()> {
@@ -12,6 +12,7 @@ fn main()->io::Result<()> {
     p.configure_audio(&aac.configuration()?)?;
     let mut frame=VideoFrame{timestamp_us:0,sequence:0,width:1920,height:1080,row_stride_bytes:3840,format:PixelFormat::Yuyv422,bytes:vec![0;1920*1080*2]};
     let mut audio=0u64;
+    let wall_start=SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?.as_nanos();
     let start=Instant::now();
     let mut missed=0;
     for i in 0..count {
@@ -30,7 +31,8 @@ fn main()->io::Result<()> {
         let done=Instant::now();
         let late=done>due+Duration::from_micros(1_000_000/30);
         if late { missed+=1; }
-        println!("{{\"frame\":{i},\"encode_send_ms\":{},\"completion_ms\":{},\"deadline_missed\":{late}}}",(done-tick).as_secs_f64()*1000.0,(done-due).as_secs_f64()*1000.0);
+        let scheduled_wall_ns=wall_start+u128::from(i*1_000_000/30)*1000;
+        println!("{{\"frame\":{i},\"scheduled_wall_ns\":{scheduled_wall_ns},\"encode_send_ms\":{},\"completion_ms\":{},\"deadline_missed\":{late}}}",(done-tick).as_secs_f64()*1000.0,(done-due).as_secs_f64()*1000.0);
     }
     for pkt in aac.finish()? { p.push_aac((pkt.pts_samples*1000/48000) as u32,&pkt.raw)?; }
     let (_,emitted)=p.finish()?;
