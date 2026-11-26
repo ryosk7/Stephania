@@ -1,5 +1,5 @@
 FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends busybox-static cpio kmod v4l-utils alsa-utils gzip ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends busybox-static cpio kmod v4l-utils alsa-utils gzip zstd xz-utils ca-certificates
 COPY qemu-prepare.sh /tmp/prepare.sh
 RUN bash /tmp/prepare.sh
 FROM scratch

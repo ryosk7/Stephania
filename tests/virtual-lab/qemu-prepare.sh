@@ -48,6 +48,9 @@ test -n "$(find selected -name 'snd-aloop.ko*' -print -quit)"
 rm -rf root/lib/modules
 mkdir -p root/lib/modules
 cp -a selected/lib/modules/. root/lib/modules/
+find root/lib/modules -name "*.ko.zst" -print0 | while IFS= read -r -d '' mod; do zstd -d --rm "$mod"; done
+find root/lib/modules -name "*.ko.xz" -print0 | while IFS= read -r -d '' mod; do xz -d "$mod"; done
+find root/lib/modules -name "*.ko.gz" -print0 | while IFS= read -r -d '' mod; do gzip -d "$mod"; done
 depmod -b "$work/root" "$version"
 # Keep ALSA configuration and package licensing metadata.
 mkdir -p root/usr/share

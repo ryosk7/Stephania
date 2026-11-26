@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  packages: read
 concurrency:
   group: qemu-lab-${{ github.ref }}
   cancel-in-progress: true
@@ -19,7 +20,12 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: actions/cache/restore@v4
+        id: boot-cache
         with:
           path: .qemu-lab
           key: qemu-lab-${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
@@ -31,17 +37,25 @@ jobs:
           if [[ ! -s .qemu-lab/Image || ! -s .qemu-lab/root.cpio.gz ]]; then
             # Anonymous pull when public; authenticated fallback while private.
             REF="$IMAGE:$TAG"
-            docker pull "$REF" || {
-              echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-              docker pull "$REF"
-            }
-            REF="$(docker inspect --format '{{index .RepoDigests 0}}' "$REF")"
+            if ! docker pull "$REF"; then
+              ctx="$(mktemp -d)"
+              cp tests/virtual-lab/qemu-prepare.sh tests/virtual-lab/Dockerfile.qemu "$ctx/"
+              docker build --platform linux/arm64 -f "$ctx/Dockerfile.qemu" -t "$REF" "$ctx"
+              rm -rf "$ctx"
+            fi
+            digest="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$REF")"
+            REF="${digest:-$REF}"
             mkdir -p .qemu-lab
             id="$(docker create "$REF" /unused)"
             docker cp "$id:/image/." .qemu-lab/
             docker rm "$id"
           fi
           (cd .qemu-lab; sha256sum -c manifest.txt)
+      - uses: actions/cache/save@v4
+        if: steps.boot-cache.outputs.cache-hit != 'true'
+        with:
+          path: .qemu-lab
+          key: ${{ steps.boot-cache.outputs.cache-primary-key }}
       - uses: ./.github/actions/cached-build
         with:
           command: cargo build --release --locked --no-default-features --features native-capture --bin t3box-native-probe

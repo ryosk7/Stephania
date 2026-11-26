@@ -19,13 +19,13 @@ cat > "$work/root/init" <<'INIT'
 #!/bin/sh
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 set -eu
-trap 'echo LAB_FAIL; poweroff -f' EXIT
+trap 'echo LAB_FAIL; busybox dmesg | busybox tail -80; poweroff -f' EXIT
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 uname -a
-modprobe vivid n_devs=1 multiplanar=1
-modprobe snd-aloop
+/bin/kmod modprobe vivid n_devs=1 multiplanar=1
+/bin/kmod modprobe snd-aloop
 v4l2-ctl --list-devices
 v4l2-ctl -d /dev/video0 --set-fmt-video=width=320,height=240,pixelformat=YUYV --set-parm=30
 aplay -l

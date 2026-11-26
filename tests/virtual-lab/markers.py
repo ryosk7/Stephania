@@ -60,8 +60,8 @@ for f in sorted(p.glob('session-*.flv')):
             scene=next(name for lo,hi,name in scenes if lo<=n%ref_count<hi)
             scene_quality[scene].append(score)
             # fixed known text ROIs, compare to ground truth not OCR of input.
-            if n%ref_count==30 and len(text_samples)<12:
-                for lang,roi,expected in [('eng',(60,100,650,55),'fnmain0123456789'),('jpn',(60,170,650,55),'技術発表日本語の文字品質')]:
+            if n%ref_count==30 and len(text_samples)<18:
+                for lang,roi,expected in [('eng',(60,100,650,55),'fnmain0123456789'),('jpn',(50,170,155,55),'技術発表'),('jpn',(250,170,230,55),'日本語の文字品質')]:
                     x,y,w,h=roi
                     # Identical reference/decoded OCR pipeline, including scaling.
                     def ocr(img):
