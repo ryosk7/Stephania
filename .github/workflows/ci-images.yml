@@ -3,7 +3,7 @@ on:
   push:
     branches: [test/virtual-lab, main]
     paths:
-      - ci/images/**
+      - ci/images/*.Dockerfile
       - .github/workflows/ci-images.yml
   workflow_dispatch:
 permissions:

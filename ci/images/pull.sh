@@ -13,7 +13,14 @@ if ! docker image inspect "$ref" >/dev/null 2>&1; then
     ctx="$(mktemp -d)"
     trap 'rm -rf "$ctx"' EXIT
     cp "ci/images/$kind.Dockerfile" "$ctx/Dockerfile"
-    docker build --platform "linux/$arch" -t "$ref" "$ctx" >&2
+    # A concurrent publisher may finish while the consumer is starting.
+    for attempt in 1 2; do
+      if docker pull "$ref" >&2; then break; fi
+      sleep 3
+    done
+    if ! docker image inspect "$ref" >/dev/null 2>&1; then
+      docker build --platform "linux/$arch" -t "$ref" "$ctx" >&2
+    fi
   fi
 fi
 digest="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$ref")"

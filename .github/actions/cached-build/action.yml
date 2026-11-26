@@ -7,24 +7,38 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/cache@v4
+    - uses: actions/cache/restore@v4
+      id: compiler-cache
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           ~/.cache/t3box-sccache
-        key: native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-${{ github.sha }}
+        key: native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
         restore-keys: |
+          native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-${{ github.workflow }}-${{ github.job }}-
           native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-
     - shell: bash
       env:
         BUILD_COMMAND: ${{ inputs.command }}
       run: |
         set -Eeuo pipefail
+        start=$SECONDS
         ref="$(bash ci/images/pull.sh build)"
+        echo "Build image preparation: $((SECONDS-start))s" >> "$GITHUB_STEP_SUMMARY"
+        start=$SECONDS
         mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.cache/t3box-sccache" target
         docker run --rm --user "$(id -u):$(id -g)" \
           -e HOME=/tmp -e CARGO_HOME=/cargo -e RUSTC_WRAPPER=sccache -e SCCACHE_DIR=/sccache -e SCCACHE_CACHE_SIZE=1G \
           -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" \
           -v "$HOME/.cache/t3box-sccache:/sccache" \
           -v "$PWD:/work" -w /work "$ref" bash -Eeuo pipefail -c 'trap "sccache --show-stats" EXIT; eval "$1"' _ "$BUILD_COMMAND"
+        echo "Build/test command: $((SECONDS-start))s" >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/cache/save@v4
+      if: steps.compiler-cache.outputs.cache-hit != 'true'
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cache/t3box-sccache
+        key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
