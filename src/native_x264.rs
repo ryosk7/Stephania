@@ -30,6 +30,7 @@ impl Packet {
 
 extern "C" {
     fn t3x264_open(width: i32, height: i32, fps: i32, bitrate: i32, fast: i32) -> *mut c_void;
+    fn t3x264_reconfigure(handle: *mut c_void, bitrate: i32, vbv_ms: i32) -> i32;
     fn t3x264_close(handle: *mut c_void);
     fn t3x264_headers(handle: *mut c_void, out: *mut Packet) -> i32;
     fn t3x264_encode(handle: *mut c_void, data: *const u8, width: i32, height: i32,
@@ -75,6 +76,18 @@ impl X264Backend {
             return Err(io::Error::other("x264 rate control was not applied"));
         }
         Ok(Self { encoder: Some(encoder), width, height, last_input_us: None })
+    }
+
+    /// Request a rate change at the next encoder frame; never changes geometry.
+    pub fn reconfigure_rate(&mut self, bitrate_kbps: u32, vbv_ms: u32) -> io::Result<()> {
+        if !(500..=30_000).contains(&bitrate_kbps) || !(250..=2000).contains(&vbv_ms) {
+            return Err(invalid("invalid adaptive bitrate or VBV interval"));
+        }
+        let encoder = self.encoder.as_mut().ok_or_else(|| invalid("encoder was flushed"))?;
+        if unsafe { t3x264_reconfigure(encoder.0.as_ptr(), bitrate_kbps as i32, vbv_ms as i32) } != 0 {
+            return Err(io::Error::other("x264 rate reconfiguration failed"));
+        }
+        Ok(())
     }
 
     pub fn configuration(&mut self) -> io::Result<(Vec<u8>, Vec<u8>)> {
@@ -242,6 +255,23 @@ mod tests {
         for input in [&[][..], &[0,0,0,0][..], &[0,0,0,4,0x65][..]] {
             assert!(avcc_nals(input).is_err());
         }
+    }
+
+    #[test]
+    fn adaptive_rate_can_change_during_encoding() {
+        let mut enc = X264Backend::new(64,64,30,8000,true).unwrap();
+        let mut frame = I420Frame { width:64,height:64,timestamp_us:0,bytes:vec![128;64*64*3/2] };
+        let mut units = Vec::new();
+        for i in 0..12 {
+            if i == 4 { enc.reconfigure_rate(6000, 500).unwrap(); }
+            if i == 8 { enc.reconfigure_rate(4000, 500).unwrap(); }
+            frame.timestamp_us = i*33_333;
+            if let Some(unit)=enc.encode_i420(&frame).unwrap() { units.push(unit); }
+        }
+        units.extend(enc.finish().unwrap());
+        assert_eq!(units.len(),12);
+        assert!(units[0].is_keyframe);
+        assert!(units.windows(2).all(|w| w[0].pts_us < w[1].pts_us));
     }
 
     #[test]

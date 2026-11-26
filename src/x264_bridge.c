@@ -82,3 +82,14 @@ int t3x264_rate_control(void *handle, int bitrate) {
            p.rc.i_vbv_max_bitrate == bitrate &&
            p.rc.i_vbv_buffer_size == bitrate * 2;
 }
+
+/* Reconfigure only RC parameters supported by libx264. HRD is disabled
+ * by the existing preset; no SPS/geometry change is requested. */
+int t3x264_reconfigure(void *handle, int bitrate, int vbv_ms) {
+    x264_param_t p;
+    x264_encoder_parameters(handle, &p);
+    p.rc.i_bitrate = bitrate;
+    p.rc.i_vbv_max_bitrate = bitrate;
+    p.rc.i_vbv_buffer_size = bitrate * vbv_ms / 1000;
+    return x264_encoder_reconfig(handle, &p);
+}
