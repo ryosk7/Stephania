@@ -4,7 +4,21 @@ mkdir -p "${1:-ci-results}"
 out="$(realpath "${1:-ci-results}")"
 work="$(mktemp -d)"
 chmod 755 "$work"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  for name in "${expected[@]:-}"; do docker rm -f "t3box-bench-$name" >/dev/null 2>&1 || true; done
+  rm -rf "$work"
+}
+containers=()
+trap cleanup EXIT
+trap 'exit 124' TERM INT
+export LC_ALL=C
+read -ra presets <<< "${T3BOX_BENCH_PRESET:-ultrafast veryfast}"
+read -ra rates <<< "${T3BOX_BENCH_BITRATE:-6000 8000}"
+expected=()
+for preset in "${presets[@]}"; do
+  for bitrate in "${rates[@]}"; do expected+=("$preset-$bitrate"); done
+done
+printf '%s\n' "${expected[@]}" > "$out/expected-profiles.txt"
 # Generate 4 seconds of moving content and small text. Fixture preparation
 # and objective decoding are outside the measured encoder resource budget.
 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1920x1080:rate=30' \
@@ -19,14 +33,14 @@ cpus="$(nproc)"
 if (( cpus > 4 )); then cpus=4; fi
 printf "%s\n" "$cpus" > "$out/cpu-quota.txt"
 if [[ "${T3BOX_BENCH_PREBUILT:-0}" != 1 ]]; then docker build -t t3box-bench -f ci/Dockerfile.benchmark .; fi
-for preset in ${T3BOX_BENCH_PRESET:-ultrafast veryfast}; do
-  for bitrate in ${T3BOX_BENCH_BITRATE:-6000 8000}; do
-    name="$preset-$bitrate"
+run_profile() {
+    local preset="$1" bitrate="$2" name="$1-$2"
+    containers+=("t3box-bench-$name")
     docker run --name "t3box-bench-$name" --cpus="$cpus" --memory=4g --memory-swap=4g \
       --network=none --user "$(id -u):$(id -g)" -v "$work:/fixture:ro" -v "$out:/results" t3box-bench \
       /usr/bin/time -v -o "/results/$name.resource.txt" /app/t3box-ci-encode \
       /fixture/input.yuv "/results/$name.h264" 120 "$bitrate" "$preset" "/results/$name.aac" \
-      > "$out/$name.performance.json"
+      > "$out/$name.performance.json" 2>"$out/$name.encoder.log"
     docker inspect "t3box-bench-$name" > "$out/$name.container.json"
     docker rm "t3box-bench-$name" >/dev/null
     ffprobe -v error -count_frames -show_streams -of json "$out/$name.h264" > "$out/$name.video.json"
@@ -40,14 +54,30 @@ for preset in ${T3BOX_BENCH_PRESET:-ultrafast veryfast}; do
       ffmpeg -v error -y -i "$out/$name.preview-$((ts+1)).png" -frames:v 1 -vf "crop=1500:65:60:145,scale=3000:130" "$out/$name.text-$ts.png"
       tesseract "$out/$name.text-$ts.png" stdout --psm 7 2>/dev/null > "$out/$name.text-$ts.txt"
     done
-    if ffmpeg -hide_banner -filters 2>/dev/null | grep -w libvmaf >/dev/null; then
+    if [[ "${T3BOX_BENCH_VMAF:-0}" == 1 ]] && ffmpeg -hide_banner -filters 2>/dev/null | grep -w libvmaf >/dev/null; then
       ffmpeg -v error -xerror -r 30 -i "$out/$name.h264" -f rawvideo -pixel_format yuv420p -video_size 1920x1080 -framerate 30 -i "$work/ref.yuv" -lavfi "[0:v]settb=AVTB,setpts=N/30/TB[a];[1:v]settb=AVTB,setpts=N/30/TB[b];[a][b]libvmaf=log_fmt=json:log_path=$out/$name.vmaf.json" -f null -
     else
-      echo "libvmaf unavailable in runner FFmpeg" > "$out/$name.vmaf-unavailable.txt"
+      echo "VMAF not requested or unavailable in runner FFmpeg" > "$out/$name.vmaf-unavailable.txt"
     fi
+    touch "$out/$name.complete"
+}
+# Run each profile in its own strict shell. The parent collects every exit
+# code, including failures, without Bash's conditional-errexit suppression.
+export out work cpus
+export -f run_profile
+rc=0
+for preset in "${presets[@]}"; do
+  for bitrate in "${rates[@]}"; do
+    name="$preset-$bitrate"
+    if bash -Eeuo pipefail -c 'containers=(); run_profile "$@"' _ "$preset" "$bitrate"; then
+      :
+    else
+      status=$?
+      printf '%s\n' "$status" > "$out/$name.failed"
+      rc=1
+    fi
+    docker rm -f "t3box-bench-$name" >/dev/null 2>&1 || true
   done
 done
-read -ra presets <<< "${T3BOX_BENCH_PRESET:-ultrafast veryfast}"
-read -ra rates <<< "${T3BOX_BENCH_BITRATE:-6000 8000}"
-expected=$(("${#presets[@]}" * "${#rates[@]}"))
-python3 ci/report-benchmark.py "$out" "$expected"
+python3 ci/report-benchmark.py "$out" "${expected[@]}" || rc=1
+exit "$rc"

@@ -2,7 +2,6 @@
 import json
 import os
 import subprocess
-import sys
 
 def plan(paths, event):
     docs_only = bool(paths) and all(

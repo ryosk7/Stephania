@@ -29,6 +29,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Test CI measurement and selection contracts
+        run: python3 ci/test-ci-contracts.py
       - id: plan
         env:
           EVENT: ${{ github.event_name }}
@@ -101,7 +103,7 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
           T3BOX_ROOT: ${{ github.workspace }}
-        run: timeout 60 bash ci/transport-suite.sh "$SCENARIO"
+        run: timeout --kill-after=5s 60 bash ci/transport-suite.sh "$SCENARIO"
       - name: Publish transport results even on failure
         if: always()
         run: |
@@ -134,14 +136,17 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
       - run: cargo build --release --locked --features native-aac,native-x264 --bin t3box-ci-encode
       - name: Prepare constrained encoder image
-        run: docker build -t t3box-bench -f ci/Dockerfile.benchmark .
+        run: |
+          docker build -t t3box-bench -f ci/Dockerfile.benchmark .
+          docker run --rm --entrypoint ldd t3box-bench /app/t3box-ci-encode | tee /tmp/encoder-libs.txt
+          ! grep -q "not found" /tmp/encoder-libs.txt
       - name: Measure quality profiles (60s)
         env:
           T3BOX_BENCH_PRESET: ${{ matrix.preset }}
           T3BOX_BENCH_BITRATE: ${{ matrix.bitrates }}
           T3BOX_BENCH_PREBUILT: "1"
         run: |
-          timeout 60 bash ci/pi5-benchmark.sh ci-results
+          timeout --kill-after=5s 60 bash ci/pi5-benchmark.sh ci-results
       - name: Publish quality results even on failure
         if: always()
         run: |
@@ -156,6 +161,7 @@ jobs:
             ci-results/*.log
             ci-results/*.png
             ci-results/*.md
+            ci-results/*.failed
           retention-days: 3
 
   ci-gate:

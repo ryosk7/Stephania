@@ -141,3 +141,15 @@ max packet timestamp skew <=250ms and last-to-first recovery gap <=10s.
 These are initial engineering thresholds, not hardware or YouTube guarantees.
 No extra runner is required; each quality profile decodes once for PSNR/SSIM
 and four preview samples. The existing 60s suite timeout remains.
+
+## CI review safeguards
+
+Quality jobs require exact expected profile names and per-profile completion
+markers, collect partial failures, and emit evidence even when a profile
+fails. VMAF is opt-in (T3BOX_BENCH_VMAF=1) to protect the fast gate budget.
+Transport scenarios write to separate artifact directories, preserve partial
+receives, require the dynamic impairment worker to finish successfully and
+check competing load remains active. The planner runs inexpensive negative
+contract tests before dispatching costly workers. The codec image verifies
+runtime shared-library resolution before timing. No physical calibration or
+unmeasured quality claims are made.
