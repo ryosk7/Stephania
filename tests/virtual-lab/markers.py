@@ -15,6 +15,15 @@ ref_count=reference.stat().st_size//frame_bytes
 assert ref_count>0
 quality=[]
 text_samples=[]
+import numpy as np
+from collections import defaultdict
+scene_quality=defaultdict(list)
+manifest=json.loads((p/'fixture.json').read_text())
+scenes=[(0,60,'generated_text'),(60,120,'generated_motion')]
+end=120
+for source in manifest.get('sources',[]):
+    scenes.append((end,end+source['frames'],source['name']));end+=source['frames']
+assert end==ref_count
 
 for f in sorted(p.glob('session-*.flv')):
     raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(f),'-an','-vf','crop=512:16:0:0,scale=32:1:flags=area,format=gray','-fps_mode','passthrough','-f','rawvideo','-'])
@@ -47,26 +56,44 @@ for f in sorted(p.glob('session-*.flv')):
             src=np.frombuffer(ref.read(frame_bytes),dtype=np.uint8)[::2].reshape(1080,1920)[16:,:]
             dst=np.frombuffer(data,dtype=np.uint8).reshape(1080,1920)[16:,:]
             err=np.mean((src.astype(np.float32)-dst.astype(np.float32))**2)
-            quality.append(100.0 if err==0 else float(10*np.log10(255**2/err)))
+            score=100.0 if err==0 else float(10*np.log10(255**2/err))
+            quality.append(score)
+            scene=next(name for lo,hi,name in scenes if lo<=n%ref_count<hi)
+            scene_quality[scene].append(score)
             # fixed known text ROIs, compare to ground truth not OCR of input.
             if n%ref_count==30 and len(text_samples)<12:
                 for lang,roi,expected in [('eng',(60,100,650,55),'fnmain0123456789'),('jpn',(60,170,650,55),'技術発表日本語の文字品質')]:
                     x,y,w,h=roi
-                    image=dst[y-16:y-16+h,x:x+w].tobytes()
-                    pgm=f'P5\n{w} {h}\n255\n'.encode()+image
-                    actual=subprocess.check_output(['tesseract','stdin','stdout','-l',lang,'--psm','7'],input=pgm,stderr=subprocess.DEVNULL).decode()
+                    # Identical reference/decoded OCR pipeline, including scaling.
+                    def ocr(img):
+                        crop=img[y-16:y-16+h,x:x+w]
+                        enlarged=np.repeat(np.repeat(crop,3,axis=0),3,axis=1)
+                        pgm=f'P5\n{w*3} {h*3}\n255\n'.encode()+enlarged.tobytes()
+                        return subprocess.check_output(['tesseract','stdin','stdout','-l',lang,'--psm','7'],input=pgm,stderr=subprocess.DEVNULL).decode().strip()
                     import difflib
                     normal=lambda s: ''.join(c.lower() for c in s if c.isalnum())
-                    text_samples.append(dict(language=lang,sequence=n,expected=expected,actual=actual.strip(),similarity=difflib.SequenceMatcher(None,normal(expected),normal(actual),autojunk=False).ratio()))
+                    sim=lambda a,b: difflib.SequenceMatcher(None,normal(a),normal(b),autojunk=False).ratio()
+                    actual=ocr(dst); baseline=ocr(src)
+                    text_samples.append(dict(language=lang,sequence=n,expected=expected,actual=actual,reference_ocr=baseline,reference_similarity=sim(expected,baseline),similarity=sim(expected,actual),retention=sim(baseline,actual)))
+
     assert proc.wait()==0
     rows.append(dict(absolute_source_to_receive_p95_ms=p95(delays),absolute_source_to_receive_max_ms=max(delays),session=f.stem,frames=len(seq),first_sequence=seq[0],last_sequence=seq[-1],exact_missing=seq[-1]-seq[0]+1-len(seq),matched_pulses=len(offsets),av_offset_ms=[round(x*1000,2) for x in offsets]))
 (p/'markers.json').write_text(json.dumps(rows,indent=2));print(json.dumps(rows))
 assert rows and sum(x['matched_pulses'] for x in rows)>=3, 'insufficient matched pulse evidence'
 
-result=dict(luma_psnr_mean_db=statistics.mean(quality),luma_psnr_p05_db=sorted(quality)[int(.05*(len(quality)-1))],ocr=text_samples,source_clock_uncertainty_us=uncertainty)
+result=dict(luma_psnr_mean_db=statistics.mean(quality),luma_psnr_p05_db=sorted(quality)[int(.05*(len(quality)-1))],ocr=text_samples,source_clock_uncertainty_us=uncertainty,scenes={k:dict(frames=len(v),p05_db=sorted(v)[int(.05*(len(v)-1))],mean_db=statistics.mean(v)) for k,v in scene_quality.items()})
 (p/'quality.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
 print(json.dumps(result,ensure_ascii=False))
 assert quality and text_samples, 'missing quality evidence'
 # Preserve existing integrity floors; proposed tighter latency/sync targets
 # are recorded, not silently treated as validated release criteria.
 assert result['luma_psnr_p05_db']>=30
+
+# Fail an invalid reference OCR separately from compression-induced degradation.
+assert all(any(x['language']==lang for x in text_samples) for lang in ('eng','jpn'))
+assert all(x['reference_similarity']>=.90 for x in text_samples), 'OCR reference itself unreadable: measurement invalid'
+assert all(x['similarity']>=.90 and x['retention']>=.90 for x in text_samples), 'decoded OCR regression'
+assert set(scene_quality)=={x[2] for x in scenes}, 'missing scene coverage'
+assert all(v['p05_db']>=30 for v in result['scenes'].values()), 'scene quality regression'
+assert all(abs(x)<=50 for row in rows for x in row['av_offset_ms']), 'decoded A/V offset'
+assert rows[-1]['absolute_source_to_receive_p95_ms']<=250, 'final session freshness'

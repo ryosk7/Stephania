@@ -32,6 +32,15 @@ resources=[json.loads(x) for x in (p/'resources.jsonl').read_text().splitlines()
 checks['resource_samples']=len(resources)>=3
 peak=max((x['rss_kib'] for x in resources),default=0)
 checks['rss_bound']=0<peak<=256*1024
+if int(os.environ.get('LAB_SECONDS','15'))>=3600:
+    duration=resources[-1]['monotonic_s']-resources[0]['monotonic_s']
+    checks['soak_duration']=duration>=int(os.environ['LAB_SECONDS'])-5
+    first=[x['rss_kib'] for x in resources[60:360]]
+    last_rss=[x['rss_kib'] for x in resources[-300:]]
+    import statistics
+    checks['rss_growth']=bool(first and last_rss) and statistics.median(last_rss)-statistics.median(first)<=16*1024
+    checks['thread_growth']=max(x['threads'] for x in resources[-300:])<=max(x['threads'] for x in resources[60:360])+2
+    checks['soak_frame_count']=sum(x['video'] for x in rows)>=int(os.environ['LAB_SECONDS'])*29.7
 cpu=[(b['cpu_s']-a['cpu_s'])/(b['monotonic_s']-a['monotonic_s'])*100 for a,b in zip(resources,resources[1:])]
 result=dict(checks=checks,sessions=rows,latency_kind='relative growth only; markers.json has virtual source age',peak_rss_mib=peak/1024,cpu_one_core_percent_p95=sorted(cpu)[int(.95*(len(cpu)-1))] if cpu else None,resource_samples=len(resources))
 (p/'report.json').write_text(json.dumps(result,indent=2));print(json.dumps(result));sys.exit(not all(checks.values()))

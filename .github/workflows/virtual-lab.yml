@@ -4,6 +4,10 @@ on:
     branches: [test/virtual-lab]
   workflow_dispatch:
     inputs:
+      kernel:
+        description: Run dedicated kernel-device host (requires t3box-lab runner)
+        type: boolean
+        default: false
       soak:
         description: Run three-hour full controller stream
         type: boolean
@@ -52,7 +56,7 @@ jobs:
           name: controller-${{ matrix.input }}-${{ matrix.fault }}-${{ matrix.network }}
           path: evidence/
   kernel:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.kernel
     runs-on: [self-hosted, Linux, ARM64, t3box-lab]
     timeout-minutes: 20
     steps:
@@ -83,3 +87,22 @@ jobs:
             evidence/*.json
             evidence/*.jsonl
             evidence/*.log
+  real-media:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        network: [clean, venue]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/native-deps
+      - run: sudo apt-get install -y ffmpeg openssl iproute2 poppler-utils fonts-dejavu-core fonts-noto-cjk python3-numpy tesseract-ocr tesseract-ocr-eng tesseract-ocr-jpn
+      - run: cargo build --release --locked --all-features --bin t3box
+      - run: LAB_MEDIA=real LAB_SECONDS=30 LAB_NETWORK=${{ matrix.network }} bash tests/virtual-lab/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-media-${{ matrix.network }}
+          path: evidence/

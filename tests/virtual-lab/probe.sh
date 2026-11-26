@@ -4,6 +4,9 @@ mkdir -p evidence
 uname -a > evidence/kernel.txt
 lscpu > evidence/cpu.txt
 cat /proc/meminfo > evidence/memory.txt
+if ! modinfo snd-aloop >/dev/null 2>&1; then
+  sudo apt-get install -y "linux-modules-extra-$(uname -r)" > evidence/module-install.log 2>&1 || true
+fi
 for module in vivid v4l2loopback snd-aloop; do
   {
     modinfo "$module" || true

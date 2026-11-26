@@ -45,7 +45,7 @@ elif [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
   feeder=$!
 else
   export T3BOX_CI_VIRTUAL=1
-  if [[ "${LAB_MEDIA:-synthetic}" == mixed ]]; then
+  if [[ "${LAB_MEDIA:-synthetic}" != synthetic ]]; then
     python3 tests/virtual-lab/fixture.py "$work"
     export T3BOX_LAB_VIDEO="$work/mixed.yuyv" T3BOX_LAB_MARKERS=1
     cp "$work/fixture.json" "$out/"
@@ -90,5 +90,5 @@ for f in "$out"/session-*.flv; do
 done
 rc=0
 python3 tests/virtual-lab/report.py "$out" || rc=1
-if [[ "${LAB_MEDIA:-synthetic}" == mixed ]]; then python3 tests/virtual-lab/markers.py "$out" "$work/mixed.yuyv" || rc=1; fi
+if [[ "${LAB_MEDIA:-synthetic}" != synthetic ]]; then python3 tests/virtual-lab/markers.py "$out" "$work/mixed.yuyv" || rc=1; fi
 exit "$rc"
