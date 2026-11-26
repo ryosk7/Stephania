@@ -34,7 +34,7 @@ fn main() -> io::Result<()> {
         }
         let tick = Instant::now();
         input.read_exact(&mut raw)?;
-        let frame = colorspace::yuyv422_to_i420(&raw,1920,1080,3840,100000+i*1000000/30)?;
+        let frame = colorspace::yuyv422_to_i420(&raw,1920,1080,3840,1000000+i*1000000/30)?;
         if let Some(unit) = encoder.encode_i420(&frame)? {
             for nal in unit.nals { out.write_all(&[0,0,0,1])?; out.write_all(&nal)?; }
             emitted += 1;

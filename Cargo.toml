@@ -30,3 +30,13 @@ name = "t3box-ci-encode"
 path = "src/bin/t3box-ci-encode.rs"
 required-features = ["native-x264", "native-aac"]
 
+
+[[bin]]
+name = "t3box-native-video"
+path = "src/bin/t3box-native-video.rs"
+required-features = ["native-capture", "native-x264"]
+
+[[bin]]
+name = "t3box-native-probe"
+path = "src/bin/t3box-native-probe.rs"
+required-features = ["native-capture"]
