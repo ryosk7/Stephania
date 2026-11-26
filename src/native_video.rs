@@ -14,6 +14,7 @@ pub struct NativeVideoPipeline<T: Read + Write> {
     encoder: X264Backend,
     publisher: EncodedPublisher<T>,
     emitted: u64,
+    i420: I420Frame,
 }
 
 impl<T: Read + Write> NativeVideoPipeline<T> {
@@ -24,23 +25,25 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
         let mut publisher = EncodedPublisher::new(session)?;
         let (sps, pps) = encoder.configuration()?;
         publisher.avc_configuration(0, &sps, &pps)?;
-        Ok(Self { encoder, publisher, emitted: 0 })
+        Ok(Self { encoder, publisher, emitted: 0, i420: I420Frame {
+            width, height, timestamp_us: 0, bytes: Vec::new(),
+        } })
     }
 
     pub fn push_frame(&mut self, frame: &VideoFrame) -> io::Result<()> {
         let width = frame.width as usize;
         let height = frame.height as usize;
-        let i420: I420Frame = match frame.format {
-            PixelFormat::Yuyv422 => colorspace::yuyv422_to_i420(
-                &frame.bytes, width, height, frame.row_stride_bytes, frame.timestamp_us
+        match frame.format {
+            PixelFormat::Yuyv422 => colorspace::yuyv422_to_i420_into(
+                &frame.bytes, width, height, frame.row_stride_bytes, frame.timestamp_us, &mut self.i420
             )?,
-            PixelFormat::Nv12 => colorspace::nv12_to_i420(
-                &frame.bytes, width, height, frame.row_stride_bytes,
-                frame.row_stride_bytes, frame.timestamp_us
+            PixelFormat::Nv12 => colorspace::nv12_to_i420_into(
+                &frame.bytes, width, height, (frame.row_stride_bytes, frame.row_stride_bytes),
+                frame.timestamp_us, &mut self.i420
             )?,
             PixelFormat::Mjpeg => return Err(invalid("MJPEG capture decoding is not yet implemented")),
         };
-        if let Some(unit) = self.encoder.encode_i420(&i420)? {
+        if let Some(unit) = self.encoder.encode_i420(&self.i420)? {
             self.publish_unit(&unit)?;
         }
         Ok(())
