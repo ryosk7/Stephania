@@ -11,7 +11,7 @@ chmod 755 "$work"
 cpus="$(nproc)"
 if (( cpus > 4 )); then cpus=4; fi
 printf "%s\n" "$cpus" > "$out/cpu-quota.txt"
-docker build -t t3box-bench -f ci/Dockerfile.benchmark .
+bash ci/images/benchmark.sh
 docker run --name t3box-soak --cpus="$cpus" --memory=4g --memory-swap=4g --network=none \
   --user "$(id -u):$(id -g)" -e T3BOX_CI_SOAK=1 -v "$work:/fixture:ro" -v "$out:/results" t3box-bench \
   /usr/bin/time -v -o /results/resources.txt /app/t3box-ci-encode /fixture/input.yuv /dev/null 324000 6000 ultrafast /dev/null \

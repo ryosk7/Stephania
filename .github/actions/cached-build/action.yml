@@ -1,0 +1,21 @@
+name: Generic cached build environment
+description: Pull reusable public-compatible build image and compile locally
+inputs:
+  command:
+    description: Cargo command to execute
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        BUILD_COMMAND: ${{ inputs.command }}
+      run: |
+        set -Eeuo pipefail
+        ref="$(bash ci/images/pull.sh build)"
+        # Only local mounts, never docker commit or push.
+        mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" target
+        docker run --rm --user "$(id -u):$(id -g)" \
+          -e HOME=/tmp -e CARGO_HOME=/cargo \
+          -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" \
+          -v "$PWD:/work" -w /work "$ref" bash -c "$BUILD_COMMAND"

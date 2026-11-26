@@ -34,7 +34,7 @@ ffmpeg -version > "$out/ffmpeg.txt"
 cpus="$(nproc)"
 if (( cpus > 4 )); then cpus=4; fi
 printf "%s\n" "$cpus" > "$out/cpu-quota.txt"
-if [[ "${T3BOX_BENCH_PREBUILT:-0}" != 1 ]]; then docker build -t t3box-bench -f ci/Dockerfile.benchmark .; fi
+if [[ "${T3BOX_BENCH_PREBUILT:-0}" != 1 ]]; then bash ci/images/benchmark.sh; fi
 run_profile() {
     local preset="$1" bitrate="$2" name="$1-$2"
     containers+=("t3box-bench-$name")
