@@ -92,7 +92,12 @@ dump() {
   echo "---- ATT (btmon)"; sudo btmon -r "$logs/btmon.snoop" 2>/dev/null | grep -E "ATT: |Data(\[|:)" | tail -80
 }
 run_client() {
-  sudo timeout 180 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode} || { dump; exit 1; }
+  if ! sudo timeout 200 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode}; then
+    echo "---- client retry with bleak debug logging"
+    sudo btmgmt --index 1 info || true
+    sudo BLEAK_LOGGING=1 timeout 120 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode} 2>&1 | tail -80 || true
+    dump; exit 1
+  fi
 }
 
 run_client claim
