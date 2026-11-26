@@ -4,7 +4,7 @@ mkdir -p transport-results
 rc=0
 case "$1" in controller|rtmps|combined) ;; *) exit 2 ;; esac
 if [[ "$1" == controller || "$1" == combined ]]; then
-  bash ci/smoke.sh 2>&1 | tee transport-results/controller.log || rc=1
+  LAB_OUT=transport-results/controller LAB_SECONDS=8 LAB_FAULT=none LAB_NETWORK=clean bash tests/virtual-lab/run.sh 2>&1 | tee transport-results/controller.log || rc=1
 fi
 if [[ "$1" == rtmps || "$1" == combined ]]; then
   T3BOX_CI_OUT=transport-results/baseline bash ci/virtual-rtmps.sh || rc=1

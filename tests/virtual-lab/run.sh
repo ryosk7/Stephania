@@ -19,7 +19,7 @@ openssl req -newkey rsa:2048 -nodes -subj /CN=t3box-ci.test -keyout "$work/serve
 printf 'subjectAltName=DNS:t3box-ci.test\nextendedKeyUsage=serverAuth\n' > "$work/ext"
 openssl x509 -req -in "$work/server.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" -CAcreateserial -days 1 -extfile "$work/ext" -out "$work/server.pem"
 openssl x509 -in "$work/ca.pem" -outform der -out "$work/ca.der"
-printf '127.0.0.1 t3box-ci.test\n' | sudo tee -a /etc/hosts >/dev/null
+grep -q '127.0.0.1 t3box-ci.test' /etc/hosts || printf '127.0.0.1 t3box-ci.test\n' | sudo tee -a /etc/hosts >/dev/null
 python3 tests/virtual-lab/receiver.py "$work" > "$out/receiver.log" 2>&1 &
 peer=$!
 for i in $(seq 1 50); do [[ -f "$work/ready" ]] && break; sleep .1; done
@@ -36,7 +36,8 @@ elif [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
   sudo modprobe snd-aloop
   export T3BOX_VIDEO="$(v4l2-ctl --list-devices | awk '/vivid/{f=1;next} f && /\/dev\/video/{print $1;exit}')"
   test -n "$T3BOX_VIDEO"
-  sudo chmod a+rw "$T3BOX_VIDEO" /dev/snd/*
+  test -r "$T3BOX_VIDEO" && test -w "$T3BOX_VIDEO"
+  test -r /dev/snd/controlC0 || true
   v4l2-ctl -d "$T3BOX_VIDEO" --set-fmt-video=width=1920,height=1080,pixelformat=YUYV --set-parm=30
   v4l2-ctl -d "$T3BOX_VIDEO" --get-fmt-video --get-parm > "$out/video-format.txt"
   export T3BOX_AUDIO=hw:Loopback,1,0
@@ -59,6 +60,7 @@ api() { curl --fail --silent --max-time 4 "$@"; }
 for i in $(seq 1 50); do api http://127.0.0.1:8787/health > "$out/health.json" && break; sleep .1; done
 api http://127.0.0.1:8787/status > "$out/initial.json"
 test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://example.invalid' -X POST http://127.0.0.1:8787/stream/start)" = 403
+test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/unknown)" = 404
 api -X POST http://127.0.0.1:8787/stream/start > "$out/start.json"
 api -X POST http://127.0.0.1:8787/stream/start > "$out/start-repeat.json"
 for i in $(seq 1 100); do

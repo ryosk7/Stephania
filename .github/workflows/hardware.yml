@@ -1,25 +1,32 @@
-name: Physical Raspberry Pi hardware test
+name: Physical Raspberry Pi native acceptance
 on:
   workflow_dispatch:
+    inputs:
+      seconds:
+        description: Physical stream duration in seconds (120 or 10800)
+        type: choice
+        options: ["120", "10800"]
+        default: "120"
 permissions:
   contents: read
 jobs:
   pi5-hardware:
     runs-on: [self-hosted, Linux, ARM64, t3box-pi5]
-    timeout-minutes: 20
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
-      - name: Verify board and peripherals
-        run: |
+      - run: |
           grep -qi 'Raspberry Pi 5' /proc/device-tree/model
           uname -m | grep -Eq 'aarch64|arm64'
           ls -l /dev/video*
           arecord -l
-      - name: Capture physical video + audio
-        run: bash tests/hardware.sh
+      - run: cargo build --release --locked --all-features --bin t3box
+      - run: LAB_INPUT=physical LAB_SECONDS=${{ inputs.seconds }} bash tests/virtual-lab/run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: physical-capture-evidence
-          path: hardware-results/
-          retention-days: 3
+          name: physical-native-evidence
+          path: |
+            evidence/*.json
+            evidence/*.jsonl
+            evidence/*.log

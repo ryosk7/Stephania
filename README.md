@@ -4,7 +4,7 @@ Rust-based Raspberry Pi 5 LT event streaming box.
 
 ## Production architecture
 
-Native is the only RTMPS backend. The controller runs V4L2/ALSA capture, NEON I420 conversion, libx264, AAC via libavcodec, and RTMPS via rustls in-process. No FFmpeg executable is required for production. The FFmpeg executable remains only as a synthetic local-file fixture when built with the explicit ci-virtual feature, to preserve the existing CI contract. It is not a streaming fallback.
+Native is the only RTMPS backend. The controller runs V4L2/ALSA capture, NEON I420 conversion, libx264, AAC via libavcodec, and RTMPS via rustls in-process. No FFmpeg executable is required for production. FFmpeg is only an independent test stimulus/decoder; no publisher subprocess remains.
 
 ## Raspberry Pi OS Lite (64-bit)
 
@@ -32,4 +32,4 @@ The local API is loopback-only; native_worker_running is worker activity, not co
 
 ## Validation limits
 
-ARM64 CI is not physical Raspberry Pi 5 hardware. Physical HDMI/ALSA, thermal behavior, power, long-run reliability and composite communication faults still need validation. See ci/README.md. Native file recording and legacy audio filtering parity are not implemented. Existing synthetic file smoke testing uses the explicit ci-virtual feature and FFmpeg fixture only. Builds without default features provide diagnostics but cannot publish RTMPS unless native features are enabled.
+ARM64 CI is not physical Raspberry Pi 5 hardware. Physical HDMI/ALSA, thermal behavior, power, long-run reliability and composite communication faults still need validation. See ci/README.md. Native file recording and legacy audio filtering parity are not implemented. Controller CI uses native RTMPS with explicit ci-virtual input and a local test CA. Builds without default features provide diagnostics but cannot publish RTMPS unless native features are enabled.
