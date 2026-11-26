@@ -1,0 +1,43 @@
+[Unit]
+Description=T3Box BLE/Wi-Fi provisioning core
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=t3box-provision
+Group=t3box-provision
+ExecStart=/usr/local/bin/t3box-provision
+# Reference OS paths; the Buildroot target uses /data/t3box/credentials.
+Environment=T3BOX_CREDENTIALS_DIR=/var/lib/t3box/credentials
+Environment=T3BOX_PROVISION_SOCKET=/run/t3box-provision/provisioning.sock
+Environment=T3BOX_PROVISION_RUNTIME=/run/t3box-provision/secrets
+Environment=T3BOX_NETWORK_BACKEND=nm
+# The BlueZ GATT adapter (not implemented yet) runs as root via bluetoothd
+# integration or as an allowed uid listed here.
+Environment=T3BOX_IPC_ALLOWED_UIDS=
+StateDirectory=t3box/credentials
+StateDirectoryMode=0700
+RuntimeDirectory=t3box-provision
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+UMask=0077
+MemoryMax=64M
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

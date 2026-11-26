@@ -318,7 +318,7 @@ impl<N: NetworkBackend, S: OwnershipStore> GattService<N, S> {
         if operation != expected {
             return Err(GattError::Request("wrong_operation"));
         }
-        if payload_hex.len() % 2 != 0 || !payload_hex.is_ascii() {
+        if !payload_hex.len().is_multiple_of(2) || !payload_hex.is_ascii() {
             return Err(GattError::Request("invalid_request"));
         }
         let payload: Vec<u8> = (0..payload_hex.len()).step_by(2)

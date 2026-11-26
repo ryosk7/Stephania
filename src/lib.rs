@@ -18,6 +18,8 @@ pub mod ipc;
 pub mod compositor;
 pub mod provisioning;
 pub mod provisioning_gatt;
+#[cfg(unix)]
+pub mod nm;
 
 #[cfg(all(target_os = "linux", feature = "native-capture"))]
 pub mod native_capture;
