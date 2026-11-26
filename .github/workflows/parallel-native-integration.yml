@@ -1,0 +1,49 @@
+name: Parallel native integration (independent)
+on:
+  push:
+    branches: [benchmark/parallel-native-integration]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        network: [clean, venue]
+        fault: [disconnect, stall]
+        rate: [6000, 8000]
+        repeat: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/native-deps
+      - run: sudo apt-get install -y --no-install-recommends ffmpeg iproute2 openssl
+      - run: cargo build --release --locked --all-features --bin t3box-native-av
+      - name: Production native A/V integration
+        env:
+          NETWORK: ${{ matrix.network }}
+          FAULT: ${{ matrix.fault }}
+          T3BOX_CI_BITRATE: ${{ matrix.rate }}
+          T3BOX_CI_WIDTH: 1920
+          T3BOX_CI_HEIGHT: 1080
+          T3BOX_CI_FRAMES: 300
+          T3BOX_CI_OUT: evidence
+          T3BOX_PARALLEL_MEDIA: 1
+          T3BOX_ADAPTIVE_RATE: 1
+          T3BOX_DEADLINE_TRANSPORT: 1
+          T3BOX_CONTENT_AWARE: 1
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/commit.txt
+          lscpu > evidence/cpu.txt
+          if [[ "$FAULT" == stall ]]; then export T3BOX_BENCH_STALL_SECONDS=3; fi
+          bash benchmarks/parallel/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parallel-${{ matrix.network }}-${{ matrix.fault }}-${{ matrix.rate }}-${{ matrix.repeat }}
+          path: evidence/
+          retention-days: 3

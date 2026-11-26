@@ -1,0 +1,3 @@
+# Parallel native integration
+
+24 independent jobs exercise the actual native A/V binary with virtual capture, 1080p30, 6/8 Mbps, clean/venue loopback, forced peer disconnect or three-second peer read stall, three repetitions. The stall peer resumes reading rather than intentionally closing; a reconnect is required to pass. A small stream may fit kernel buffers during the pause, so this is a test of the actual configured transport policy, not a guaranteed watchdog trigger. Exactly one reconnect, complete decoding, recovered FPS, timestamp gaps, audio coverage and packet timestamp skew are checked. Existing CI is untouched. No optical lip-sync, real device, or real-media quality claims. Fault injection on loopback is not comparable with the earlier veth benchmark.
