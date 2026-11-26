@@ -103,11 +103,13 @@ async def connect(adapter, min_mtu):
     print(f"found {device.name} {device.address}", flush=True)
     client = BleakClient(device, adapter=adapter, timeout=30)
     await client.connect()
-    acquire = getattr(client._backend, "_acquire_mtu", None)
-    if acquire is not None:
-        await acquire()
-    att = 20 if min_mtu else max(20, min(client.mtu_size, 512) - 3)
-    print(f"mtu {client.mtu_size} att {att}", flush=True)
+    # bleak derives this from BlueZ's live per-characteristic "MTU" property
+    # (BlueZ >= 5.62, else 23): it is the ATT payload, MTU - 3.
+    char = client.services.get_characteristic(RPC)
+    payload = char.max_write_without_response_size if char is not None else 20
+    mtu = payload + 3
+    att = 20 if min_mtu else max(20, min(payload, 509))
+    print(f"mtu {mtu} att {att}", flush=True)
     info = json.loads(bytes(await client.read_gatt_char(INFO)))
     check(info == {"v": 2, "p": "t3box"}, f"static info read {info}")
     rpc = Rpc(client, att)
