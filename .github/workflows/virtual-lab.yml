@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y ffmpeg openssl v4l-utils alsa-utils kmod iproute2 fonts-dejavu-core fonts-noto-cjk
+      - run: sudo apt-get install -y ffmpeg openssl v4l-utils alsa-utils kmod iproute2 fonts-dejavu-core fonts-noto-cjk python3-numpy tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr
       - run: cargo build --release --locked --all-features --bin t3box
       - run: |
           if [[ "${{ matrix.input }}" == kernel ]]; then

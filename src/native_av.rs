@@ -115,7 +115,17 @@ impl VirtualCapture {
         let available = (now.saturating_sub(self.origin)) * u64::from(self.fps) / 1_000_000;
         if self.video_index > available { return Ok(None); }
         if self.video_index == 0 && env::var_os("T3BOX_LAB_MARKERS").is_some() {
-            eprintln!("lab source first_sequence={available} source_elapsed_us={}", now.saturating_sub(self.origin));
+            #[repr(C)]
+            struct Timespec { sec: std::ffi::c_long, nsec: std::ffi::c_long }
+            unsafe extern "C" { fn clock_gettime(clock: std::ffi::c_int, value: *mut Timespec) -> std::ffi::c_int; }
+            let before = timestamp_us();
+            let mut t = Timespec { sec: 0, nsec: 0 };
+            let result = unsafe { clock_gettime(1, &mut t) };
+            let after = timestamp_us();
+            if result != 0 { return Err(io::Error::last_os_error()); }
+            let epoch_ns = i128::from(t.sec)*1_000_000_000 + i128::from(t.nsec)
+                - i128::from((before+after)/2-self.origin)*1000;
+            eprintln!("lab source epoch_ns={epoch_ns} uncertainty_us={}", after-before);
         }
         self.video_index = available + 1;
         let timestamp_us = self.origin + available * 1_000_000 / u64::from(self.fps);

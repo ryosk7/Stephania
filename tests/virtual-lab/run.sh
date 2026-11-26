@@ -88,5 +88,7 @@ for f in "$out"/session-*.flv; do
   ffprobe -v error -count_frames -show_streams -of json "$f" > "${f%.flv}.probe.json"
   ffmpeg -v error -xerror -i "$f" -f null -
 done
-python3 tests/virtual-lab/report.py "$out"
-if [[ "${LAB_MEDIA:-synthetic}" == mixed ]]; then python3 tests/virtual-lab/markers.py "$out" "$work/mixed.yuyv"; fi
+rc=0
+python3 tests/virtual-lab/report.py "$out" || rc=1
+if [[ "${LAB_MEDIA:-synthetic}" == mixed ]]; then python3 tests/virtual-lab/markers.py "$out" "$work/mixed.yuyv" || rc=1; fi
+exit "$rc"

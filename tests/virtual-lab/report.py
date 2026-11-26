@@ -28,5 +28,10 @@ if rows:
         checks.update(single_session=len(rows)==1,fps=last['fps']>=29.7,missing=last['missing']<=.03,skew=last['skew_ms']<=250,video=last['video']>=210)
     else:
         checks.update(reconnect=len(rows)>1 or fault!='disconnect',recovery=all(x['recovery_s'] is None or 0<=x['recovery_s']<=10 for x in rows),gap=max(x['max_arrival_gap_s'] for x in rows)<=10,tail=last['tail_frames']>=85,delay_growth=last['relative_delay_growth_p95_ms']<=1000)
-result=dict(checks=checks,sessions=rows,latency_kind='relative growth only')
+resources=[json.loads(x) for x in (p/'resources.jsonl').read_text().splitlines()]
+checks['resource_samples']=len(resources)>=3
+peak=max((x['rss_kib'] for x in resources),default=0)
+checks['rss_bound']=0<peak<=256*1024
+cpu=[(b['cpu_s']-a['cpu_s'])/(b['monotonic_s']-a['monotonic_s'])*100 for a,b in zip(resources,resources[1:])]
+result=dict(checks=checks,sessions=rows,latency_kind='relative growth only; markers.json has virtual source age',peak_rss_mib=peak/1024,cpu_one_core_percent_p95=sorted(cpu)[int(.95*(len(cpu)-1))] if cpu else None,resource_samples=len(resources))
 (p/'report.json').write_text(json.dumps(result,indent=2));print(json.dumps(result));sys.exit(not all(checks.values()))
