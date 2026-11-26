@@ -1,69 +1,63 @@
 #!/usr/bin/env bash
-# Boot a separate ARM64 Linux kernel without touching the runner's kernel.
 set -Eeuo pipefail
-root="$(pwd)"
 mkdir -p vm-evidence
 out="$(realpath vm-evidence)"
+cache="$(realpath "${LAB_CACHE:-.qemu-lab}")"
 work="$(mktemp -d)"
-pid=
-cleanup() {
-  if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
-  rm -rf "$work"
-}
-trap cleanup EXIT
-url=https://cloud-images.ubuntu.com/noble/current
-curl -fL --retry 3 --max-time 300 "$url/noble-server-cloudimg-arm64.img" -o "$work/base.img"
-curl -fL --retry 3 --max-time 60 "$url/SHA256SUMS" -o "$work/SHA256SUMS"
-(cd "$work"; grep -E ' [*]?noble-server-cloudimg-arm64.img$' SHA256SUMS | sed 's/noble-server-cloudimg-arm64.img$/base.img/' | sha256sum -c -)
-sha256sum "$work/base.img" > "$out/image.sha256"
-qemu-img create -f qcow2 -F qcow2 -b "$work/base.img" "$work/guest.qcow2" 16G
-ssh-keygen -q -t ed25519 -N '' -f "$work/key"
-cat > "$work/user-data" <<EOF
-#cloud-config
-users:
-  - name: lab
-    groups: [sudo, audio, video]
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    ssh_authorized_keys:
-      - $(cat "$work/key.pub")
-ssh_pwauth: false
-disable_root: true
-EOF
-printf 'instance-id: t3box-lab\nlocal-hostname: t3box-lab\n' > "$work/meta-data"
-cloud-localds "$work/seed.img" "$work/user-data" "$work/meta-data"
-firmware=/usr/share/AAVMF/AAVMF_CODE.fd
-test -f "$firmware"
+trap 'rm -rf "$work"' EXIT
+(cd "$cache"; sha256sum -c manifest.txt)
+mkdir -p "$work/root/bin"
+bin=target/release/t3box-native-probe
+install -m 755 "$bin" "$work/root/bin/t3box-native-probe"
+while read -r lib; do [[ -z "$lib" ]] || cp -L --parents "$lib" "$work/root"; done < <(ldd "$bin" | awk '/=> \/|^[[:space:]]*\// {for(i=1;i<=NF;i++) if($i ~ /^\//) {print $i;break}}')
+python3 - "$work/root/tone.raw" <<'PY'
+import math,struct,sys
+period=b''.join(struct.pack('<hh',int(10000*math.sin(2*math.pi*440*i/48000)),int(10000*math.sin(2*math.pi*440*i/48000))) for i in range(48000))
+open(sys.argv[1],'wb').write(period*10)
+PY
+cat > "$work/root/init" <<'INIT'
+#!/bin/sh
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+set -eu
+trap 'echo LAB_FAIL; poweroff -f' EXIT
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+uname -a
+modprobe vivid n_devs=1 multiplanar=1
+modprobe snd-aloop
+v4l2-ctl --list-devices
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=320,height=240,pixelformat=YUYV --set-parm=30
+aplay -l
+aplay -D hw:Loopback,0,0 -t raw -f S16_LE -c 2 -r 48000 /tone.raw &
+feed=$!
+export T3BOX_VIDEO=/dev/video0 T3BOX_AUDIO=hw:Loopback,1,0 T3BOX_WIDTH=320 T3BOX_HEIGHT=240
+timeout 12 t3box-native-probe >/tmp/probe.log 2>&1 || { cat /tmp/probe.log; exit 1; }
+cat /tmp/probe.log
+kill "$feed" 2>/dev/null || true
+echo LAB_PASS
+trap - EXIT
+poweroff -f
+INIT
+chmod +x "$work/root/init"
+(cd "$work/root"; find . -print0 | cpio --null -o -H newc --quiet | gzip -1) > "$work/probe.cpio.gz"
+cat "$cache/root.cpio.gz" "$work/probe.cpio.gz" > "$work/initramfs"
 accel=tcg
 cpu=cortex-a76
-if [[ -c /dev/kvm ]] && [[ "$(uname -m)" == aarch64 ]] && [[ -r /dev/kvm && -w /dev/kvm ]]; then accel=kvm; cpu=host; fi
+if [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] && [[ "$(uname -m)" == aarch64 ]]; then accel=kvm; cpu=host; fi
 printf 'accel=%s\ncpu=%s\n' "$accel" "$cpu" | tee "$out/virtualization.txt"
-qemu-system-aarch64 -machine virt,accel="$accel" -cpu "$cpu" -smp 2 -m 4096 \
-  -bios "$firmware" -nographic -no-reboot \
-  -drive if=virtio,file="$work/guest.qcow2",format=qcow2 \
-  -drive if=virtio,file="$work/seed.img",format=raw,readonly=on \
-  -netdev user,id=net,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net-pci,netdev=net \
-  > "$out/serial.log" 2>&1 &
-pid=$!
-ssh_opts=(-i "$work/key" -o UserKnownHostsFile="$work/known_hosts" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p 2222)
-guest() { ssh "${ssh_opts[@]}" lab@127.0.0.1 "$@"; }
-ready=0
-for i in $(seq 1 180); do
-  kill -0 "$pid"
-  if guest true 2>/dev/null; then ready=1; break; fi
-  sleep 5
-done
-test "$ready" = 1
-guest 'sudo cloud-init status --wait'
-guest 'sudo apt-get update -qq && sudo apt-get install -y linux-image-generic linux-modules-extra-$(uname -r) ffmpeg openssl v4l-utils alsa-utils kmod curl python3 libx264-164 libavcodec60 libavutil58 libasound2t64' > "$out/guest-install.log" 2>&1
-guest 'uname -a; modinfo vivid; modinfo snd-aloop; sudo modprobe vivid n_devs=1 multiplanar=1; sudo modprobe snd-aloop; v4l2-ctl --list-devices; arecord -l' | tee "$out/guest-devices.txt"
-# Use the same host-built ARM64 binary on the same Ubuntu release. No Rust
-# compilation or performance claims inside TCG.
-tar -czf - tests/virtual-lab target/release/t3box | guest 'mkdir -p ~/lab; tar -xzf - -C ~/lab'
-guest 'cd ~/lab && ldd target/release/t3box' | tee "$out/guest-libs.txt"
-! grep -q 'not found' "$out/guest-libs.txt"
-rc=0
-guest 'cd ~/lab && LAB_INPUT=kernel LAB_WIDTH=640 LAB_HEIGHT=360 LAB_BITRATE=1000 LAB_SECONDS=15 bash tests/virtual-lab/run.sh' > "$out/guest-test.log" 2>&1 || rc=$?
-guest 'cd ~/lab && tar -czf - evidence' | tar -xzf - -C "$out"
-cat "$out/guest-test.log"
-exit "$rc"
+timeout --kill-after=2s 45s qemu-system-aarch64 -machine virt,accel="$accel" -cpu "$cpu" -smp 2 -m 512 -nographic -no-reboot -nic none -kernel "$cache/Image" -initrd "$work/initramfs" -append 'console=ttyAMA0 rdinit=/init panic=1 quiet' |& tee "$out/serial.log"
+grep -q '^LAB_PASS' "$out/serial.log"
+! grep -q '^LAB_FAIL' "$out/serial.log"
+python3 - "$out/serial.log" <<'PY'
+import re,sys
+s=open(sys.argv[1]).read()
+v=re.findall(r'^video seq=(\d+) time=(\d+)us 320x240 format=Yuyv422 bytes=(\d+)',s,re.M)
+a=re.findall(r'^audio time=(\d+)us rate=48000 channels=2 samples=(\d+) peak=([-\d.]+)dBFS rms=([-\d.]+)dBFS clipped=(\d+)',s,re.M)
+assert len(v)==20 and len(a)==40
+assert all(int(x[2])==320*240*2 for x in v)
+assert all(int(b[0])>int(a[0]) for a,b in zip(v,v[1:]))
+assert all(int(x[1])>0 and int(x[4])==0 for x in a)
+assert sum(float(x[3])>-40 for x in a)>=30
+print('Native V4L2/ALSA payload checks PASS (functional only)')
+PY

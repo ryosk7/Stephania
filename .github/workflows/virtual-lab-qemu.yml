@@ -5,17 +5,83 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: qemu-lab-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  IMAGE: ghcr.io/ryosk7/t3box-qemu-lab
 jobs:
-  guest:
+  image:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate package publisher
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Reuse or publish generic image
+        id: publish
+        env:
+          TAG: ${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
+        run: |
+          set -Eeuo pipefail
+          ref="$IMAGE:$TAG"
+          if ! docker pull "$ref"; then
+            # Explicit allowlist: no private source, credentials or product binary in context.
+            ctx="$(mktemp -d)"
+            cp tests/virtual-lab/qemu-prepare.sh tests/virtual-lab/Dockerfile.qemu "$ctx/"
+            docker build --platform linux/arm64 -f "$ctx/Dockerfile.qemu" -t "$ref" "$ctx"
+            docker push "$ref"
+          fi
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "$digest"
+  guest:
+    needs: image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: qemu-native-probe
       - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils openssh-client
-      - run: cargo build --release --locked --all-features --bin t3box
-      - run: bash tests/virtual-lab/qemu.sh
+      - run: sudo apt-get install -y --no-install-recommends qemu-system-arm cpio
+      - uses: actions/cache@v4
+        with:
+          path: .qemu-lab
+          key: qemu-lab-${{ needs.image.outputs.digest }}
+      - name: Restore generic boot image
+        env:
+          REF: ${{ needs.image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          if [[ ! -s .qemu-lab/Image || ! -s .qemu-lab/root.cpio.gz ]]; then
+            # Anonymous pull when public; authenticated fallback while private.
+            docker pull "$REF" || {
+              echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+              docker pull "$REF"
+            }
+            mkdir -p .qemu-lab
+            id="$(docker create "$REF" /unused)"
+            docker cp "$id:/image/." .qemu-lab/
+            docker rm "$id"
+          fi
+          (cd .qemu-lab; sha256sum -c manifest.txt)
+      - run: cargo build --release --locked --no-default-features --features native-capture --bin t3box-native-probe
+      - name: Kernel capture gate (60 seconds including overlay)
+        run: |
+          mkdir -p vm-evidence
+          /usr/bin/time -f 'elapsed_seconds=%e' -o vm-evidence/timing.txt timeout --kill-after=2s 58s bash tests/virtual-lab/qemu.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
