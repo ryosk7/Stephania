@@ -162,6 +162,9 @@ fn characteristic(c: Char, shared: &Arc<Shared>, encrypt: bool) -> Characteristi
                         eprintln!("t3box-ble: response for {uuid} dropped: client not subscribed");
                         return;
                     };
+                    if std::env::var_os("T3BOX_BLE_DEBUG").is_some() {
+                        eprintln!("t3box-ble: notify {uuid} id={message_id} att={att} {} fragment(s)", frags.len());
+                    }
                     for f in frags {
                         if n.notify(f).await.is_err() { map.remove(&uuid); return; }
                     }

@@ -22,6 +22,7 @@ sudo pkill -x bluetoothd 2>/dev/null || true
 sudo btvirt -L -l2 >"$logs/btvirt.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do [ -e /sys/class/bluetooth/hci1 ] && break; sleep 0.1; done
 test -e /sys/class/bluetooth/hci1 || { echo "virtual controllers missing"; cat "$logs/btvirt.log"; exit 1; }
+sudo btmon -w "$logs/btmon.snoop" >/dev/null 2>&1 & pids+=($!)
 sudo /usr/libexec/bluetooth/bluetoothd -n -d >"$logs/bluetoothd.log" 2>&1 & pids+=($!)
 sleep 2
 for i in 0 1; do sudo btmgmt --index "$i" power on >/dev/null; done
@@ -40,7 +41,7 @@ test ! -e "$work/t3box-setup.txt" || { echo "setup file was not consumed"; exit 
 
 enc=0; pair=()
 if [ "$encrypted" = "--encrypted" ]; then enc=1; pair=(--pair); fi
-sudo env T3BOX_PROVISION_SOCKET="$work/provisioning.sock" T3BOX_BLE_ADAPTER=hci0 T3BOX_BLE_REQUIRE_ENCRYPTION=$enc \
+sudo env T3BOX_BLE_DEBUG=1 T3BOX_PROVISION_SOCKET="$work/provisioning.sock" T3BOX_BLE_ADAPTER=hci0 T3BOX_BLE_REQUIRE_ENCRYPTION=$enc \
   "$target/t3box-ble" >"$logs/ble.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do grep -q advertising "$logs/ble.log" && break; sleep 0.2; done
 cat "$logs/ble.log"
@@ -51,5 +52,6 @@ if [ $status -ne 0 ]; then
   echo "---- t3box-ble"; cat "$logs/ble.log"
   echo "---- provision"; cat "$logs/provision.log"
   echo "---- bluetoothd (tail)"; sudo tail -80 "$logs/bluetoothd.log"
+  echo "---- ATT (btmon)"; sudo btmon -r "$logs/btmon.snoop" 2>/dev/null | grep -E "ATT: (Handle Value Notification|Write Request|Exchange MTU)|Data(\[|:)|MTU" | head -120
 fi
 exit $status

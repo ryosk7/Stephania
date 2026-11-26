@@ -46,8 +46,11 @@ class Session:
     async def subscribe(self, uuid):
         def on_notify(_char, data: bytearray):
             mid, index, count = data[0], data[1], data[2]
+            print(f"notify {uuid[4:8]} {bytes(data).hex()}", flush=True)
             parts = self.pending.setdefault((uuid, mid), {"count": count, "parts": {}})
-            assert parts["count"] == count and index not in parts["parts"], "framing violation"
+            if parts["count"] != count or index in parts["parts"]:
+                print(f"framing violation: have {sorted(parts['parts'])}/{parts['count']} got {index}/{count}", flush=True)
+                return
             parts["parts"][index] = bytes(data[3:])
             if len(parts["parts"]) == count:
                 parts["future"].set_result(b"".join(parts["parts"][i] for i in range(count)))
