@@ -36,6 +36,8 @@ impl X264Backend {
             .fps(fps, 1)
             .timebase(1, 1_000_000)
             .bitrate(bitrate_kbps as i32)
+            // Bound decoder recovery and match the controller's two-second GOP.
+            .max_keyframe_interval((fps * 2) as i32)
             .annexb(false)
             .build(Colorspace::I420, width as i32, height as i32)
             .map_err(codec_error)?;
@@ -161,6 +163,34 @@ mod tests {
         assert!(!encoded.is_empty());
         assert!(encoded.iter().any(|f| f.is_keyframe));
         assert!(encoded.iter().all(|f| !f.nals.is_empty()));
+    }
+
+    #[test]
+    fn keyframe_interval_is_bounded_to_two_seconds() {
+        for fast in [true, false] {
+            let mut enc = X264Backend::new(64, 64, 30, 800, fast).unwrap();
+            let mut frame = I420Frame {
+                width: 64,
+                height: 64,
+                timestamp_us: 0,
+                bytes: vec![128; 64 * 64 * 3 / 2],
+            };
+            let mut units = Vec::new();
+            for i in 0..125 {
+                frame.timestamp_us = i * 1_000_000 / 30;
+                if let Some(unit) = enc.encode_i420(&frame).unwrap() {
+                    units.push(unit);
+                }
+            }
+            units.extend(enc.finish().unwrap());
+            assert_eq!(units.len(), 125);
+            let keys: Vec<_> = units.iter().enumerate()
+                .filter_map(|(i, unit)| unit.is_keyframe.then_some(i))
+                .collect();
+            assert_eq!(keys.first(), Some(&0));
+            assert!(keys.windows(2).all(|pair| pair[1] - pair[0] <= 60));
+            assert!(units.len() - 1 - keys.last().unwrap() < 60);
+        }
     }
 
     #[test]
