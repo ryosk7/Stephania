@@ -76,12 +76,14 @@ def serve(s, index):
     video_arrivals = []
     video_ts = []
     video_bytes = 0
+    stalled = False
+    fault = os.environ.get("LAB_FAULT","none")
     with (out / f"session-{index}.flv").open("wb") as f:
         f.write(b"FLV\x01\x05\0\0\0\x09\0\0\0\0")
         while True:
             try:
                 kind,ts,payload = msg(s)
-            except EOFError:
+            except (EOFError, ConnectionResetError, ssl.SSLEOFError):
                 break
             assert kind in (8,9)
             assert ts >= last.get(kind,0)
@@ -102,8 +104,12 @@ def serve(s, index):
                 if 8 in last and 9 in last:
                     max_skew_ms = max(max_skew_ms, abs(last[8] - last[9]))
             f.write(bytes([kind])+len(payload).to_bytes(3,"big")+(ts&0xffffff).to_bytes(3,"big")+bytes([ts>>24])+b"\0\0\0"+payload+struct.pack(">I",11+len(payload)))
-            if sessions > 1 and index == 1 and counts["video"] >= first_limit and counts["audio"] >= 20:
-                break
+            if index == 1 and counts["video"] >= first_limit and counts["audio"] >= 20:
+                if fault == "disconnect": break
+                if fault == "stall" and not stalled:
+                    stalled = True
+                    time.sleep(3)
+    (out / f"session-{index}.arrivals.json").write_text(json.dumps(list(zip(video_ts,video_arrivals))))
     assert config == {8,9} and first_key and min(counts.values()) > 0
     counts["first_video_arrival_s"] = video_arrivals[0]
     counts["last_video_arrival_s"] = video_arrivals[-1]
@@ -119,10 +125,13 @@ with socket.socket() as listener:
     listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     listener.bind(("127.0.0.1",19443))
     listener.listen(2)
-    listener.settimeout(90)
+    listener.settimeout(1)
     (out / "ready").touch()
-    for index in range(1,sessions+1):
-        conn,_ = listener.accept()
+    index = 0
+    while not (out / "done").exists():
+        try: conn,_ = listener.accept()
+        except socket.timeout: continue
+        index += 1
         with conn:
             conn.settimeout(60)
             with ctx.wrap_socket(conn,server_side=True) as tls:

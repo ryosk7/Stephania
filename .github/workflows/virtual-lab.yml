@@ -24,21 +24,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        input: [virtual, kernel]
+        input: [virtual]
+        fault: [none, disconnect, stall]
+        network: [clean, venue]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y ffmpeg openssl v4l-utils alsa-utils kmod
+      - run: sudo apt-get install -y ffmpeg openssl v4l-utils alsa-utils kmod iproute2
       - run: cargo build --release --locked --all-features --bin t3box
       - run: |
           if [[ "${{ matrix.input }}" == kernel ]]; then
             sudo modprobe vivid n_devs=1 multiplanar=1
             sudo modprobe snd-aloop
           fi
-          LAB_INPUT=${{ matrix.input }} bash tests/virtual-lab/run.sh
+          LAB_INPUT=${{ matrix.input }} LAB_FAULT=${{ matrix.fault }} LAB_NETWORK=${{ matrix.network }} bash tests/virtual-lab/run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: controller-${{ matrix.input }}
+          name: controller-${{ matrix.input }}-${{ matrix.fault }}-${{ matrix.network }}
           path: evidence/

@@ -9,6 +9,7 @@ cleanup() {
     if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
   done
   for f in "$work"/session-*; do [[ ! -f "$f" ]] || cp "$f" "$out/"; done
+  if [[ "${LAB_NETWORK:-clean}" == venue ]]; then sudo tc qdisc del dev lo root 2>/dev/null || true; fi
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -18,7 +19,7 @@ printf 'subjectAltName=DNS:t3box-ci.test\nextendedKeyUsage=serverAuth\n' > "$wor
 openssl x509 -req -in "$work/server.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" -CAcreateserial -days 1 -extfile "$work/ext" -out "$work/server.pem"
 openssl x509 -in "$work/ca.pem" -outform der -out "$work/ca.der"
 printf '127.0.0.1 t3box-ci.test\n' | sudo tee -a /etc/hosts >/dev/null
-T3BOX_CI_SESSIONS=1 python3 tests/virtual-lab/receiver.py "$work" > "$out/receiver.log" 2>&1 &
+python3 tests/virtual-lab/receiver.py "$work" > "$out/receiver.log" 2>&1 &
 peer=$!
 for i in $(seq 1 50); do [[ -f "$work/ready" ]] && break; sleep .1; done
 test -f "$work/ready"
@@ -40,6 +41,7 @@ if [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
 else
   export T3BOX_CI_VIRTUAL=1
 fi
+if [[ "${LAB_NETWORK:-clean}" == venue ]]; then sudo tc qdisc replace dev lo root netem delay 40ms 10ms loss 0.2% rate 12mbit; fi
 target/release/t3box > "$out/controller.log" 2>&1 &
 controller=$!
 api() { curl --fail --silent --max-time 4 "$@"; }
@@ -54,7 +56,7 @@ for i in $(seq 1 100); do
   sleep .1
 done
 test -s "$work/session-1.flv"
-sleep 8
+sleep "${LAB_SECONDS:-15}"
 api http://127.0.0.1:8787/status > "$out/running.json"
 api -X POST http://127.0.0.1:8787/stream/stop > "$out/stop.json"
 api -X POST http://127.0.0.1:8787/stream/stop > "$out/stop-repeat.json"
@@ -65,9 +67,12 @@ for i in $(seq 1 60); do
 done
 for i in $(seq 1 100); do [[ -f "$work/session-1.json" ]] && break; sleep .1; done
 test -f "$work/session-1.json"
+touch "$work/done"
 wait "$peer"
 peer=
-cp "$work"/session-1.* "$out/"
-ffprobe -v error -count_frames -show_streams -of json "$out/session-1.flv" > "$out/probe.json"
-ffmpeg -v error -xerror -i "$out/session-1.flv" -f null -
+cp "$work"/session-* "$out/"
+for f in "$out"/session-*.flv; do
+  ffprobe -v error -count_frames -show_streams -of json "$f" > "${f%.flv}.probe.json"
+  ffmpeg -v error -xerror -i "$f" -f null -
+done
 python3 tests/virtual-lab/report.py "$out"
