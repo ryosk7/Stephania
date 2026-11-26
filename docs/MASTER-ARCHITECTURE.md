@@ -1,0 +1,190 @@
+# T3Box — Master Architecture, Engineering Specification, and Implementation Handover
+
+Version 1.0 | Raspberry Pi 5 ARM64 | Private development
+Repository: https://github.com/ryosk7/T3Box
+Branch: feature/studio-appliance | Draft PR: https://github.com/ryosk7/T3Box/pull/47
+Status: agreed architecture, partially implemented. This repository edition consolidates the 40-section handover from the design conversation; it is not a verbatim transcript. Requirements and qualification targets are not claims of completed features.
+
+## 1. Project mission
+A self-hosted live streaming appliance for lightning talks, technical conferences and small events. Combine consumer-appliance installation simplicity with OBS-style flexibility. Download prebuilt OS, copy to SD, boot, activate using BLE, configure Wi-Fi, capture HDMI slides and both cameras of one phone, edit scenes via browser, stream to YouTube Live. No mandatory cloud, terminal, or development tools. Prioritize broadcast quality, continuity, installation simplicity and maintainability.
+
+## 2. Mandatory engineering principles
+- Preserve existing native Rust V4L2/ALSA, NEON, x264, AAC, RTMPS, clock synchronization, reconnection and tests. No external FFmpeg publisher; FFmpeg is test-only as independent stimulus/decoder.
+- Separate control and media planes. Never send real-time frames through Ruby or JavaScript. Phone hardware encoding is for local transfer; Pi retains final encoding.
+- Exactly one phone (iPhone OR Android), never both simultaneously. Two independent camera tracks maximum. HDMI-only operation remains supported.
+- Phone failure, browser closure and management failure must not stop a healthy HDMI broadcast. Preserve quality under load; use measurements rather than assumptions.
+- Keep existing CI, QEMU, Virtual Lab and accelerated endurance tests; extend rather than replace.
+- Production requires no developer tools. Keep repository and artifacts private until explicitly authorized. No unverified main merge, fabricated metrics, or simulated features described as complete.
+
+## 3. Product components
+| Component | Stack and responsibility |
+|---|---|
+| OS | Linux / Buildroot / systemd; installation, recovery, updates |
+| Connect | Expo / React Native / TypeScript; activation, camera, control |
+| Studio | React / Vite / TypeScript; GUI and code scene editor |
+| Control | Ruby / Sinatra / Puma / Sequel / SQLite; management, auth, persistence |
+| Engine | Rust / native libraries; media processing and RTMPS |
+| Provisioning | BlueZ / GATT / NetworkManager |
+| Lab | GitHub Actions / QEMU / Virtual Lab / physical qualification |
+
+## 4. Hardware architecture
+Pi 5 with USB HDMI capture, ALSA audio, Ethernet, Wi-Fi, BLE, microSD, adequate cooling and power. Initial qualification candidate 4 GB; validate 2/8 GB where practical and derive minimum RAM. One phone, iOS first and Android later, common contracts with native implementation. Rear camera presenter, front camera audience. Maximum three primary live video inputs: HDMI plus two phone tracks. Images/text/overlays are additional scene elements, not extra cameras.
+
+## 5. Overall architecture
+```text
+Expo Connect -- BLE --> BlueZ / provisioning --> NetworkManager
+Expo Connect -- HTTPS/WSS --> Sinatra/Puma <-- HTTPS/WSS -- React Studio
+                                | SQLite / Vite static assets
+                                | bounded Unix domain socket
+                                v
+HDMI V4L2 -----------------> Rust Source Manager
+Phone front/rear -- WebRTC --> native receive/decode --> Source Manager
+Assets / text ---------------------------------------> Compositor
+Source Manager --> Compositor --> existing x264/AAC --> RTMPS --> YouTube
+ALSA --> existing clock/audio pipeline ------------------^
+Linux/systemd/cgroups/read-only root beneath all services
+```
+No media payload through Sinatra. Preserve HDMI direct fast path.
+
+## 6. Operating system
+Raspberry Pi OS Lite 64-bit reference first, dedicated Buildroot production target; retain reference-based appliance if Buildroot fails qualification. Pi-compatible Linux kernel/firmware, AArch64, glibc, systemd, udev, BlueZ, NetworkManager, Avahi/mDNS/DNS-SD, nftables, SquashFS or equivalent read-only root, ext4 persistent data, tmpfs, bounded journald, RAUC/tryboot. Use BR2_EXTERNAL, pin sources/toolchain/firmware and avoid upstream forks. No compilers, Node/npm/Vite server, Docker, Spinel compiler or Ruby headers on device. Include CRuby and production gems if qualified.
+
+## 7. Installation
+Primary: Download -> Extract -> Copy -> Insert -> Power On. Empty compatible FAT32 bootable SD layout required; unformatted/exFAT may need formatting. Alternative raw image recovery.
+Release artifacts: t3box-os-pi5.zip, t3box-os-pi5.img.xz, t3box-os-pi5.raucb, SHA256SUMS, SHA256SUMS.sig, sbom.spdx.json, LICENSES/.
+ZIP candidate: config.txt, cmdline.txt, kernel_2712.img, bcm2712-rpi-5-b.dtb, overlays/, installer.cpio.gz, signed t3box-os.bundle, manifest.json and manifest.sig; validate exact firmware.
+RAM installer verifies signature/integrity, identifies actual boot medium, checks memory/capacity and installation state, constructs partitions, writes and verifies OS, initializes persistence, records completion, reboots. Never touch unrelated USB storage. No unattended destructive partition rewrite before target identification and user expectations are resolved. Preserve recovery and test interruptions at every destructive stage. No network, monitor, keyboard or terminal required for normal setup. Provisional targets: installation <3 min, boot <10 sec.
+
+## 8. Storage and update architecture
+Conceptual boot selector 64 MiB, Boot A/B 256 MiB each, Root A/B 1 GiB each, persistent data remainder. Sizes and partition numbers provisional; prove Pi boot compatibility. Read-only root, /data/t3box/{control,configuration,credentials,assets,scenes,certificates,recovery,diagnostics}, /run/t3box/{engine.sock,provisioning.sock,runtime}. Bound logs, RAM temp files.
+RAUC verifies signed compatible bundle, writes inactive paired boot/root, verifies, tryboot trial, health checks, commit or rollback. Health checks local engine/API/config/data, not network or attached HDMI. Never update/reboot during streaming. Version persistent schema, transactional migrations, backup before incompatible migration, restore compatible snapshot on rollback, test interruption. Read-only root does not make persistent data immune to power loss.
+
+## 9. Services and resource isolation
+t3box-engine, t3box-control, t3box-provision, t3box-health, t3box-update, NetworkManager, bluetooth, avahi-daemon. Dedicated nonroot users, explicit writable paths/device permissions, NoNewPrivileges, ProtectSystem, ProtectHome, PrivateTmp, restricted capabilities and IPC. Narrow privileged broker for network/update/reset; no unrestricted Ruby root.
+Initial control cgroup experiment: CPUWeight=20, CPUQuota=50% (half one logical core), MemoryHigh=96M, MemoryMax=128M, IOWeight=20, Nice=10, Restart=on-failure, RestartSec=3. Tune with data, not arbitrary production limits. Keep engine independent of control.
+
+## 10. Existing Rust Native Engine
+Preserve native_capture, native_av, native_video, native_x264, native_aac, x264_bridge.c, aac_bridge.c, colorspace, av_clock, pcm_framer, media_core, media_output, media_worker, rate_control, reconnect, transport_deadline, tcp_telemetry, rtmp, rtmp_read, rtmps_tls, session, handshake, amf0, amf0_decode, accelerated_ci, stream, main, wifi. Inspect before refactor.
+Defaults: 1920x1080 30fps, 8000 kbps, ultrafast, controller AAC 160 kbps, /dev/video0, plughw:1,0; README example 6000 kbps. Existing parallel media, adaptive rate, deadline transport and content-aware modes remain experimental opt-in. HDMI-only capture -> conversion -> existing encoder -> existing RTMPS, bypass composition when compatible. Preserve existing tests and recovery. Do not confuse native worker activity with YouTube confirmation.
+
+## 11. Extended media pipeline
+HDMI and decoded phone tracks plus assets -> source manager -> compositor -> existing native encoder. Source manager handles registration, lifecycle, resolution, pixel format, timestamps, bounded queues, stale frames, fallback, admission control. Source IDs hdmi:0, phone:rear, phone:front, audio:main; existing draft hdmi identifier needs versioned migration. Stable output clock 33.33 ms at 30fps; never wait indefinitely for camera; select timeline frames, discard stale data, maintain monotonic timestamps. Separate raw-frame budgets from encoded queues. Extend existing clock handling for HDMI/ALSA/phone/RTP clock offsets, drift, jitter, discontinuities. Main audio HDMI/ALSA, phone mic off by default, no automatic duplicate audio; later gain/mute/meter/delay/source selection in native plane.
+
+## 12. Smartphone media
+Expo Router, Expo Modules API, Development Builds (not Expo Go). Shared TS API. iOS Swift AVFoundation AVCaptureMultiCamSession, VideoToolbox, Metal, Keychain, ProcessInfo thermal/capture pressure, native WebRTC. Android Kotlin CameraX/Camera2 concurrent combinations, MediaCodec, OpenGL ES/Vulkan, Keystore-backed storage, thermal APIs, native WebRTC. Native capture/preprocess/encode/transport and native preview; no full-frame JS bridge.
+Negotiate actual concurrent profiles, not independent maxima: codec, width, height, fps, hardware acceleration per track, supported pair combinations, single profiles, thermal/GPU capability. Initial profiles rear/front 720p30+720p30, 720p30+540p24, 540p24+540p24, single camera, controller only. H.264 baseline; HEVC experimental because Pi 5 has HEVC hardware decode but not dedicated H.264 encode/decode. Verify Linux driver, dual decode capacity and WebRTC HEVC compatibility. Avoid redundant encode in WebRTC; verify hardware encoder usage, timestamps, keyframe requests, adaptation, loss recovery, bounded buffers. Thermal/battery/charging/frame-drop/network monitoring; degrade supplementary cameras before HDMI/main audio; clearly indicate degradation. No universal dual-camera promise.
+
+## 13. Media transport
+WebRTC encrypted independent tracks, RTP/RTCP, DTLS-SRTP, congestion control, bounded jitter, keyframe requests, reconnection and authentication. One authenticated phone session containing two tracks; reject second phone unless explicitly replacing/expired. Sinatra may handle SDP signaling (REST/WSS/WHIP candidate after PoC) but never RTP/decoding. Pi Ethernet where practical, phone and browser on authorized LAN; diagnose isolation, captive portal, mDNS failures, address changes and bandwidth. Optional dedicated AP after concurrency/upstream validation. No custom crypto.
+
+## 14. Distributed processing
+Standard independent front/rear compressed tracks preserve individual layout control; Pi decodes and composes HDMI, retains final x264/AAC/RTMPS. Optional phone GPU composition to one track reduces decode load but limits editability; explicit operator awareness. Optional phone-only compatible compressed passthrough research, not primary requirement or replacement for existing Pi encoder. Validate output timing, packetization, codec/audio/keyframes. Phone preprocessing may use hardware rotation, scale, crop, HDR-to-SDR; avoid unnecessary quality loss.
+
+## 15. BLE activation
+Power on -> BLE discover -> authenticated physical-device ownership claim -> Wi-Fi scan -> credential submission -> network join -> authenticated endpoint -> setup. Local, no cloud account. BlueZ GATT, react-native-ble-plx or qualified alternative, NetworkManager D-Bus, secure storage.
+Versioned characteristics: DeviceInformation, PairingChallenge, PairingResponse, WiFiScanRequest, WiFiScanResults, WiFiConfiguration, NetworkStatus, ManagementEndpoint, DevicePublicKey, ProtocolVersion. Define UUIDs, sizes, fragmentation/pagination, timeouts and errors. BLE proximity not auth; use established authenticated key exchange/PAKE or unique setup secret/QR/physical confirmation. Unresolved initial secret delivery without monitor/keyboard: security PoC required. No shared default credential. Ownership UNCLAIMED/PAIRING/CLAIMED/RECOVERY_REQUIRED separate from network DISCONNECTED/SCANNING/CONNECTING/CONNECTED/FAILED. Recover lost phone, changed Wi-Fi and failed provisioning; factory reset strong authorization or physical confirmation. Do not reset ownership on connection failure.
+
+## 16. Sinatra management plane
+Sinatra selected, no Rails. CRuby, Puma, Rack, Sequel, SQLite, Bundler, Minitest or RSpec, Rack::Test. Advantages: DSL, flexible scene/event logic, mature ecosystem, maintainability. Conditional on non-regression. Single Puma process, bounded threads/connections; compare YJIT on/off. Own auth, settings, metadata, revisions, assets, sessions, update orchestration, REST/WSS and static Vite delivery; no media frames, decoding, mixing, composition or encoding. Spinel build-time AOT research for compatible Ruby transformations/templates/JSON; do not assume Sinatra/Rack/Puma/Sequel/SQLite compile unchanged. Tep experimental only. CRuby default until measured benefit and compatibility/security/stability. Axum comparison or fallback if Sinatra cannot pass quality gates.
+
+## 17. Rust IPC
+Final /run/t3box/engine.sock Unix socket; existing loopback HTTP transitional only. Never expose unauthenticated Rust API to LAN. Versioned structured requests e.g. {"version":1,"request_id":"req-001","method":"scene.apply","params":{"scene_id":"presentation","revision":42}} and response with matching ID, ok/result or bounded error. Define framing, size, timeout, peer permissions, queue, cancellation and idempotency. Methods engine.status/capabilities, stream.start/stop, scene.validate/apply, source.status/configure, audio.configure, metrics.snapshot. Engine validates independently; acknowledge real application at frame boundary. Keep media thread independent, preserve Program if control dies, reconcile actual state on restart.
+
+## 18. REST API
+Base /api/v1. OpenAPI authoritative and generated TS client.
+- GET /device, /capabilities, /status, /auth/me; POST/DELETE /auth/session.
+- GET /network/status, /network/wifi; POST /network/wifi/scan, /network/wifi/connect (async, recovery/confirmation for disruptive changes).
+- GET/POST /scenes; GET/PATCH/DELETE /scenes/:id; POST /scenes/:id/duplicate, /scenes/import; GET /scenes/:id/revisions, /scenes/:id/export. Existing PUT /scenes/:id must be migrated deliberately.
+- GET/POST /sources; PATCH/DELETE /sources/:id; GET/POST /assets; DELETE /assets/:id.
+- GET/PUT /preview; GET /program; POST /program/transition. Return actual applied revision only after engine acknowledgment.
+- POST /stream/start, /stream/stop; GET /stream/status, /stream/metrics. Distinguish accepted, worker active, transport connected, publishing, independently confirmed ingest.
+- POST/GET/DELETE /cameras/session; POST /cameras/session/offer, /cameras/session/candidates; GET /cameras/capabilities. One phone.
+- GET/PATCH /settings; GET /updates, /updates/status; POST /updates/check, /updates/install.
+Consistent error envelope {error:{code,message,request_id}}, auth, schema validation, size/rate/time limits, status codes. Migrate existing flat errors explicitly.
+
+## 19. Real-time events
+Authenticated WSS: stream.state_changed, stream.metrics_updated, source.connected/disconnected/degraded, scene.updated, program.changed, audio.level, camera.thermal_state, network.changed, update.progress. Validate origin, limit clients/queues, coalesce metrics, disconnect slow consumers, reconcile after reconnect. No full-resolution video via WSS; use dedicated preview path.
+
+## 20. Database
+SQLite/Sequel persistent DB, tables users, sessions, devices, projects, scenes, scene_revisions, sources, assets, stream_profiles, camera_sessions, settings, schema_migrations. Bounded transactions, busy timeout, serialize conflicting writes, durability and disk-full tests, bounded revision history; high-frequency metrics in RAM, credentials separate from export. Optimistic revision conflict rather than overwrite. Device records do not imply multi-phone support.
+
+## 21. React Studio
+React/Vite/TS, React Router, TanStack Query, Zustand, Tailwind/shadcn, React Konva and Monaco candidates. Static dist served by Sinatra; no Node runtime. Screens dashboard/studio/sources/scenes/audio/settings/network/updates/diagnostics. Desktop OBS workspace with Preview and Program, transition, scenes, sources, audio mixer and properties; tablet/mobile control.
+Features: CRUD/duplicate, drag, resize, rotate, crop, aspect lock, z-order, opacity, visibility, snap/grid/alignment, undo/redo, numeric props, images/logos/text/lower thirds, templates, import/export, cut/fade. Developer mode JSON plus safe HTML/CSS/SVG templates with event.name/speaker.name/speaker.title variables. Arbitrary HTML cannot necessarily round-trip to GUI primitives; independent overlay layer. Optional browser source isolated from cookies, secrets, files, privileged services and unrestricted network. Restricted static renderer first; Chromium not required in standard media path. Bound renderer CPU/memory/network/time.
+
+## 22. Canonical Scene Graph
+One versioned JSON model for React, Expo, Sinatra, SQLite, Rust. Expanded target: version, id, name, canvas {width:1920,height:1080,fps:30,background:"#000000"}, layers [{id:"slides",type:"video",source:"hdmi:0",x:0,y:0,width:1440,height:1080,rotation:0,opacity:1,visible:true,fit:"contain"}]; rear x1440/y0/w480/h540, front x1440/y540/w480/h540, cover. Existing draft schema is smaller; explicit migration/versioning. Validate version, unique IDs, refs, finite numbers, ranges, bounds, asset sizes, layer/render budgets with JSON Schema plus semantic cross-language tests. Immutable applied Program snapshots; validate, prepare, admit, apply atomically on frame boundary, acknowledge revision, publish event; failure retains previous Program. Draft save != live apply.
+
+## 23. Native compositor
+Deterministic CPU reference first; frame selection, normalization, scale/crop/rotate, alpha, layer blend, text/images, transitions, compatible output to existing encoder. Optimize NEON/libyuv/SIMD, cached static layers, reusable preallocated buffers, reduced copies/dirty regions. Evaluate Vulkan/wgpu/OpenGL ES only by measured end-to-end performance and reliability. Explicit BT.601/709, full/limited YUV, RGB overlays, SDR/HDR conversion, alpha and chroma handling; golden tests. Bound decoded frames, sources, layers, assets/textures, preview and transitions.
+
+## 24. Media preview
+Distinguish layout placeholder, draft render and real Program. Never label synthetic canvas as live output. Low-resolution/low-FPS WebRTC, bounded snapshots or compatible reused encoded output; avoid unnecessary full-res secondary encoders. Limit viewers; degrade preview before broadcast.
+
+## 25. Performance engineering
+Measure comparable HDMI-only baseline and expanded system: per-core CPU, RSS/PSS/available memory, frame time/FPS/drops, A/V sync, bitrate, end-to-end latency, temperature/throttling, network recovery, PSNR/SSIM/OCR. Protect continuity, main audio, HDMI, stable output, then phone quality, preview, optional rendering, API responsiveness. Throttle/reject overloaded API (429/503).
+Provisional serial frame budget at 30fps: input 3ms, decode 6, composition 5, encode 14, overhead 5.33. Throughput/latency measured separately for parallel stages.
+Sinatra tests: baseline engine alone, engine+Sinatra idle/normal/overload, optional Axum. Provisional PSS <=128MiB; ordinary API CPU <=5% of one core; p95 <=100ms; comparable media p99 regression <=5%; zero unexpected drops in normal fixture; no interruption during API crash/overload. Async long operations excluded from ordinary API latency. Compare standard scheduling vs affinity/CPUWeight/quota/IRQ/preemption; no premature RT priority. Physical tests idle, HDMI, single/dual camera, editing, preview, API load, network faults, long soak with defined cooling/ambient/power/memory.
+
+## 26. Security
+Owner (settings/Wi-Fi/keys/update/reset restricted), Operator (scene/broadcast), Camera (media only). Revocable short-lived credentials, browser HTTP-only Secure cookies/CSRF, native secure storage, no long-lived localStorage secret. HTTPS/WSS, authenticated BLE and WebRTC, restricted IPC. Example https://t3box-8f21.local/studio plus address fallback. Public CA cannot normally certify .local; local CA/enrollment or optional trusted DNS design needs PoC. Mobile pins authenticated device identity from BLE. No routine browser warning bypass; keep loopback-only until trusted LAN design. Host/origin validation, authz, rate/size/connection bounds, CSP, safe errors, redacted logs, audit, asset isolation. Never commit keys, Wi-Fi creds, tokens, device/private signing keys; no secrets in exports/diagnostics. Signed updates, restricted release permissions; verified boot/storage encryption/tamper resistance separate.
+
+## 27. Reliability
+Recover media session -> source/device -> service -> OS only as needed. Phone/front/rear disconnect: remaining HDMI/audio continue; network failure no pointless reboot; RTMPS native retry; control/browser failure preserve Program; invalid scene retain previous; overload bounded degradation; engine crash managed restart; OS hang hardware watchdog; update rollback; disk-full reject writes; power-loss recovery; last valid configuration. Separate liveness, media progress, API, network, transport and system health; meaningful watchdog feeding and restart budgets. Manual initial broadcast start; opt-in persisted automatic recovery policy.
+
+## 28. Observability
+Metrics: engine_cpu_percent, engine_rss_bytes, control_pss_bytes, system_memory_available_bytes, cpu_temperature_c, thermal_throttling, capture_fps, output_fps, capture_frames_dropped, output_frames_dropped, compositor_duration_ms, encoder_duration_ms, source_queue_depth, source_frame_age_ms, audio_video_skew_ms, rtmps_reconnect_count, phone_packet_loss, phone_jitter_ms, phone_bitrate, phone_thermal_state. Document units/semantics, distinguish packet skew from measured presentation sync. Bounded logs, redacted diagnostic export, distinguish warnings/degradation/actual ingest.
+
+## 29. Monorepo
+Keep Cargo.toml/Cargo.lock/build.rs and existing src/; extend src/{compositor,scene,sources,webrtc,ipc}. apps/mobile/{app,features,modules/t3box-camera,modules/t3box-security}; apps/studio/{src,public,package.json}; services/control/{app.rb,config.ru,Gemfile,Gemfile.lock,routes,models,services,db,test}; services/provisioning; packages/{api-client,scene-schema,shared-types,design-tokens}; contracts/{openapi.yaml,scene.schema.json,ipc.schema.json,ble-protocol.md}; os/{appliance,buildroot-external,installer,update,systemd}; retain systemd/, ci/, tests/virtual-lab, add tests/{contracts,integration,security,performance}, docs/{architecture,adr,operations,qualification}. Cargo, Bundler, one JS package manager (pnpm candidate), scripts/Makefile, commit lockfiles. Local development with mock BLE and synthetic media; no Pi required for ordinary UI work.
+
+## 30. CI/CD
+Preserve ci.yml, ci-images.yml, hardware.yml, virtual-lab.yml, virtual-lab-qemu.yml, virtual-lab-qemu-image.yml and generic GHCR caches. No private source/binary publication. Add studio/control/mobile/contracts/media-integration/os-build/os-qualification/release workflows as useful. Path-aware, parallel, cached ARM64 artifacts, sccache, explicit gate preventing accidental skips. Full OS build on relevant changes/schedule/release, not every unrelated edit.
+Levels: unit Rust/Ruby/TS/schema/IPC/BLE; application integration SQLite/API/Expo/React/auth/revisions; Virtual Lab synthetic HDMI/phone/composition/RTMPS/netem/loss/overload/quality; QEMU ARM64 boot/services/read-only/persistence/update logic; physical Pi/phone/USB/GPU/codec/thermal/power/bootloader. QEMU not physical Pi emulator. Tools cargo test/Clippy, Minitest/RSpec/Rack::Test, Vitest/Testing Library, Playwright, Jest/RN Testing Library, Maestro, tc/netem, PSNR/SSIM/OCR, audits/SBOM.
+
+## 31. Accelerated endurance
+Preserve logical three-hour tests: 324000 video, 506250 audio, 830250 combined RTMP packets, drift, deterministic fault seeds, queues, reconnect/adaptation. Extend phone clocks/staleness/disconnect, transitions/invalid scenes, API restart, revision conflicts, lifecycle/adaptive degradation. Target logical tests <=60 sec excluding compile/setup. Not evidence of real codec soak, thermals, leak absence, physical USB/Wi-Fi or power recovery.
+
+## 32. Physical qualification
+Three-hour real HDMI-only, HDMI+rear, HDMI+dual on supported phones; interruptions/recovery, API restart/editing/transitions, A/V sync, encoder stability, thermal monitoring. Cold boots, FAT32 ZIP and raw image, interrupted install/update/trial boot/migration, rollback, full disk, recovery/reset; target 100 controlled power interruptions across failure points. iOS MultiCam/hardware encoding/thermal/charging/permissions/background/interruption; Android multiple manufacturers/SoCs/concurrent camera/MediaCodec limits and lifecycle. Actual physical tests required before claims.
+
+## 33. Acceptance criteria
+Documented compatible copy-to-SD setup without monitor/keyboard; authenticated BLE and Wi-Fi setup; usable secure URL; baseline HDMI 1080p30 quality preserved; independent phone tracks on qualified devices; real Program matches validated scene; GUI and supported JSON/HTML/CSS/SVG editing; stable main audio; defined A/V synchronization target +/-40ms; no unexpected drops in normal fixture; API/camera failure no HDMI interruption; optional features degrade first; logical and >=3h physical endurance; signed A/B update, rollback, power recovery; no release-blocking security issues; licenses/SBOM/notices. Targets not current achievements.
+
+## 34. Licensing
+Existing Rust project MIT; review libx264 GPL implications, libavcodec build/linking, kernel/Buildroot, Ruby/gems, JS, WebRTC, fonts/assets, firmware redistribution. Generate SPDX and license manifests, Buildroot legal-info as starting point not complete compliance. No public distribution before approval and review.
+
+## 35. ADRs
+Record separately: 001 Linux appliance; 002 Pi OS Lite reference; 003 Buildroot target; 004 copy ZIP; 005 immutable root; 006 signed A/B; 007 Expo; 008 iOS first; 009 Android future; 010 exactly one phone; 011 independent tracks; 012 native phone encoding; 013 WebRTC; 014 H.264 baseline; 015 HEVC investigation; 016 existing native engine; 017 HDMI fast path; 018 Sinatra; 019 no Rails; 020 single Puma; 021 Sequel/SQLite; 022 experimental Spinel; 023 React/Vite SPA; 024 Unix IPC; 025 canonical scene; 026 Preview/Program; 027 restricted overlays; 028 local-first; 029 authenticated BLE; 030 isolation/media priority; 031 virtual vs physical qualification; 032 private development.
+
+## 36. Current implementation and handover
+Last verified main 0d02ff48238d956492cd452c5d5eb96d56f705ca (PR46 merged). Foundation branch head before this document e29847f28986863d9035f2adc85404699b30ade5; draft PR47. Recheck remote state before changes.
+Foundation adds 12 files / +364 lines / zero removals: docs/STUDIO-ARCHITECTURE.md; services/control/{Gemfile,config.ru,app.rb,test/control_test.rb}; apps/studio/{package.json,tsconfig.json,index.html,src/main.tsx,src/style.css}; contracts/scene.schema.json; .github/workflows/studio.yml.
+Implemented only loopback bearer API, SQLite scene drafts/validation/revision conflicts, legacy engine HTTP adapter, basic draggable React layout and JSON editing, initial tests/workflow. Program transition intentionally HTTP 501; do not remove until real compositor. No production auth/LAN TLS, BLE/Wi-Fi Expo provisioning, phone modules/WebRTC, compositor/actual Program, full scene graph, OS/installer/A/B or physical qualification.
+Last verified runs: Rust CI 45862722323 success; Studio foundation 45862722407 failure (studio job 140057622965 success; control 140057623476 failure). ControlTest#test_auth_and_engine JSON::ParserError unexpected token at '<h1>Internal Server Error</h1>' on injected engine stream-start adapter. Scene revision test passed. Root cause unconfirmed; investigate Sinatra callable settings auto-evaluation of injected lambda, enable test exceptions and assert HTTP status; regression test rather than suppress. No fix verified. Logs: https://github.com/ryosk7/T3Box/actions/runs/45862722407. Existing earlier PR46 CI/QEMU/Virtual Lab succeeded, but physical Pi and real 3-hour soak not established.
+
+## 37. Implementation roadmap
+Proceed continuously; no per-phase user approval checkpoint.
+0 Restore green foundation: diagnose HTTP 500, tests, lockfiles, safe config, security tests, architecture/ADRs, outdated docs.
+1 Contracts/management: OpenAPI/scene/IPC, conformance, Rust Unix socket, Sinatra adapter, state reconciliation, migrations, bounded requests, systemd. Verify actual control and API restart isolation.
+2 Early critical PoCs: Sinatra load, 3-input Pi composition, H.264/HEVC decoding, iPhone dual encode/WebRTC, TLS trust, BLE enrollment, FAT32 boot and A/B. Record actual evidence.
+3 Native scene engine: sources, fast path, CPU reference, scheduling/buffers, validation, atomic Program snapshots, images/text/golden tests then NEON. Real synthetic multi-source broadcast.
+4 React Studio: routes/API/auth/CRUD/drag/resize/source/props/undo/redo, Preview/Program real transition, preview/audio, Playwright.
+5 Expo/BLE: workspace/development builds/discovery/secure enrollment/network/credentials/endpoint/dashboard/browser launch/mock tests; real activation.
+6 iOS media: Swift module, single then dual native hardware encode/WebRTC/preview, thermal/profiles/interruption, one-phone enforcement, Pi receive/decode; HDMI continues on loss.
+7 Advanced Studio: transformations/templates/lower thirds/variables/JSON/restricted HTML CSS SVG/assets/import export/cut fade/resource-aware preview.
+8 OS: Pi OS Lite reference integration, read-only/persistence/watchdog, BR2_EXTERNAL packages Rust/CRuby/gems/static web/provision, bootable image, ZIP installer, signed A/B and recovery.
+9 Qualification: comparable baseline, Sinatra isolation, full media, logical/Virtual Lab/QEMU/physical 3h/power tests, security/licensing/reproducible release.
+10 Android: Kotlin single/concurrent camera, MediaCodec/WebRTC/thermal/capability profiles, same contracts, multiple device families. Android replaces iPhone, not second phone.
+
+## 38. Design review and risk register
+Critical: R01 three-input Pi throughput (early physical PoC); R02 BLE trust bootstrap (authenticated enrollment); R03 browser TLS trust (secure usability PoC); R04 installer destructive interruption (target verification/recovery); R05 overlay escape (sandbox).
+High: R06 Sinatra contention (cgroups/load); R07 HEVC decoder (fallback); R08 dual encode support (negotiation); R09 phone heat (adaptation/soak); R10 jitter/sync (bounded clocks); R11 Wi-Fi isolation (diagnosis/fallback); R12 false Program success (engine ack); R13 DB rollback compatibility (snapshots/migrations); R14 A/B boot failure (physical fault tests); R15 licensing (review); R16 virtual vs physical limitations (separate gates); R17 preview load (bounds); R24 private artifact exposure (release controls).
+Medium: R18 SQLite/storage (bounded transactions/fault tests); R19 Buildroot incompatibility (pinned toolchain); R20 Ruby dependencies (locks/audits); R21 Spinel (experimental only); R22 rendering discrepancy (golden tests); R23 Android fragmentation (capabilities).
+Conditional GO for implementation, not release. Self-review, not independent audit.
+
+## 39. Instructions for next session
+User approved architecture and wants substantive implementation in GitHub without repeated proposals or unnecessary checkpoints. Verify branch/PR; inspect code before changes; preserve native behavior, test, check CI, fix regressions, commit coherent changes and document limitations. Use virtual testable abstractions and executable physical procedures when hardware absent, never fabricate measurements. Fail closed where security unresolved; no placeholder auth/Program success. Keep coherent/testable partial state if cannot complete, report exactly what remains. Do not merge main or change visibility without authorization. Start with actual failing control CI, then continue roadmap.
+
+## 40. Final architecture
+Expo Connect (BLE, one phone, iOS Swift/Android Kotlin hardware encode) + React/Vite Studio (GUI, JSON, HTML/CSS/SVG, Preview/Program) + Sinatra/Puma/Sequel/SQLite Control (auth/API/IPC) + Rust Engine (existing V4L2/ALSA/x264/AAC/RTMPS, new WebRTC/source manager/compositor, HDMI fast path) + Linux/Buildroot OS (copy-install, immutable root, signed A/B) + Lab (CI, contracts, Virtual Lab, QEMU, accelerated and physical tests). Reliable high-quality live streaming with minimal setup complexity.
