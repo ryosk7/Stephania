@@ -5,9 +5,9 @@
 //! growth if encoders fall behind. These workers DO NOT perform decoding,
 //! colorspace conversion, resampling or any H.264/AAC compression.
 use crate::media_core::{AudioFrame, AudioSource, PixelFormat, VideoFrame, VideoSource};
-use std::io;
+use std::{collections::VecDeque, io};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::OnceLock;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -52,8 +52,40 @@ impl CaptureSettings {
     }
 }
 
+// The producer overwrites the oldest queued frame rather than keeping stale
+// video when encoding or network output falls behind.
+struct VideoQueue {
+    frames: VecDeque<VideoFrame>,
+    error: Option<io::Error>,
+    capacity: usize,
+}
+impl VideoQueue {
+    fn new(capacity: usize) -> Self {
+        Self { frames: VecDeque::with_capacity(capacity), error: None, capacity }
+    }
+    fn push(&mut self, mut frame: VideoFrame, bytes: &[u8]) {
+        if self.frames.len() == self.capacity {
+            if let Some(old) = self.frames.pop_front() {
+                frame.bytes = old.bytes;
+            }
+        }
+        frame.bytes.clear();
+        frame.bytes.extend_from_slice(bytes);
+        self.frames.push_back(frame);
+    }
+    fn pop(&mut self) -> io::Result<Option<VideoFrame>> {
+        if let Some(error) = self.error.take() { return Err(error); }
+        Ok(self.frames.pop_front())
+    }
+    fn fail(&mut self, error: io::Error) {
+        self.frames.clear();
+        self.error = Some(error);
+    }
+}
+type SharedVideoQueue = (Mutex<VideoQueue>, Condvar);
+
 pub struct V4lVideoSource {
-    rx: Receiver<io::Result<VideoFrame>>,
+    queue: Arc<SharedVideoQueue>,
 }
 pub struct AlsaAudioSource {
     rx: Receiver<io::Result<AudioFrame>>,
@@ -61,7 +93,12 @@ pub struct AlsaAudioSource {
 
 impl VideoSource for V4lVideoSource {
     fn next_frame(&mut self) -> io::Result<VideoFrame> {
-        recv(&self.rx)
+        let (lock, ready) = &*self.queue;
+        let guard = lock.lock().map_err(|_| io::Error::other("video queue poisoned"))?;
+        let (mut queue, _) = ready.wait_timeout_while(
+            guard, Duration::from_secs(5), |q| q.frames.is_empty() && q.error.is_none(),
+        ).map_err(|_| io::Error::other("video queue poisoned"))?;
+        queue.pop()?.ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "video capture stalled"))
     }
 }
 impl AudioSource for AlsaAudioSource {
@@ -94,27 +131,33 @@ fn pixel_fourcc(format: PixelFormat) -> FourCC {
 impl V4lVideoSource {
     pub fn open(settings: CaptureSettings) -> io::Result<Self> {
         settings.validate()?;
-        let (tx, rx) = mpsc::sync_channel(settings.frame_queue);
+        let queue = Arc::new((Mutex::new(VideoQueue::new(settings.frame_queue)), Condvar::new()));
+        let weak = Arc::downgrade(&queue);
         thread::Builder::new().name("t3box-v4l2".into()).spawn(move || {
             // Reopen and renegotiate when the UVC device disappears.
-            while !capture_video(&settings, &tx) {
+            while weak.strong_count() != 0 && !capture_video(&settings, &weak) {
                 thread::sleep(Duration::from_secs(2));
             }
         })?;
-        Ok(Self { rx })
+        Ok(Self { queue })
     }
 }
 
 // true means that the receiver has gone away and the worker can exit.
-fn capture_video(settings: &CaptureSettings, tx: &SyncSender<io::Result<VideoFrame>>) -> bool {
-    let result = capture_video_session(settings, tx);
-    match result {
+fn capture_video(settings: &CaptureSettings, queue: &Weak<SharedVideoQueue>) -> bool {
+    match capture_video_session(settings, queue) {
         Ok(()) => true,
-        Err(error) => matches!(tx.try_send(Err(error)), Err(TrySendError::Disconnected(_))),
+        Err(error) => {
+            let Some(shared) = queue.upgrade() else { return true; };
+            let Ok(mut state) = shared.0.lock() else { return true; };
+            state.fail(error);
+            shared.1.notify_one();
+            false
+        }
     }
 }
 
-fn capture_video_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<VideoFrame>>) -> io::Result<()> {
+fn capture_video_session(settings: &CaptureSettings, queue: &Weak<SharedVideoQueue>) -> io::Result<()> {
     let device = Device::with_path(&settings.video_path)?;
     let mut format = device.format()?;
     format.width = settings.width;
@@ -128,6 +171,9 @@ fn capture_video_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
     let mut stream = Stream::with_buffers(&device, Type::VideoCapture, 4)?;
     loop {
         let (buffer, meta) = stream.next()?;
+        let Some(shared) = queue.upgrade() else { return Ok(()); };
+        let bytes = buffer.get(..meta.bytesused as usize)
+            .ok_or_else(|| invalid("V4L2 bytesused exceeds mapped buffer"))?;
         let frame = VideoFrame {
             timestamp_us: timestamp_us(),
             sequence: u64::from(meta.sequence),
@@ -135,13 +181,11 @@ fn capture_video_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
             height: actual.height,
             row_stride_bytes: actual.stride as usize,
             format: settings.preferred_format,
-            bytes: buffer.to_vec(),
+            bytes: Vec::new(),
         };
-        // Overloaded pipelines may drop video, never wait for an encoder.
-        match tx.try_send(Ok(frame)) {
-            Ok(()) | Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(_)) => return Ok(()),
-        }
+        let mut state = shared.0.lock().map_err(|_| io::Error::other("video queue poisoned"))?;
+        state.push(frame, bytes);
+        shared.1.notify_one();
     }
 }
 
@@ -223,7 +267,7 @@ fn audio_error(error: alsa::Error) -> io::Error {
 
 impl V4lVideoSource {
     pub fn try_next_frame(&self) -> io::Result<Option<VideoFrame>> {
-        poll(&self.rx)
+        self.queue.0.lock().map_err(|_| io::Error::other("video queue poisoned"))?.pop()
     }
 }
 impl AlsaAudioSource {
@@ -242,6 +286,29 @@ fn poll<T>(rx: &Receiver<io::Result<T>>) -> io::Result<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn video_queue_replaces_oldest_and_reuses_its_storage() {
+        let mut q = VideoQueue::new(2);
+        let frame = |sequence| VideoFrame {
+            timestamp_us: sequence, sequence, width: 2, height: 2,
+            row_stride_bytes: 4, format: PixelFormat::Yuyv422, bytes: Vec::new(),
+        };
+        q.push(frame(1), &[1; 8]);
+        let ptr = q.frames[0].bytes.as_ptr();
+        q.push(frame(2), &[2; 8]);
+        q.push(frame(3), &[3; 8]);
+        assert_eq!(q.frames.len(), 2);
+        assert_eq!(q.pop().unwrap().unwrap().sequence, 2);
+        let latest = q.pop().unwrap().unwrap();
+        assert_eq!(latest.sequence, 3);
+        assert_eq!(latest.bytes, [3; 8]);
+        assert_eq!(latest.bytes.as_ptr(), ptr);
+        assert!(q.pop().unwrap().is_none());
+        q.push(frame(4), &[4; 8]);
+        q.fail(io::Error::other("device lost"));
+        assert!(q.pop().is_err());
+        assert!(q.pop().unwrap().is_none());
+    }
     #[test]
     fn default_settings_have_bounded_buffers() {
         let s=CaptureSettings::default();
