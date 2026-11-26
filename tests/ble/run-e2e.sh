@@ -13,7 +13,9 @@ target=${1:?target dir with t3box-provision and t3box-ble}
 mode=${2:-}
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
-logs=${BLE_E2E_LOGS:-$work}
+# Per-run log directory: runs must not see each other's log lines.
+logs=${BLE_E2E_LOGS:-$work}/run-$(basename "$work")
+mkdir -p "$logs"
 pids=()
 cleanup() {
   touch "$work/stop"
@@ -37,7 +39,14 @@ start_bluetoothd() {
 }
 
 sudo systemctl stop bluetooth 2>/dev/null || true
+sudo pkill -x t3box-ble 2>/dev/null || true
 sudo pkill -x bluetoothd 2>/dev/null || true
+sudo pkill -x btvirt 2>/dev/null || true
+for _ in $(seq 50); do pgrep -x 'bluetoothd|btvirt|t3box-ble' >/dev/null || break; sleep 0.1; done
+# btvirt reuses controller addresses between runs; drop BlueZ's persisted
+# remote GATT caches and keys so the client side cannot use stale handles
+# from a previous run (disposable test host only).
+sudo rm -rf /var/lib/bluetooth/*
 sudo btvirt -L -l2 >"$logs/btvirt.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do [ -e /sys/class/bluetooth/hci1 ] && break; sleep 0.1; done
 test -e /sys/class/bluetooth/hci1 || { echo "virtual controllers missing"; cat "$logs/btvirt.log"; exit 1; }
