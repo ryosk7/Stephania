@@ -1,8 +1,9 @@
 use std::env;
+use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -40,7 +41,7 @@ impl Config {
     }
 
     pub fn ffmpeg_args(&self) -> Vec<String> {
-        let mut a = vec!["-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
+        let mut a = vec!["-hide_banner", "-stdin", "-loglevel", "error", "-y"]
             .into_iter().map(str::to_string).collect::<Vec<_>>();
         if self.test_sources {
             a.extend(["-re", "-f", "lavfi", "-i", &format!("testsrc2=size={}x{}:rate={}", self.width, self.height, self.fps)].map(str::to_string));
@@ -83,6 +84,26 @@ struct NativeWorker {
     handle: thread::JoinHandle<std::io::Result<()>>,
 }
 
+// Ask FFmpeg to finish its current packet and write the muxer trailer.
+// Bound the wait below the HTTP client's stop deadline; kill only if needed.
+fn stop_child(child: &mut Child) -> Result<(), String> {
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"q\n");
+    }
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("ffmpeg stopped with {status}")),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    child.wait().map_err(|e| format!("ffmpeg reap failed: {e}"))?;
+    Err("ffmpeg did not stop gracefully; output may be incomplete".into())
+}
+
 struct State {
     #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
     native: Option<NativeWorker>,
@@ -123,8 +144,7 @@ impl Controller {
                 }
             }
             #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
-            if s.native.as_ref().is_some_and(|w| w.handle.is_finished()) {
-                if let Some(worker) = s.native.take() {
+            if let Some(worker) = s.native.take_if(|w| w.handle.is_finished()) {
                     s.last_error = match worker.handle.join() {
                         Ok(Ok(())) => String::new(),
                         Ok(Err(e)) => format!("native publisher stopped ({:?})", e.kind()),
@@ -132,7 +152,6 @@ impl Controller {
                     };
                     // A native worker handles transient retries itself.
                     s.desired = false;
-                }
             }
             if s.desired && !Self::running(&s) {
                 // Only retry configured output; avoid runaway spawning on unconfigured devices.
@@ -164,7 +183,7 @@ impl Controller {
         // Use a dedicated unprivileged account and restrict local login access.
         let child = Command::new("ffmpeg")
             .args(self.config.ffmpeg_args())
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn().map_err(|e| e.to_string())?;
@@ -231,8 +250,7 @@ impl Controller {
             worker.cancel.store(true, std::sync::atomic::Ordering::Release);
         }
         if let Some(mut child) = s.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Err(error) = stop_child(&mut child) { s.last_error = error; }
         }
     }
 
@@ -266,6 +284,16 @@ mod tests {
         assert!(a.contains(&"testsrc2=size=1280x720:rate=30".to_string()));
         assert!(a.contains(&"sine=frequency=440:sample_rate=48000".to_string()));
         assert_eq!(a.last().unwrap(), "/tmp/test.flv");
+        assert!(a.contains(&"-stdin".to_string()));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn stop_requests_graceful_exit_before_killing() {
+        let mut child = Command::new("sh")
+            .args(["-c", "read -r line; test \"$line\" = q"])
+            .stdin(Stdio::piped()).spawn().unwrap();
+        assert!(stop_child(&mut child).is_ok());
+        assert!(child.try_wait().unwrap().unwrap().success());
     }
     #[test]
     fn stop_does_not_start() {

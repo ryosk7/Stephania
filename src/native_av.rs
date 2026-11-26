@@ -14,6 +14,12 @@ fn number(key: &str, default: u32) -> io::Result<u32> {
 fn invalid(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
+// Only fixed stage names are logged; never include peer responses or URLs.
+fn stage<T>(result: io::Result<T>, name: &'static str) -> io::Result<T> {
+    result.inspect_err(|error| {
+        eprintln!("native A/V stage {name} failed ({:?})", error.kind());
+    })
+}
 fn send_audio<T: io::Read + io::Write>(pipeline: &mut NativeVideoPipeline<T>, packets: Vec<AacPacket>) -> io::Result<()> {
     for packet in packets {
         // The common 100 ms startup offset covers AAC encoder priming.
@@ -110,7 +116,7 @@ impl VirtualCapture {
 
 fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn() -> bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
-    let session = rtmps_tls::begin_publish(url)?;
+    let session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate)?;
     pipeline.configure_audio(&aac.configuration()?)?;
@@ -123,23 +129,23 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
     loop {
         if cancelled() { return Ok(()); }
         let mut progress = false;
-        if let Some(mut frame) = sources.audio()? {
+        if let Some(mut frame) = stage(sources.audio(), "audio capture")? {
             progress = true;
             if frame.timestamp_us >= origin {
                 last_audio = Instant::now();
                 frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                let corrected = clock.correct(&frame)?;
-                for block in framer.push(&corrected)? {
-                    send_audio(&mut pipeline, aac.encode(&block)?)?;
+                let corrected = stage(clock.correct(&frame), "audio clock")?;
+                for block in stage(framer.push(&corrected), "PCM framing")? {
+                    stage(send_audio(&mut pipeline, stage(aac.encode(&block), "AAC encode")?), "audio send")?;
                 }
             }
         }
-        if let Some(mut frame) = sources.video()? {
+        if let Some(mut frame) = stage(sources.video(), "video capture")? {
             progress = true;
             if frame.timestamp_us >= origin {
                 last_video = Instant::now();
                 frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                pipeline.push_frame(&frame)?;
+                stage(pipeline.push_frame(&frame), "video encode/send")?;
                 frames = frames.saturating_add(1);
                 if s.max_frames != 0 && frames >= s.max_frames { break; }
             }
@@ -149,8 +155,8 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
         }
         if !progress { thread::sleep(Duration::from_millis(2)); }
     }
-    send_audio(&mut pipeline, aac.finish()?)?;
-    let (_, count) = pipeline.finish()?;
+    stage(send_audio(&mut pipeline, stage(aac.finish(), "AAC flush")?), "audio flush send")?;
+    let (_, count) = stage(pipeline.finish(), "video flush send")?;
     eprintln!("native A/V session finished: {count} video access units");
     Ok(())
 }
