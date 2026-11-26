@@ -6,3 +6,4 @@ services/control/vendor/
 services/control/.bundle/
 apps/studio/node_modules/
 apps/studio/dist/
+packages/*/node_modules/

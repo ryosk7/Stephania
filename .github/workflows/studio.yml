@@ -1,10 +1,10 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
 concurrency:
@@ -96,3 +96,35 @@ jobs:
       - name: Unit and shared-fixture tests
         run: npm test
       - run: npm run build
+  provisioning-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: provision-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build device provisioning service (virtual network backend)
+        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/provisioning-client/package-lock.json
+      - working-directory: packages/provisioning-client
+        run: npm ci --no-audit --no-fund
+      - working-directory: packages/provisioning-client
+        run: npm run typecheck
+      - name: Vectors and TypeScript-to-Rust interop (must not skip)
+        working-directory: packages/provisioning-client
+        shell: bash
+        env:
+          T3BOX_PROVISION_BIN: ${{ github.workspace }}/target/debug/t3box-provision
+        run: |
+          npx vitest run --reporter=verbose | tee vitest.log
+          grep -q 'interop with Rust t3box-provision' vitest.log
+          if grep -qiE 'skipped|↓' vitest.log; then echo "interop test skipped" >&2; exit 1; fi

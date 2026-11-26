@@ -1,0 +1,37 @@
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {describe, expect, it} from 'vitest';
+import {claimProof, deriveOwnerKey, fragment, fromHex, operationProof, toHex, validateWifi, MAX_FRAGMENTS} from './index';
+
+type Vector = Record<string, string>;
+const vectors: Vector[] = JSON.parse(readFileSync(join(__dirname, '../../../contracts/fixtures/ble/hmac-vectors.json'), 'utf8')).vectors;
+
+describe('contracts/fixtures/ble/hmac-vectors.json', () => {
+  it.each(vectors.map(v => [v.owner_id, v] as [string, Vector]))('%s', (_: string, v: Vector) => {
+    const secret = fromHex(v.setup_secret), nonce = fromHex(v.nonce);
+    expect(toHex(claimProof(secret, nonce, v.owner_id))).toBe(v.claim_proof);
+    const key = deriveOwnerKey(secret, nonce, v.owner_id);
+    expect(toHex(key)).toBe(v.owner_key);
+    expect(toHex(operationProof(key, fromHex(v.operation_nonce), v.operation, fromHex(v.payload_hex)))).toBe(v.operation_proof);
+  });
+});
+
+describe('framing', () => {
+  it('matches device bounds', () => {
+    const msg = new Uint8Array(4096).map((_, i) => i);
+    expect(() => fragment(1, msg, 20)).toThrow('too_large');
+    const f = fragment(1, msg, 67);
+    expect(f.length).toBe(MAX_FRAGMENTS);
+    expect(f.every(x => x.length <= 67)).toBe(true);
+    expect(Array.from(f[5].subarray(0, 3))).toEqual([1, 5, 64]);
+    expect(() => fragment(1, new Uint8Array(1), 19)).toThrow('payload_too_small');
+    expect(() => fragment(1, new Uint8Array(0), 100)).toThrow('too_large');
+  });
+  it('validates wifi like the device', () => {
+    expect(() => validateWifi({ssid: '', security: 'open'})).toThrow('invalid_ssid');
+    expect(() => validateWifi({ssid: 'a'.repeat(33), security: 'open'})).toThrow('invalid_ssid');
+    expect(() => validateWifi({ssid: 'LT', security: 'wpa-psk', psk: 'short'})).toThrow('invalid_psk');
+    expect(() => validateWifi({ssid: 'LT', security: 'wpa-psk', psk: 'tab\tpassword'})).toThrow('invalid_psk');
+    expect(() => validateWifi({ssid: 'LT 会場', security: 'wpa-psk', psk: 'password'})).not.toThrow();
+  });
+});

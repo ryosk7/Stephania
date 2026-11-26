@@ -1,0 +1,19 @@
+{
+  "name": "@t3box/provisioning-client",
+  "private": true,
+  "type": "module",
+  "description": "Phone-side T3Box BLE provisioning protocol (contracts/ble-protocol.md). Transport-agnostic; used by the Expo app.",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.7",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.7"
+  }
+}
