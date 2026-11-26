@@ -6,6 +6,9 @@
 | `t3box-control.service` | `/etc/systemd/system/t3box-control.service` — management plane, code in `/opt/t3box/control` |
 | `t3box-provision.service` | `/etc/systemd/system/t3box-provision.service` — provisioning core on `/run/t3box-provision/provisioning.sock` |
 | `t3box-provision.polkit.rules` | `/etc/polkit-1/rules.d/50-t3box-provision.rules` |
+| `t3box-ble.service` | `/etc/systemd/system/t3box-ble.service` — BlueZ GATT adapter; `BindsTo=bluetooth.service`, `Restart=always` |
+| `t3box-ble.dbus.conf` | `/etc/dbus-1/system.d/t3box-ble.conf` |
+| `../os/bluez/main.conf` | `/etc/bluetooth/main.conf` (LE-only, static address, MTU 517) |
 | `t3box.sysusers.conf` | `/usr/lib/sysusers.d/t3box.conf` |
 
 ```bash

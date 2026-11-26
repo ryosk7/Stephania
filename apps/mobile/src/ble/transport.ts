@@ -1,13 +1,15 @@
-// BleTransport over react-native-ble-plx (contracts/ble-protocol.md).
-// Writes are fragmented to the negotiated ATT payload; the response to a
-// complete write arrives as notifications on the same characteristic under
-// the request's message id, which this transport reassembles.
-import {ProvisioningError, Reassembler, UUID, type BleTransport} from '@t3box/provisioning-client';
+// BleTransport over react-native-ble-plx, protocol v2 (contracts/ble-protocol.md).
+// - One long-lived indication subscription on the RPC characteristic,
+//   established before any write; indications are routed by message id, so
+//   stale responses from an earlier attempt are ignored.
+// - Requests are written as fragments with response (ATT acknowledged).
+// - reconnect() re-establishes the link and subscription; the session then
+//   resends the identical request, which the device replays.
+import {fragment, ProvisioningError, Reassembler, UUID, type BleTransport} from '@t3box/provisioning-client';
 import {fromBase64, toBase64} from './base64';
 
 /** The subset of BleManager this transport needs (keeps it unit-testable). */
 export interface BleLike {
-  readCharacteristicForDevice(deviceId: string, service: string, characteristic: string): Promise<{value: string | null}>;
   writeCharacteristicWithResponseForDevice(deviceId: string, service: string, characteristic: string, base64: string): Promise<unknown>;
   monitorCharacteristicForDevice(
     deviceId: string, service: string, characteristic: string,
@@ -15,72 +17,83 @@ export interface BleLike {
   ): {remove(): void};
 }
 
-const WRITE_TIMEOUT_MS: Record<string, number> = {
-  // NetworkManager may wait up to 30 s to join.
-  [UUID.wifiConfiguration]: 45_000,
-  [UUID.wifiScanRequest]: 20_000,
-};
+type Pending = {reassembler: Reassembler; resolve: (b: Uint8Array) => void; reject: (e: Error) => void};
 
 export class BlePlxTransport implements BleTransport {
-  constructor(private readonly ble: BleLike, private readonly deviceId: string, readonly attPayload: number) {
+  private subscription?: {remove(): void};
+  private pending = new Map<number, Pending>();
+
+  constructor(
+    private readonly ble: BleLike,
+    private readonly deviceId: string,
+    readonly attPayload: number,
+    private readonly reconnectLink?: () => Promise<void>,
+  ) {
     if (attPayload < 20) throw new ProvisioningError('mtu_too_small');
   }
 
-  async read(uuid: string): Promise<Uint8Array> {
-    try {
-      const c = await this.ble.readCharacteristicForDevice(this.deviceId, UUID.service, uuid);
-      return fromBase64(c.value ?? '');
-    } catch {
-      throw new ProvisioningError('ble_read_failed');
-    }
-  }
-
-  /**
-   * Called by ProvisioningSession once per fragment. The session sends all
-   * fragments of one message with the same id; we subscribe on the first
-   * fragment and resolve with the reassembled response after the last.
-   */
-  private pending?: {id: number; response: Promise<Uint8Array>; cancel(): void};
-
-  async write(uuid: string, frag: Uint8Array): Promise<Uint8Array | null> {
-    const [id, index, count] = frag;
-    if (index === 0) {
-      this.pending?.cancel();
-      this.pending = this.subscribe(uuid, id);
-    }
-    const pending = this.pending;
-    if (!pending || pending.id !== id) throw new ProvisioningError('out_of_order_write');
-    try {
-      await this.ble.writeCharacteristicWithResponseForDevice(this.deviceId, UUID.service, uuid, toBase64(frag));
-    } catch {
-      pending.cancel();
-      throw new ProvisioningError('ble_write_failed');
-    }
-    if (index + 1 < count) return null;
-    try {
-      return await pending.response;
-    } finally {
-      pending.cancel();
-      if (this.pending === pending) this.pending = undefined;
-    }
-  }
-
-  private subscribe(uuid: string, id: number) {
-    const r = new Reassembler(id);
-    let settle!: {resolve: (b: Uint8Array) => void; reject: (e: Error) => void};
-    const response = new Promise<Uint8Array>((resolve, reject) => { settle = {resolve, reject}; });
-    response.catch(() => undefined); // avoid unhandled rejection if never awaited
-    const sub = this.ble.monitorCharacteristicForDevice(this.deviceId, UUID.service, uuid, (error, c) => {
-      if (error) return settle.reject(new ProvisioningError('ble_notify_failed'));
+  private subscribe() {
+    if (this.subscription) return;
+    this.subscription = this.ble.monitorCharacteristicForDevice(this.deviceId, UUID.service, UUID.rpc, (error, c) => {
+      if (error) {
+        // Link dropped or subscription lost: fail everything in flight.
+        for (const p of this.pending.values()) p.reject(new ProvisioningError('disconnected'));
+        this.pending.clear();
+        this.subscription = undefined;
+        return;
+      }
       if (!c?.value) return;
+      const frag = fromBase64(c.value);
+      const p = this.pending.get(frag[0]);
+      if (!p) return; // stale response from an abandoned attempt
       try {
-        const done = r.push(fromBase64(c.value));
-        if (done) settle.resolve(done);
-      } catch (e) {
-        settle.reject(new ProvisioningError(e instanceof Error ? e.message : 'malformed'));
+        const done = p.reassembler.push(frag);
+        if (done) { this.pending.delete(frag[0]); p.resolve(done); }
+      } catch {
+        // Identical duplicates are ignored by the reassembler; anything
+        // reaching here is a real inconsistency.
+        this.pending.delete(frag[0]);
+        p.reject(new ProvisioningError('malformed_response'));
       }
     });
-    const timer = setTimeout(() => settle.reject(new ProvisioningError('response_timeout')), WRITE_TIMEOUT_MS[uuid] ?? 15_000);
-    return {id, response, cancel: () => { clearTimeout(timer); sub.remove(); }};
+  }
+
+  async request(messageId: number, message: Uint8Array, timeoutMs: number): Promise<Uint8Array> {
+    this.subscribe();
+    this.pending.get(messageId)?.reject(new ProvisioningError('superseded'));
+    const response = new Promise<Uint8Array>((resolve, reject) => {
+      this.pending.set(messageId, {reassembler: new Reassembler(messageId), resolve, reject});
+    });
+    const timer = setTimeout(() => {
+      const p = this.pending.get(messageId);
+      if (p) { this.pending.delete(messageId); p.reject(new ProvisioningError('response_timeout')); }
+    }, timeoutMs);
+    try {
+      for (const f of fragment(messageId, message, this.attPayload)) {
+        try {
+          await this.ble.writeCharacteristicWithResponseForDevice(this.deviceId, UUID.service, UUID.rpc, toBase64(f));
+        } catch {
+          this.pending.delete(messageId);
+          throw new ProvisioningError('ble_write_failed');
+        }
+      }
+      return await response;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async reconnect(): Promise<void> {
+    this.subscription?.remove();
+    this.subscription = undefined;
+    await this.reconnectLink?.();
+    this.subscribe();
+  }
+
+  close() {
+    this.subscription?.remove();
+    this.subscription = undefined;
+    for (const p of this.pending.values()) p.reject(new ProvisioningError('closed'));
+    this.pending.clear();
   }
 }

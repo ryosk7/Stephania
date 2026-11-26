@@ -27,9 +27,11 @@ export function describeError(e: unknown): string {
   const messages: Record<string, string> = {
     bad_proof: 'QRコードがこのT3Boxのものではありません。SDに入れた t3box-setup.txt と同じQRか確認してください。',
     already_claimed: 'このT3Boxはすでに所有者が登録されています。',
-    not_claimable: 'このT3Boxは登録を受け付けていません（要復旧状態の可能性があります）。',
     locked_out: '失敗が続いたため一時的にロックされています。5分後に再試行してください。',
-    pairing_expired: '登録の有効時間が切れました。もう一度お試しください。',
+    challenge_expired: '登録の有効時間が切れました。もう一度お試しください。',
+    not_claimable: 'このT3Boxはすでに所有者が登録されているか、登録を受け付けていません。',
+    disconnected: 'T3Boxとの接続が切れました。近づいてもう一度お試しください。',
+    bad_seal: '暗号化されたデータを検証できませんでした。アプリを再起動してください。',
     not_owner: 'このスマホはこのT3Boxの所有者として登録されていません。',
     join_failed: 'Wi-Fiに接続できませんでした。SSIDとパスワードを確認してください。',
     response_timeout: 'T3Boxからの応答がありません。近づいてもう一度お試しください。',

@@ -16,13 +16,14 @@ Environment=T3BOX_NETWORK_BACKEND=nm
 # First-boot setup file copied next to the OS (see tools/setup-page).
 Environment=T3BOX_SETUP_FILE=/boot/firmware/t3box-setup.txt
 ReadWritePaths=-/boot/firmware
-# The BlueZ GATT adapter (not implemented yet) runs as root via bluetoothd
-# integration or as an allowed uid listed here.
-Environment=T3BOX_IPC_ALLOWED_UIDS=
+# Only the BLE adapter (t3box-ble, uid 854 in t3box.sysusers.conf) may use
+# the socket besides root.
+Environment=T3BOX_IPC_ALLOWED_UIDS=854
 StateDirectory=t3box/credentials
 StateDirectoryMode=0700
 RuntimeDirectory=t3box-provision
-RuntimeDirectoryMode=0700
+# 0750 + group t3box-provision lets t3box-ble reach the 0660 socket.
+RuntimeDirectoryMode=0750
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

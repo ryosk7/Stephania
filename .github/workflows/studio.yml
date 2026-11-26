@@ -66,7 +66,7 @@ jobs:
       - name: Validate systemd units
         run: |
           for u in systemd/*.service; do
-            out=$(systemd-analyze verify "$PWD/$u" 2>&1 | grep -v 'is not executable' || true)
+            out=$(systemd-analyze verify "$PWD/$u" 2>&1 | grep -vE 'is not executable|bluetooth\.service' || true)
             if [ -n "$out" ]; then echo "$out"; exit 1; fi
           done
       - name: Integration test must not be skipped

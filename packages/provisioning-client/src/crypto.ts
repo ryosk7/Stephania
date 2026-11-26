@@ -1,5 +1,7 @@
-// HMAC constructions from contracts/ble-protocol.md. Pure JS (@noble/hashes)
-// so it runs in React Native without native crypto modules.
+// HMAC and sealing constructions from contracts/ble-protocol.md. Pure JS
+// (@noble/hashes, @noble/ciphers) so it runs in React Native without native
+// crypto modules.
+import {chacha20poly1305} from '@noble/ciphers/chacha';
 import {hmac} from '@noble/hashes/hmac';
 import {sha256} from '@noble/hashes/sha256';
 
@@ -43,4 +45,13 @@ export function parseSetupUri(text: string): Uint8Array | null {
   const secret = fromHex(m[1]);
   if (secret.every(b => b === 0)) return null;
   return toHex(sha256(secret).subarray(0, 4)) === m[2] ? secret : null;
+}
+
+/**
+ * Application-layer confidentiality (protocol v2): ChaCha20-Poly1305 with
+ * key = MAC(owner_key, "t3box-seal-v1"), nonce = first 12 bytes of the
+ * single-use operation nonce, AAD = operation name.
+ */
+export function seal(ownerKey: Uint8Array, opNonce: Uint8Array, operation: string, plaintext: Uint8Array): Uint8Array {
+  return chacha20poly1305(mac(ownerKey, ['t3box-seal-v1']), opNonce.subarray(0, 12), new TextEncoder().encode(operation)).encrypt(plaintext);
 }

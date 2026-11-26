@@ -134,7 +134,9 @@ fn network_name(state: NetworkState) -> &'static str {
     }
 }
 
-/// Error code carried in a `{"error": code}` response.
+/// Error code carried in a `{"error": code}` response. The `error` key is
+/// reserved for request failures; status fields use other names
+/// (`last_error`, `scan_error`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RpcError(pub &'static str);
 
@@ -305,7 +307,7 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             "network.status" => {
                 exact(&req, &["op"])?;
                 Ok((match self.network_error {
-                    Some(error) => json!({"state": network_name(self.network_state), "error": error}),
+                    Some(error) => json!({"state": network_name(self.network_state), "last_error": error}),
                     None => json!({"state": network_name(self.network_state)}),
                 }, false))
             }
@@ -335,7 +337,7 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
                 let networks: Vec<Value> = list.iter().map(|n| json!({"ssid": n.ssid, "rssi": n.rssi, "security": n.security})).collect();
                 json!({"networks": networks})
             }
-            Err(_) => json!({"networks": [], "error": "scan_failed"}),
+            Err(_) => json!({"networks": [], "scan_error": "scan_failed"}),
         }
     }
 
@@ -504,7 +506,7 @@ mod tests {
         let key = p.claim(&mut s, now);
         assert_eq!(p.configure(&mut s, &key, br#"{"ssid":"LT","security":"wpa-psk","psk":"hunter22"}"#, now), json!({"state":"FAILED"}));
         let status = p.send(&mut s, json!({"op":"network.status"}), now);
-        assert_eq!(status, json!({"state":"FAILED","error":"join_failed"}));
+        assert_eq!(status, json!({"state":"FAILED","last_error":"join_failed"}));
         assert!(!status.to_string().contains("hunter22"));
         assert!(matches!(s.ownership(), Ownership::Claimed { .. }));
     }
