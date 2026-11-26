@@ -16,6 +16,7 @@ pub mod media_core;
 pub mod scene;
 pub mod ipc;
 pub mod compositor;
+pub mod provisioning;
 
 #[cfg(all(target_os = "linux", feature = "native-capture"))]
 pub mod native_capture;
