@@ -121,7 +121,13 @@ impl VirtualCapture {
 
 fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn() -> bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
-    let session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
+    let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
+    // Opt-in until the independent network benchmark validates the budget.
+    let watchdog = if env::var("T3BOX_DEADLINE_TRANSPORT").as_deref() == Ok("1") {
+        let guard = crate::transport_deadline::DeadlineWatchdog::start(session.tcp_monitor()?)?;
+        session.set_media_deadline(guard.handle(), Duration::from_millis(500));
+        Some(guard)
+    } else { None };
     let telemetry = session.tcp_monitor().ok();
     let mut next_sample = Instant::now();
     let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
@@ -138,6 +144,9 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
     let mut last_audio = Instant::now();
     loop {
         if cancelled() { return Ok(()); }
+        if watchdog.as_ref().is_some_and(|guard| guard.handle().expired()) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "native transport deadline expired"));
+        }
         if Instant::now() >= next_sample {
             next_sample = Instant::now() + Duration::from_secs(1);
             if let Some(socket) = &telemetry {

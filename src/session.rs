@@ -18,11 +18,18 @@ pub struct PublishSession<T> {
     incoming: ChunkReader,
     state: State,
     media_buffer: Vec<u8>,
+    deadline: Option<(crate::transport_deadline::DeadlineHandle, std::time::Duration)>,
+    failed: bool,
 }
 
 impl<T: Read + Write> PublishSession<T> {
     pub fn new(transport: T) -> Self {
-        Self { transport, incoming: ChunkReader::new(), state: State::New, media_buffer: Vec::new() }
+        Self { transport, incoming: ChunkReader::new(), state: State::New, media_buffer: Vec::new(), deadline: None, failed: false }
+    }
+
+    /// Attach a per-message transport deadline after publish negotiation.
+    pub fn set_media_deadline(&mut self, handle: crate::transport_deadline::DeadlineHandle, budget: std::time::Duration) {
+        self.deadline = Some((handle, budget));
     }
 
     pub fn state(&self) -> State { self.state }
@@ -35,6 +42,7 @@ impl<T: Read + Write> PublishSession<T> {
     /// Only permitted after the server confirms NetStream.Publish.Start.
     /// This does not include the FLV file header or PreviousTagSize.
     pub fn send_media(&mut self, type_id: u8, timestamp_ms: u32, payload: &[u8]) -> io::Result<()> {
+        if self.failed { return Err(io::Error::new(io::ErrorKind::BrokenPipe, "RTMP session failed")); }
         let State::Publishing(stream_id) = self.state else {
             return Err(invalid("media output requires confirmed RTMP publication"));
         };
@@ -52,8 +60,11 @@ impl<T: Read + Write> PublishSession<T> {
         self.media_buffer.clear();
         let mut writer = RtmpChunkWriter::new(&mut self.media_buffer, 128)?;
         writer.message(chunk_stream_id, type_id, stream_id, timestamp_ms, payload)?;
-        self.transport.write_all(&self.media_buffer)?;
-        self.transport.flush()
+        if let Some((handle, budget)) = &self.deadline { handle.arm(*budget)?; }
+        let result = self.transport.write_all(&self.media_buffer).and_then(|()| self.transport.flush());
+        let completion = self.deadline.as_ref().map_or(Ok(()), |(handle,_)| handle.complete());
+        if result.is_err() || completion.is_err() { self.failed = true; }
+        result.and(completion)
     }
 
     #[cfg(test)]

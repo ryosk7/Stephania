@@ -32,6 +32,7 @@ pub mod aac_adts;
 pub mod av_clock;
 pub mod reconnect;
 pub mod rate_control;
+pub mod transport_deadline;
 
 #[cfg(feature = "native-aac")]
 pub mod native_aac;
