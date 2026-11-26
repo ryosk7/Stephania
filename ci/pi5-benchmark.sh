@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 mkdir -p "${1:-ci-results}"
+# Refuse stale evidence instead of accepting old completion markers.
+if [[ -n "$(ls -A "${1:-ci-results}")" ]]; then echo "Output directory must be empty" >&2; exit 2; fi
 out="$(realpath "${1:-ci-results}")"
 work="$(mktemp -d)"
 chmod 755 "$work"
@@ -44,11 +46,12 @@ run_profile() {
     docker inspect "t3box-bench-$name" > "$out/$name.container.json"
     docker rm "t3box-bench-$name" >/dev/null
     ffprobe -v error -count_frames -show_streams -of json "$out/$name.h264" > "$out/$name.video.json"
-    ffprobe -v error -show_streams -of json "$out/$name.aac" > "$out/$name.audio.json"
+    ffprobe -v error -count_frames -show_streams -of json "$out/$name.aac" > "$out/$name.audio.json"
     ffmpeg -v error -xerror -i "$out/$name.aac" -f null -
+    ffmpeg -v error -xerror -i "$out/$name.aac" -f s16le -acodec pcm_s16le -y "$out/$name.decoded.pcm"
     # Decode once for both full-reference metrics and all preview/OCR samples.
     ffmpeg -v info -xerror -r 30 -i "$out/$name.h264" -f rawvideo -pixel_format yuv420p -video_size 1920x1080 -framerate 30 -i "$work/ref.yuv" \
-      -filter_complex '[0:v]settb=AVTB,setpts=N/30/TB,split=3[a][c][p];[1:v]settb=AVTB,setpts=N/30/TB,split=2[b][d];[a][b]psnr[ps];[c][d]ssim[ss];[p]select=not(mod(n\,30)),setpts=N/30/TB[preview]' \
+      -filter_complex '[0:v]settb=AVTB,setpts=N/30/TB,split=3[a][c][p];[1:v]settb=AVTB,setpts=N/30/TB,split=2[b][d];[a][b]psnr=stats_file='"$out/$name.psnr-frames.txt"'[ps];[c][d]ssim=stats_file='"$out/$name.ssim-frames.txt"'[ss];[p]select=not(mod(n\,30)),setpts=N/30/TB[preview]' \
       -map '[ps]' -map '[ss]' -f null - -map '[preview]' -fps_mode passthrough -threads 1 -y "$out/$name.preview-%d.png" 2>"$out/$name.metrics.log"
     for ts in 0 1 2 3; do
       ffmpeg -v error -y -i "$out/$name.preview-$((ts+1)).png" -frames:v 1 -vf "crop=1500:65:60:145,scale=3000:130" "$out/$name.text-$ts.png"

@@ -13,6 +13,7 @@ cleanup() {
   curl --max-time 2 -s -X POST http://127.0.0.1:8787/stream/stop >/dev/null || true
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+  if [[ -f "$work/capture.flv" ]]; then cp "$work/capture.flv" "$out/capture.flv"; fi
   rm -rf "$work"
 }
 trap cleanup EXIT

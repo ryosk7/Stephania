@@ -5,12 +5,16 @@ import pathlib
 import re
 import sys
 import math
+import array
 
 root = pathlib.Path(sys.argv[1])
 expected_profiles = sys.argv[2:] or (root / "expected-profiles.txt").read_text().splitlines()
 rows = []
 results = []
 failures = []
+allowed = {"ultrafast-6000", "ultrafast-8000", "veryfast-6000", "veryfast-8000"}
+if not expected_profiles or len(set(expected_profiles)) != len(expected_profiles) or not set(expected_profiles) <= allowed:
+    raise SystemExit("invalid expected profile manifest")
 for name in expected_profiles:
     perf = root / f"{name}.performance.json"
     try:
@@ -20,6 +24,13 @@ for name in expected_profiles:
         v = json.loads((root / f"{name}.video.json").read_text())["streams"][0]
         a = json.loads((root / f"{name}.audio.json").read_text())["streams"][0]
         log = (root / f"{name}.metrics.log").read_text()
+        psnr_frames = (root / f"{name}.psnr-frames.txt").read_text().splitlines()
+        ssim_frames = (root / f"{name}.ssim-frames.txt").read_text().splitlines()
+        pcm = array.array("h")
+        pcm.frombytes((root / f"{name}.decoded.pcm").read_bytes())
+        if sys.byteorder != "little": pcm.byteswap()
+        rms = math.sqrt(sum(x*x for x in pcm)/max(1,len(pcm)))
+        audio_seconds = len(pcm)/96000
         psnr = float(re.findall(r"average:([\d.]+|inf)", log)[-1])
         ssim = float(re.findall(r"All:([\d.]+)", log)[-1])
         resource = (root / f"{name}.resource.txt").read_text()
@@ -38,7 +49,10 @@ for name in expected_profiles:
             raise ValueError("non-finite metrics")
         checks = {
             "video_format": v["codec_name"] == "h264" and (v["width"], v["height"]) == (1920,1080),
-            "frame_count": int(v["nb_read_frames"]) == p["frames"] == 120,
+            "frame_count": int(v["nb_read_frames"]) == p["frames"] == len(psnr_frames) == len(ssim_frames) == 120,
+            "audio_duration": 3.90 <= audio_seconds <= 4.10 and 180 <= int(a["nb_read_frames"]) <= 195,
+            "audio_signal": 1000 <= rms <= 15000 and max(map(abs,pcm),default=0) < 32767,
+            "valid_measurement": p["fps"] > 0 and p["p95_ms"] >= 0 and rss > 0 and mbps > 0 and 0 <= ssim <= 1,
             "audio_format": a["codec_name"] == "aac" and int(a["sample_rate"]) == 48000 and a["channels"] == 2,
             "psnr": psnr >= 30,
             "ssim": ssim >= 0.90,
@@ -52,7 +66,7 @@ for name in expected_profiles:
         failures.extend(f"{name}: {k}" for k in bad)
         result = dict(profile=name, fps=p["fps"], p95_ms=p["p95_ms"], peak_rss_mib=rss/1024,
                       cpu_percent=cpu, video_mbps=mbps, psnr_db=psnr if math.isfinite(psnr) else None,
-                      ssim=ssim, ocr_similarity=ocr, vmaf=vmaf, checks=checks, required_checks=sorted(required), passed=not bad)
+                      ssim=ssim, ocr_similarity=ocr, vmaf=vmaf, audio_seconds=audio_seconds, audio_rms=rms, checks=checks, required_checks=sorted(required), passed=not bad)
         results.append(result)
         rows.append(f"| {name} | {p['fps']:.1f} | {p['p95_ms']:.1f} | {cpu}% | {rss/1024:.1f} | {mbps:.2f} | {psnr:.2f} | {ssim:.4f} | {ocr:.1%} | {vmaf if vmaf is not None else 'N/A'} | {'PASS' if not bad else 'FAIL'} |")
     except (ValueError, KeyError, IndexError, TypeError, OSError, AttributeError) as e:

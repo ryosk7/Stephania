@@ -167,3 +167,17 @@ geometry, audio and decoded frame counts; it still tests the FFmpeg
 compatibility route only. Uncovered: real device hotplug, native capture
 on Pi, NetworkManager success paths, systemd deployment, YouTube ingest,
 async RTMP controls, hardware-clock calibration and long-run leak proof.
+
+## Verification assurance revision
+
+All executable changes now run all four codec profiles and both transport
+groups. Only documentation-only PRs may skip expensive jobs. Unknown
+changes run full coverage. The aggregate gate includes explicitly requested
+soak results. Workflow expressions are checked using pinned actionlint;
+Python and shell syntax and negative measurement contracts run in the
+planner. Quality evidence requires 120 PSNR and SSIM frame records, decoded
+audio duration and non-silent unclipped signal, positive finite performance
+metrics, and a unique expected profile manifest. Transport additionally
+checks audio packet coverage and maximum video timestamp gap. Reports remain
+provisional; neither hardware acceptance nor full production equivalence
+is claimed. Real-device smoke is separate, manual and not a YouTube test.

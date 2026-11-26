@@ -28,7 +28,7 @@ python3 - "$out" "$rc" <<'PY'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1]); assert int(sys.argv[2])==0
 x=json.loads((p/'performance.json').read_text()); state=json.loads((p/'container.json').read_text())[0]['State']
-assert x['frames']==324000 and x['audio_packets']>=506250
+assert x['frames']==324000 and 506250<=x['audio_packets']<=506252
 assert 10790<=x['seconds']<=10815 and not state['OOMKilled'] and state['ExitCode']==0
 assert len((p/'stats.csv').read_text().splitlines())>=300
 print('Paced codec soak passed; not transport or leak proof')

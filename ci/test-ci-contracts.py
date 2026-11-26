@@ -18,8 +18,11 @@ class Contracts(unittest.TestCase):
         put("complete", "")
         put("performance.json", json.dumps(dict(frames=120, fps=fps, p95_ms=20)))
         put("video.json", json.dumps(dict(streams=[dict(codec_name="h264",width=1920,height=1080,nb_read_frames="120")])))
-        put("audio.json", json.dumps(dict(streams=[dict(codec_name="aac",sample_rate="48000",channels=2)])))
+        put("audio.json", json.dumps(dict(streams=[dict(codec_name="aac",sample_rate="48000",channels=2,nb_read_frames="188")])))
         put("metrics.log", "average:40.0 All:0.99")
+        put("psnr-frames.txt", "n:1\n"*120)
+        put("ssim-frames.txt", "n:1\n"*120)
+        (root/f"{name}.decoded.pcm").write_bytes(b"\x00\x10"*384000)
         put("resource.txt", "Maximum resident set size (kbytes): 10000\nPercent of CPU this job got: 100%")
         put("h264","data")
         for i in range(4):
@@ -48,6 +51,17 @@ class Contracts(unittest.TestCase):
             for line in p.read_text().splitlines():
                 if line.strip().startswith(("- run: ", "run: ")):
                     self.assertFalse(line.rstrip().endswith(":"), f"{p}: {line}")
+
+    def test_missing_audio_and_metric_frames(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=pathlib.Path(d)
+            self.fixture(root)
+            (root/"ultrafast-6000.decoded.pcm").write_bytes(b"\0"*768000)
+            self.assertNotEqual(self.run_report(root,"ultrafast-6000").returncode,0)
+            self.fixture(root)
+            (root/"ultrafast-6000.psnr-frames.txt").write_text("n:1\n")
+            self.assertNotEqual(self.run_report(root,"ultrafast-6000").returncode,0)
+            self.assertNotEqual(self.run_report(root,"ultrafast-6000","ultrafast-6000").returncode,0)
 
     def test_shell_syntax(self):
         for p in list(CI.glob("*.sh"))+list((CI.parent/"tests").glob("*.sh")):
