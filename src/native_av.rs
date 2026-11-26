@@ -211,7 +211,7 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
                 // Keep draining capture queues during backoff; never replay stale media.
                 let until = Instant::now() + delay;
                 while !cancelled() && Instant::now() < until {
-                    let _ = sources.video();
+                    let _ = sources.video(video_max_age(s.fps));
                     let _ = sources.audio();
                     thread::sleep(Duration::from_millis(5));
                 }
