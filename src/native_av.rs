@@ -4,7 +4,7 @@ use crate::{
     av_clock::AudioClock, media_core::PixelFormat,
     native_aac::{AacBackend, AacPacket},
     native_capture::{timestamp_us, AlsaAudioSource, CaptureSettings, V4lVideoSource},
-    native_video::NativeVideoPipeline, pcm_framer::PcmFramer, reconnect, rtmps_tls,
+    native_video::{NativeVideoPipeline, NativeVideoEncoder, NativeMediaSink}, pcm_framer::PcmFramer, reconnect, rtmps_tls,
 };
 
 // Limit raw video age to three frame periods (100 ms at 30 fps).
@@ -214,6 +214,111 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     Ok(())
 }
 
+fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool) -> io::Result<()> {
+    let mut aac = AacBackend::new(s.audio_bitrate)?;
+    let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
+    // Opt-in until the independent network benchmark validates the budget.
+    let watchdog = {
+        let guard = crate::transport_deadline::DeadlineWatchdog::start_with_queue_budget(
+            session.tcp_monitor()?, crate::transport_deadline::QueueBudget {
+                max_not_sent_bytes: (rate.current() * 150 / 8).max(32_768),
+                max_sustained: Duration::from_millis(500),
+            })?;
+        session.set_media_deadline(guard.handle(), Duration::from_millis(500));
+        Some(guard)
+    };
+    let telemetry = session.tcp_monitor().ok();
+    let mut next_sample = Instant::now();
+    let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
+    let content_aware = adaptive && env::var("T3BOX_CONTENT_AWARE").as_deref() == Ok("1");
+    let mut network_rate = if adaptive { rate.current() } else { s.video_bitrate };
+    let mut applied_rate = network_rate;
+    let mut encoder = NativeVideoEncoder::new(s.capture.width as usize,
+        s.capture.height as usize, s.fps, network_rate)?;
+    if adaptive { encoder.reconfigure_rate(network_rate, 500)?; }
+    if content_aware { encoder.enable_content_analysis(); }
+    let (sps,pps) = encoder.configuration()?;
+    let socket = session.tcp_monitor()?;
+    let mut sink = NativeMediaSink::new(session,&sps,&pps)?;
+    sink.configure_audio(&aac.configuration()?)?;
+    let writer = crate::media_worker::MediaWorker::start(sink,socket)?;
+    let origin = timestamp_us();
+    let mut clock = AudioClock::default();
+    let mut framer = PcmFramer::new(48000, 2)?;
+    let mut frames = 0u32;
+    let mut last_video = Instant::now();
+    let mut last_audio = Instant::now();
+    loop {
+        if cancelled() { return Ok(()); }
+        writer.check()?;
+        if watchdog.as_ref().is_some_and(|guard| guard.handle().expired()) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "native transport deadline expired"));
+        }
+        if Instant::now() >= next_sample {
+            next_sample = Instant::now() + Duration::from_secs(1);
+            if let Some(socket) = &telemetry {
+                if let Ok(sample) = crate::tcp_telemetry::TcpSample::read(socket) {
+                    eprintln!("native TCP rtt_us={} rttvar_us={} retrans_total={} unacked_segments={} send_queue_bytes={} not_sent_bytes={}",
+                        sample.rtt_us, sample.rtt_variance_us, sample.retransmitted_segments,
+                        sample.unacked_segments, sample.send_queue_bytes, sample.not_sent_bytes);
+                    if adaptive {
+                        if let Some(kbps) = rate.observe(crate::rate_control::Observation {
+                            not_sent_bytes: sample.not_sent_bytes, rtt_us: sample.rtt_us,
+                            retrans_total: sample.retransmitted_segments,
+                        }) {
+                            network_rate = kbps;
+                        }
+                        let class = encoder.content_class();
+                        let desired = if content_aware {
+                            crate::content_analysis::content_rate(network_rate, class)
+                        } else { network_rate };
+                        if desired != applied_rate {
+                            stage(encoder.reconfigure_rate(desired, 500), "adaptive rate")?;
+                            applied_rate = desired;
+                            eprintln!("native adaptive video bitrate_kbps={desired} network_budget_kbps={network_rate} content={class:?}");
+                        }
+                    }
+                } else { rate.missing_sample(); }
+            }
+        }
+        let mut progress = false;
+        if let Some(mut frame) = stage(sources.audio(), "audio capture")? {
+            progress = true;
+            if frame.timestamp_us >= origin {
+                last_audio = Instant::now();
+                let captured = Instant::now().checked_sub(Duration::from_micros(timestamp_us().saturating_sub(frame.timestamp_us))).unwrap_or_else(Instant::now);
+                frame.timestamp_us = frame.timestamp_us - origin + 100_000;
+                let corrected = stage(clock.correct(&frame), "audio clock")?;
+                for block in stage(framer.push(&corrected), "PCM framing")? {
+                    stage(writer.audio(stage(aac.encode(&block), "AAC encode")?, captured), "audio enqueue")?;
+                }
+            }
+        }
+        if let Some(mut frame) = stage(sources.video(video_max_age(s.fps)), "video capture")? {
+            progress = true;
+            if frame.timestamp_us >= origin {
+                last_video = Instant::now();
+                let captured = Instant::now().checked_sub(Duration::from_micros(timestamp_us().saturating_sub(frame.timestamp_us))).unwrap_or_else(Instant::now);
+                frame.timestamp_us = frame.timestamp_us - origin + 100_000;
+                if let Some(unit) = stage(encoder.encode(&frame), "video encode")? {
+                    stage(writer.video(unit,captured), "video enqueue")?;
+                }
+                frames = frames.saturating_add(1);
+                if s.max_frames != 0 && frames >= s.max_frames { break; }
+            }
+        }
+        if last_audio.elapsed() > Duration::from_secs(5) || last_video.elapsed() > Duration::from_secs(5) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "capture stalled"));
+        }
+        if !progress { thread::sleep(Duration::from_millis(2)); }
+    }
+    stage(writer.audio(stage(aac.finish(), "AAC flush")?, Instant::now()), "audio flush enqueue")?;
+    for unit in encoder.finish()? { writer.video(unit,Instant::now())?; }
+    let count = stage(writer.finish(), "media drain")?;
+    eprintln!("native A/V session finished: {count} video access units");
+    Ok(())
+}
+
 pub fn run_from_env() -> io::Result<()> {
     let url = env::var("T3BOX_OUTPUT").map_err(|_| invalid("T3BOX_OUTPUT required"))?;
     rtmps_tls::Target::parse(&url)?;
@@ -248,7 +353,12 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
     let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
     while !cancelled() {
         let started = Instant::now();
-        match publish(url, s, &mut sources, &mut rate, &cancelled) {
+        let result = if env::var("T3BOX_PARALLEL_MEDIA").as_deref() == Ok("1") {
+            publish_parallel(url, s, &mut sources, &mut rate, &cancelled)
+        } else {
+            publish(url, s, &mut sources, &mut rate, &cancelled)
+        };
+        match result {
             Ok(()) => return Ok(()),
             Err(e) if !reconnect::retryable(&e) => return Err(e),
             Err(e) => {

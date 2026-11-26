@@ -43,3 +43,5 @@ mod accelerated_ci;
 
 #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
 pub mod native_av;
+#[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+mod media_worker;
