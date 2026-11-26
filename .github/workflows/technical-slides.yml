@@ -1,0 +1,40 @@
+name: Technical slide benchmark (independent)
+on:
+  push:
+    branches: [benchmark/technical-slides]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  slides:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [ja-sasada-vm, ja-sudo-search, ja-nishiyama-rurema, en-chevallier-network, en-lothore-rust, en-robin-sbom, en-codina-pcie]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install evaluation-only tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libx264-dev libavcodec-dev libavutil-dev ffmpeg poppler-utils tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng fonts-noto-cjk curl
+      - name: Build actual native encoder
+        run: cargo build --release --locked --features native-x264,native-aac --bin t3box-ci-encode
+      - name: Measure selected slide deck
+        env:
+          SOURCE: ${{ matrix.source }}
+        run: |
+          mkdir -p evidence
+          lscpu > evidence/cpu.txt
+          ffmpeg -version > evidence/ffmpeg.txt
+          tesseract --version > evidence/tesseract.txt
+          git rev-parse HEAD > evidence/commit.txt
+          python3 benchmarks/slides/benchmark.py --encoder target/release/t3box-ci-encode --only "$SOURCE" --out evidence/results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slides-${{ matrix.source }}
+          path: evidence/
+          retention-days: 3
