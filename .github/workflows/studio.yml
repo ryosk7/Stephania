@@ -185,6 +185,13 @@ jobs:
         run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/t3box-export"
   ble-e2e:
     # Real BlueZ stack with two virtual LE controllers (hci_vhci + btvirt).
+    # One fresh VM per variant: btvirt sessions leave BlueZ/kernel state
+    # behind that a second session on the same host can trip over.
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ['', '--min-mtu']
+    name: ble-e2e ${{ matrix.mode || 'negotiated-mtu' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -204,10 +211,8 @@ jobs:
           cargo build --locked -p t3box-ble
           cargo test --locked -p t3box-ble
           cargo clippy --locked -p t3box-ble -- -D warnings
-      - name: BLE end-to-end v2 (negotiated MTU, bluetoothd restart self-heal)
-        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug
-      - name: BLE end-to-end v2 (20-byte request fragments)
-        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug --min-mtu
+      - name: BLE end-to-end v2 (claim/scan/join, bluetoothd restart self-heal)
+        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug ${{ matrix.mode }}
   wifi-nm-e2e:
     # Real NetworkManager over D-Bus on virtual radios (mac80211_hwsim):
     # hostapd WPA2 AP + dnsmasq on wlan1, NetworkManager on wlan0 only.
