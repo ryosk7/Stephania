@@ -9,7 +9,6 @@ on:
         type: boolean
         default: false
       soak:
-    needs: build
         description: Run three-hour full controller stream
         type: boolean
         default: false
@@ -26,12 +25,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/cached-build
         with:
-          key: shared-arm64-release
-      - uses: ./.github/actions/native-deps
-      - run: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+          command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
       - uses: actions/upload-artifact@v4
         with:
           name: lab-native-binaries
@@ -65,7 +61,6 @@ jobs:
         network: [clean, venue]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get install -y libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg openssl v4l-utils alsa-utils kmod iproute2 fonts-dejavu-core fonts-noto-cjk python3-numpy tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr
       - uses: actions/download-artifact@v4
         with:
           name: lab-native-binaries
@@ -75,12 +70,7 @@ jobs:
         with:
           path: .lab-fixture
           key: lab-mixed-arm64-${{ hashFiles('tests/virtual-lab/fixture.py', 'ci/images/media-tools.Dockerfile') }}
-      - run: |
-          if [[ "${{ matrix.input }}" == kernel ]]; then
-            sudo modprobe vivid n_devs=1 multiplanar=1
-            sudo modprobe snd-aloop
-          fi
-          LAB_FIXTURE_CACHE=.lab-fixture LAB_MEDIA=mixed LAB_INPUT=${{ matrix.input }} LAB_FAULT=${{ matrix.fault }} LAB_NETWORK=${{ matrix.network }} bash tests/virtual-lab/run.sh
+      - run: LAB_FIXTURE_CACHE=.lab-fixture LAB_MEDIA=mixed LAB_INPUT=${{ matrix.input }} LAB_FAULT=${{ matrix.fault }} LAB_NETWORK=${{ matrix.network }} bash ci/images/media-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -100,16 +90,18 @@ jobs:
           name: kernel-native
           path: evidence/
   soak:
+    needs: build
     if: github.event_name == 'workflow_dispatch' && inputs.soak
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y ffmpeg openssl iproute2
-      - run: cargo build --release --locked --all-features --bin t3box
-      - run: LAB_SECONDS=10800 LAB_FAULT=none bash tests/virtual-lab/run.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: lab-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box
+      - run: LAB_SECONDS=10800 LAB_FAULT=none bash ci/images/media-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -128,13 +120,12 @@ jobs:
         network: [clean, venue]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get install -y libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg openssl iproute2 poppler-utils fonts-dejavu-core fonts-noto-cjk python3-numpy tesseract-ocr tesseract-ocr-eng tesseract-ocr-jpn
       - uses: actions/download-artifact@v4
         with:
           name: lab-native-binaries
           path: target/release
       - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
-      - run: LAB_MEDIA=real LAB_SECONDS=30 LAB_NETWORK=${{ matrix.network }} bash tests/virtual-lab/run.sh
+      - run: LAB_MEDIA=real LAB_SECONDS=30 LAB_NETWORK=${{ matrix.network }} bash ci/images/media-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

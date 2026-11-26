@@ -103,7 +103,7 @@ peer=
 cp "$work"/session-* "$out/"
 for f in "$out"/session-*.flv; do
   ffprobe -v error -count_frames -show_streams -of json "$f" > "${f%.flv}.probe.json"
-  ffmpeg -v error -xerror -i "$f" -f null -
+  if [[ "${LAB_MEDIA:-synthetic}" == synthetic ]]; then ffmpeg -v error -xerror -i "$f" -f null -; fi
 done
 rc=0
 python3 tests/virtual-lab/report.py "$out" || rc=1

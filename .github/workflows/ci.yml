@@ -53,18 +53,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/cached-build
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: x86-check
-      - uses: ./.github/actions/native-deps
-      - run: |
-          cargo test --locked --all-features -- --skip accelerated_ci::
-          cargo test --locked --no-default-features
-      - run: cargo clippy --all-targets --locked --all-features -- -D warnings
-      - run: cargo build --release --locked --no-default-features --bin t3box
+          command: |
+            cargo test --locked --all-features -- --skip accelerated_ci::
+            cargo test --locked --no-default-features
+            cargo clippy --all-targets --locked --all-features -- -D warnings
+            cargo build --release --locked --no-default-features --bin t3box
 
   arm64-build:
     needs: plan
@@ -73,12 +68,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/cached-build
         with:
-          key: shared-arm64-release
-      - uses: ./.github/actions/native-deps
-      - run: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+          command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
       - uses: actions/upload-artifact@v4
         with:
           name: ci-native-binaries
@@ -96,17 +88,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/cached-build
         with:
-          key: arm-logical
-      - uses: ./.github/actions/native-deps
-      - name: Build release tests once
-        run: cargo test --release --locked --all-features --no-run
-      - name: Native unit and accelerated simulation (60s)
+          command: |
+            cargo test --release --locked --all-features --no-run
+            mkdir -p fast-results
+            /usr/bin/time -f 'elapsed_seconds=%e' -o fast-results/timing.txt timeout 60 cargo test --release --locked --all-features -- --test-threads=2 2>&1 | tee fast-results/simulation.txt
+      - name: Verify simulation evidence
         run: |
-          mkdir -p fast-results
-          /usr/bin/time -f 'elapsed_seconds=%e' -o fast-results/timing.txt timeout 60 cargo test --release --locked --all-features -- --test-threads=2 2>&1 | tee fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_three_hour_clock_and_framing ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_venue_fault_scenarios ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_transition_matches_real_pcm_path ... ok" fast-results/simulation.txt

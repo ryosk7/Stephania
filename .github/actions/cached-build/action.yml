@@ -1,21 +1,30 @@
 name: Generic cached build environment
-description: Pull reusable public-compatible build image and compile locally
+description: Compile inside generic GHCR build image with private Cargo and sccache directories
 inputs:
   command:
-    description: Cargo command to execute
+    description: Cargo commands to execute
     required: true
 runs:
   using: composite
   steps:
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cache/t3box-sccache
+        key: native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-${{ github.sha }}
+        restore-keys: |
+          native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-
     - shell: bash
       env:
         BUILD_COMMAND: ${{ inputs.command }}
       run: |
         set -Eeuo pipefail
         ref="$(bash ci/images/pull.sh build)"
-        # Only local mounts, never docker commit or push.
-        mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" target
+        mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.cache/t3box-sccache" target
         docker run --rm --user "$(id -u):$(id -g)" \
-          -e HOME=/tmp -e CARGO_HOME=/cargo \
+          -e HOME=/tmp -e CARGO_HOME=/cargo -e RUSTC_WRAPPER=sccache -e SCCACHE_DIR=/sccache -e SCCACHE_CACHE_SIZE=1G \
           -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" \
-          -v "$PWD:/work" -w /work "$ref" bash -c "$BUILD_COMMAND"
+          -v "$HOME/.cache/t3box-sccache:/sccache" \
+          -v "$PWD:/work" -w /work "$ref" bash -Eeuo pipefail -c 'trap "sccache --show-stats" EXIT; eval "$1"' _ "$BUILD_COMMAND"

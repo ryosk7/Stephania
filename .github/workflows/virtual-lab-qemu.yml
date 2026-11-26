@@ -19,12 +19,6 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: qemu-native-probe
-      - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y --no-install-recommends qemu-system-arm cpio
       - uses: actions/cache@v4
         with:
           path: .qemu-lab
@@ -48,11 +42,14 @@ jobs:
             docker rm "$id"
           fi
           (cd .qemu-lab; sha256sum -c manifest.txt)
-      - run: cargo build --release --locked --no-default-features --features native-capture --bin t3box-native-probe
+      - uses: ./.github/actions/cached-build
+        with:
+          command: cargo build --release --locked --no-default-features --features native-capture --bin t3box-native-probe
+      - run: bash ci/images/pull.sh qemu-tools
       - name: Kernel capture gate (60 seconds including overlay)
         run: |
           mkdir -p vm-evidence
-          /usr/bin/time -f 'elapsed_seconds=%e' -o vm-evidence/timing.txt timeout --kill-after=2s 58s bash tests/virtual-lab/qemu.sh
+          /usr/bin/time -f 'elapsed_seconds=%e' -o vm-evidence/timing.txt timeout --kill-after=2s 58s bash ci/images/qemu-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

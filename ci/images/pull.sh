@@ -8,6 +8,13 @@ case "$kind" in build|runtime|media-tools|qemu-tools) ;; *) exit 2;; esac
 hash="$(sha256sum "ci/images/$kind.Dockerfile" | cut -d' ' -f1)"
 ref="ghcr.io/ryosk7/t3box-ci-$kind:$arch-$hash"
 if ! docker image inspect "$ref" >/dev/null 2>&1; then
-  docker pull "$ref" >&2
+  if ! docker pull "$ref" >&2; then
+    echo "Registry image unavailable; building generic recipe locally (not pushing)" >&2
+    ctx="$(mktemp -d)"
+    trap 'rm -rf "$ctx"' EXIT
+    cp "ci/images/$kind.Dockerfile" "$ctx/Dockerfile"
+    docker build --platform "linux/$arch" -t "$ref" "$ctx" >&2
+  fi
 fi
-docker inspect --format '{{index .RepoDigests 0}}' "$ref"
+digest="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$ref")"
+printf '%s\n' "${digest:-$ref}"
