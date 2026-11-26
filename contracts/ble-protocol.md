@@ -1,6 +1,6 @@
 # T3Box BLE provisioning protocol — version 1 (draft)
 
-Status: **proof-of-concept contract.** Device core in `src/provisioning.rs`; BlueZ GATT adapter, NetworkManager adapter and the Expo client are not implemented. Initial secret delivery without monitor/keyboard is an open security PoC (risk R02). Do not describe this as production enrollment.
+Status: **proof-of-concept contract.** Device core in `src/provisioning.rs`, characteristic semantics in `src/provisioning_gatt.rs`; BlueZ GATT adapter, NetworkManager adapter and the Expo client are not implemented. Initial secret delivery without monitor/keyboard is an open security PoC (risk R02). Do not describe this as production enrollment.
 
 ## Principles
 - BLE proximity is not authentication. Ownership is proven with a per-device 128-bit setup secret (generated on first boot, file mode 0600, never transmitted) via HMAC-SHA256 challenge-response.
@@ -18,7 +18,7 @@ Base UUID `7c3bXXXX-5d1e-4a6f-9b0e-3a1f2c4d5e60`; service `7c3b0001-…`.
 | 0004 | PairingChallenge | read, notify | `{"state","nonce"?}` — nonce hex(32 B) while PAIRING |
 | 0005 | PairingResponse | write | `{"owner_id","proof"}` |
 | 0006 | WiFiScanRequest | write | `{}` (owner-authenticated, see below) |
-| 0007 | WiFiScanResults | read, notify | `{"page","pages","networks":[{"ssid","rssi","security"}]}` ≤ 20 per page |
+| 0007 | WiFiScanResults | read, notify | `{"page","pages","networks":[{"ssid","rssi","security"}]}` ≤ 20 per page, ≤ 60 total, strongest per SSID; each read returns the next page (wraps); owner only |
 | 0008 | WiFiConfiguration | write | authenticated envelope around `{"ssid","security":"open"|"wpa-psk","psk"?}` |
 | 0009 | NetworkStatus | read, notify | `{"state","error"?}` |
 | 000a | ManagementEndpoint | read | `{"urls":[…],"certificate_sha256"}` once trusted TLS exists; empty until then |
