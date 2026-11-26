@@ -1,0 +1,51 @@
+[
+  {
+    "id": "ja-sasada-vm",
+    "language": "jpn+eng",
+    "speaker": "笹田耕一",
+    "title": "簡単にちょっと速いインタプリタをつくる方法",
+    "url": "https://www.atdot.net/~ko1/activities/2025_astro_kernelvm2025.pdf"
+  },
+  {
+    "id": "ja-sudo-search",
+    "language": "jpn+eng",
+    "speaker": "須藤功平",
+    "title": "Rubyを使った分散全文検索ミドルウェア",
+    "url": "https://slide.rabbit-shocker.org/authors/kou/rwc-2014/distributed-full-text-search-middleware-in-ruby.pdf"
+  },
+  {
+    "id": "ja-nishiyama-rurema",
+    "language": "jpn+eng",
+    "speaker": "西山和広",
+    "title": "Rubyの日本語リファレンスマニュアルの現在と未来",
+    "url": "https://slide.rabbit-shocker.org/authors/znz/rurema-2024-10/rurema-2024-10.pdf"
+  },
+  {
+    "id": "en-chevallier-network",
+    "language": "eng",
+    "speaker": "Maxime Chevallier",
+    "title": "Network Performance in the Linux Kernel",
+    "url": "https://archive.fosdem.org/2021/schedule/event/network_performance_in_kernel/attachments/slides/4433/export/events/attachments/network_performance_in_kernel/slides/4433/chevallier_network_performance_in_the_linux_kernel.pdf"
+  },
+  {
+    "id": "en-lothore-rust",
+    "language": "eng",
+    "speaker": "Alexis Lothoré",
+    "title": "From C to Rust on the ESP32",
+    "url": "https://bootlin.com/pub/conferences/2026/fosdem/lothore-rust-no-std.pdf"
+  },
+  {
+    "id": "en-robin-sbom",
+    "language": "eng",
+    "speaker": "Benjamin Robin",
+    "title": "sbom-cve-check",
+    "url": "https://bootlin.com/pub/conferences/2026/fosdem/sbom-cve-check.pdf"
+  },
+  {
+    "id": "en-codina-pcie",
+    "language": "eng",
+    "speaker": "Hervé Codina",
+    "title": "Using Device Tree Overlays to Support Complex PCI Devices in Linux",
+    "url": "https://bootlin.com/pub/conferences/2025/elce/codina-pcie-dt-overlay.pdf"
+  }
+]
