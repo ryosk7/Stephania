@@ -16,9 +16,8 @@ fn invalid(msg: &'static str) -> io::Error {
 }
 // Only fixed stage names are logged; never include peer responses or URLs.
 fn stage<T>(result: io::Result<T>, name: &'static str) -> io::Result<T> {
-    result.map_err(|error| {
+    result.inspect_err(|error| {
         eprintln!("native A/V stage {name} failed ({:?})", error.kind());
-        error
     })
 }
 fn send_audio<T: io::Read + io::Write>(pipeline: &mut NativeVideoPipeline<T>, packets: Vec<AacPacket>) -> io::Result<()> {
