@@ -39,6 +39,29 @@ Test without HDMI/audio hardware using `T3BOX_TEST_SOURCES=1 T3BOX_WIDTH=640 T3B
 
 **Security:** Do not commit stream keys. The current prototype passes RTMPS URL in FFmpeg process arguments; other local users may be able to inspect it. The API is loopback-only until authentication is added. Do not deploy on untrusted networks without completing authentication and secret management.
 
+## Native controller (experimental, opt-in)
+
+On 64-bit Raspberry Pi OS, install the native development packages
+(`libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config`)
+and build:
+
+```bash
+cargo build --release --locked --features native-capture,native-x264,native-aac --bin t3box
+export T3BOX_BACKEND=native
+export T3BOX_PRESET=ultrafast
+./target/release/t3box
+```
+
+Use the same RTMPS output, hardware device and HTTP start/stop settings as above.
+The native controller runs capture, codecs and RTMPS in-process, without starting
+FFmpeg. File output and synthetic controller input remain on the legacy backend.
+The native path currently supports YUYV/NV12 and ultrafast only. Stop is cooperative:
+in-flight network/device operations may delay termination; starting again while
+the previous worker is still stopping is rejected. The status field
+`native_worker_running` indicates worker activity, not confirmed YouTube ingest.
+Physical testing and parity with legacy audio filtering and capture timing remain
+required before making native mode the default.
+
 ## Hardware and CI limits
 
 Presenter HDMI → HDMI capture with hardware HDMI passthrough → projector. Capture USB → Raspberry Pi 5; venue mixer LINE/REC → USB audio ADC → Pi 5; venue Wi-Fi → YouTube.
