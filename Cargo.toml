@@ -13,11 +13,13 @@ description = "Raspberry Pi 5 LT stream box controller foundation"
 license = "MIT"
 
 [features]
-default = ["native-capture", "native-x264", "native-aac"]
+default = ["native-capture", "native-x264", "native-aac", "networkmanager"]
 native-capture = ["dep:v4l", "dep:alsa"]
 native-x264 = []
 native-aac = []
 ci-virtual = []
+# NetworkManager D-Bus backend for t3box-provision (pure-Rust zbus).
+networkmanager = ["dep:zbus"]
 
 [dependencies]
 v4l = { version = "0.14.0", optional = true }
@@ -27,6 +29,7 @@ webpki-roots = "1.0.11"
 serde_json = "1"
 libc = "0.2"
 ring = "0.17"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"], optional = true }
 
 [[bin]]
 name = "t3box-native-av"

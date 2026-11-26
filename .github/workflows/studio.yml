@@ -1,10 +1,10 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
 concurrency:
@@ -208,3 +208,23 @@ jobs:
         run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug
       - name: BLE end-to-end v2 (20-byte request fragments)
         run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug --min-mtu
+  wifi-nm-e2e:
+    # Real NetworkManager over D-Bus on virtual radios (mac80211_hwsim):
+    # hostapd WPA2 AP + dnsmasq on wlan1, NetworkManager on wlan0 only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq network-manager hostapd dnsmasq-base iw >/dev/null
+      - run: sudo pip3 install --break-system-packages -q cryptography
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: nm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build provisioning service with the NetworkManager backend
+        run: cargo build --locked --no-default-features --features networkmanager --bin t3box-provision
+      - name: Wi-Fi join, PSK persistence and auto-reconnect via NetworkManager
+        run: NM_E2E_LOGS=$RUNNER_TEMP tests/wifi/run-nm-e2e.sh target/debug
