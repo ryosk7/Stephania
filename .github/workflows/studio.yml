@@ -1,18 +1,19 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
+concurrency:
+  group: studio-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   control:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services/control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
@@ -20,9 +21,31 @@ jobs:
           ruby-version: '3.3'
           working-directory: services/control
           bundler-cache: true
-      - run: bundle exec ruby test/control_test.rb
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: control-engine-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # Diagnostics-only engine build: exercises the real IPC server without
+      # native media libraries. Media coverage stays in ci.yml.
+      - name: Build engine for IPC integration
+        run: cargo build --locked --no-default-features --bin t3box
+      - name: Control unit and contract tests
+        working-directory: services/control
+        run: bundle exec ruby test/control_test.rb
+      - name: Integration test must not be skipped
+        working-directory: services/control
+        env:
+          T3BOX_ENGINE_BIN: ${{ github.workspace }}/target/debug/t3box
+        shell: bash
+        run: |
+          bundle exec ruby test/engine_integration_test.rb --verbose | tee integration.log
+          if grep -q ' S$\|skipped' integration.log; then echo "integration test skipped" >&2; exit 1; fi
   studio:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/studio
@@ -31,5 +54,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --no-audit --no-fund
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
       - run: npm run build

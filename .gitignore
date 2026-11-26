@@ -4,3 +4,5 @@
 .env
 services/control/vendor/
 services/control/.bundle/
+apps/studio/node_modules/
+apps/studio/dist/
