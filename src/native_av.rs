@@ -124,8 +124,11 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
     let session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
     let telemetry = session.tcp_monitor().ok();
     let mut next_sample = Instant::now();
+    let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
+    let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate)?;
+    if adaptive { pipeline.reconfigure_rate(s.video_bitrate, 500)?; }
     pipeline.configure_audio(&aac.configuration()?)?;
     let origin = timestamp_us();
     let mut clock = AudioClock::default();
@@ -142,7 +145,16 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
                     eprintln!("native TCP rtt_us={} rttvar_us={} retrans_total={} unacked_segments={} send_queue_bytes={} not_sent_bytes={}",
                         sample.rtt_us, sample.rtt_variance_us, sample.retransmitted_segments,
                         sample.unacked_segments, sample.send_queue_bytes, sample.not_sent_bytes);
-                }
+                    if adaptive {
+                        if let Some(kbps) = rate.observe(crate::rate_control::Observation {
+                            not_sent_bytes: sample.not_sent_bytes, rtt_us: sample.rtt_us,
+                            retrans_total: sample.retransmitted_segments,
+                        }) {
+                            stage(pipeline.reconfigure_rate(kbps, 500), "adaptive rate")?;
+                            eprintln!("native adaptive video bitrate_kbps={kbps}");
+                        }
+                    }
+                } else { rate.missing_sample(); }
             }
         }
         let mut progress = false;

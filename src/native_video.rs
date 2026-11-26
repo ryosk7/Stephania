@@ -24,6 +24,10 @@ impl NativeVideoEncoder {
         })
     }
 
+    pub fn reconfigure_rate(&mut self, bitrate_kbps: u32, vbv_ms: u32) -> io::Result<()> {
+        self.encoder.reconfigure_rate(bitrate_kbps, vbv_ms)
+    }
+
     pub fn configuration(&mut self) -> io::Result<(Vec<u8>, Vec<u8>)> {
         self.encoder.configuration()
     }
@@ -107,6 +111,10 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
         let (sps, pps) = encoder.configuration()?;
         let sink = NativeMediaSink::new(session, &sps, &pps)?;
         Ok(Self { encoder, sink })
+    }
+
+    pub fn reconfigure_rate(&mut self, bitrate_kbps: u32, vbv_ms: u32) -> io::Result<()> {
+        self.encoder.reconfigure_rate(bitrate_kbps, vbv_ms)
     }
 
     pub fn push_frame(&mut self, frame: &VideoFrame) -> io::Result<()> {
