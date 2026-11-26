@@ -11,38 +11,7 @@ concurrency:
 env:
   IMAGE: ghcr.io/ryosk7/t3box-qemu-lab
 jobs:
-  image:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.publish.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Authenticate package publisher
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Reuse or publish generic image
-        id: publish
-        env:
-          TAG: ${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
-        run: |
-          set -Eeuo pipefail
-          ref="$IMAGE:$TAG"
-          if ! docker pull "$ref"; then
-            # Explicit allowlist: no private source, credentials or product binary in context.
-            ctx="$(mktemp -d)"
-            cp tests/virtual-lab/qemu-prepare.sh tests/virtual-lab/Dockerfile.qemu "$ctx/"
-            docker build --platform linux/arm64 -f "$ctx/Dockerfile.qemu" -t "$ref" "$ctx"
-            docker push "$ref"
-          fi
-          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
-          test -n "$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "$digest"
   guest:
-    needs: image
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -59,18 +28,20 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .qemu-lab
-          key: qemu-lab-${{ needs.image.outputs.digest }}
+          key: qemu-lab-${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
       - name: Restore generic boot image
         env:
-          REF: ${{ needs.image.outputs.digest }}
+          TAG: ${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
         run: |
           set -Eeuo pipefail
           if [[ ! -s .qemu-lab/Image || ! -s .qemu-lab/root.cpio.gz ]]; then
             # Anonymous pull when public; authenticated fallback while private.
+            REF="$IMAGE:$TAG"
             docker pull "$REF" || {
               echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
               docker pull "$REF"
             }
+            REF="$(docker inspect --format '{{index .RepoDigests 0}}' "$REF")"
             mkdir -p .qemu-lab
             id="$(docker create "$REF" /unused)"
             docker cp "$id:/image/." .qemu-lab/

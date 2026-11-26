@@ -66,6 +66,29 @@ jobs:
       - run: cargo clippy --all-targets --locked --all-features -- -D warnings
       - run: cargo build --release --locked --no-default-features --bin t3box
 
+  arm64-build:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: shared-arm64-release
+      - uses: ./.github/actions/native-deps
+      - run: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-native-binaries
+          path: |
+            target/release/t3box
+            target/release/t3box-native-av
+            target/release/t3box-ci-encode
+          retention-days: 1
+          compression-level: 0
+
   arm64-logical:
     needs: plan
     if: needs.plan.outputs.full == 'true'
@@ -96,7 +119,7 @@ jobs:
           retention-days: 3
 
   arm64-transport:
-    needs: plan
+    needs: [plan, arm64-build]
     if: needs.plan.outputs.full == 'true'
     strategy:
       fail-fast: false
@@ -106,14 +129,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg iproute2 openssl stress-ng
+      - uses: actions/download-artifact@v4
         with:
-          key: transport-${{ matrix.scenario }}
-      - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y --no-install-recommends ffmpeg iproute2 openssl stress-ng
-      - name: Build release binaries once
-        run: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av
+          name: ci-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
       - name: Run selected transport suite (60s)
         env:
           SCENARIO: ${{ matrix.scenario }}
@@ -133,7 +154,7 @@ jobs:
           retention-days: 3
 
   arm64-quality:
-    needs: plan
+    needs: [plan, arm64-build]
     if: needs.plan.outputs.full == 'true'
     strategy:
       fail-fast: false
@@ -143,13 +164,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
+      - uses: actions/download-artifact@v4
         with:
-          key: quality-${{ matrix.preset }}
-      - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
-      - run: cargo build --release --locked --features native-aac,native-x264 --bin t3box-ci-encode
+          name: ci-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
       - name: Prepare constrained encoder image
         run: |
           bash ci/images/benchmark.sh
@@ -179,7 +199,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [plan, rust-check, arm64-logical, arm64-transport, arm64-quality, arm64-soak]
+    needs: [plan, rust-check, arm64-build, arm64-logical, arm64-transport, arm64-quality, arm64-soak]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -188,6 +208,7 @@ jobs:
           REASON: ${{ needs.plan.outputs.reason }}
           FULL: ${{ needs.plan.outputs.full }}
           RUST: ${{ needs.rust-check.result }}
+          BUILD: ${{ needs.arm64-build.result }}
           LOGICAL: ${{ needs.arm64-logical.result }}
           TRANSPORT: ${{ needs.arm64-transport.result }}
           QUALITY: ${{ needs.arm64-quality.result }}
@@ -198,11 +219,11 @@ jobs:
           echo "Coverage selection: $REASON" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$SOAK_REQUESTED" == true ]]; then test "$SOAK" = success; else test "$SOAK" = skipped; fi
           if [[ "$FULL" == true ]]; then
-            for result in "$RUST" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = success; done
+            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = success; done
           else
             test "$FULL" = false
             test "$REASON" = docs-only
-            for result in "$RUST" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = skipped; done
+            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = skipped; done
           fi
 
   arm64-soak:

@@ -49,9 +49,23 @@ elif [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
 else
   export T3BOX_CI_VIRTUAL=1
   if [[ "${LAB_MEDIA:-synthetic}" != synthetic ]]; then
-    python3 tests/virtual-lab/fixture.py "$work"
-    export T3BOX_LAB_VIDEO="$work/mixed.yuyv" T3BOX_LAB_MARKERS=1
-    cp "$work/fixture.json" "$out/"
+    fixture_dir="$work"
+    if [[ "${LAB_MEDIA}" == mixed && -n "${LAB_FIXTURE_CACHE:-}" ]]; then
+      fixture_dir="$(realpath -m "$LAB_FIXTURE_CACHE")"
+      mkdir -p "$fixture_dir"
+    fi
+    if [[ ! -s "$fixture_dir/mixed.yuyv" || ! -s "$fixture_dir/fixture.json" ]]; then
+      python3 tests/virtual-lab/fixture.py "$fixture_dir"
+    fi
+    python3 - "$fixture_dir" <<'PY'
+import pathlib,json,hashlib,sys
+p=pathlib.Path(sys.argv[1]);m=json.loads((p/'fixture.json').read_text())
+f=p/'mixed.yuyv'
+assert f.stat().st_size==m['frames']*1920*1080*2
+with f.open('rb') as stream: assert hashlib.file_digest(stream,'sha256').hexdigest()==m['sha256']
+PY
+    export T3BOX_LAB_VIDEO="$fixture_dir/mixed.yuyv" T3BOX_LAB_MARKERS=1
+    cp "$fixture_dir/fixture.json" "$out/"
   fi
 fi
 if [[ "${LAB_NETWORK:-clean}" == venue ]]; then sudo tc qdisc replace dev lo root netem delay 40ms 10ms loss 0.2% rate 12mbit; fi
@@ -93,5 +107,5 @@ for f in "$out"/session-*.flv; do
 done
 rc=0
 python3 tests/virtual-lab/report.py "$out" || rc=1
-if [[ "${LAB_MEDIA:-synthetic}" != synthetic ]]; then python3 tests/virtual-lab/markers.py "$out" "$work/mixed.yuyv" || rc=1; fi
+if [[ "${LAB_MEDIA:-synthetic}" != synthetic ]]; then python3 tests/virtual-lab/markers.py "$out" "$T3BOX_LAB_VIDEO" || rc=1; fi
 exit "$rc"

@@ -1,0 +1,47 @@
+name: Publish QEMU boot image
+on:
+  push:
+    branches: [test/virtual-lab, main]
+    paths:
+      - tests/virtual-lab/qemu-prepare.sh
+      - tests/virtual-lab/Dockerfile.qemu
+      - .github/workflows/virtual-lab-qemu-image.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: qemu-image-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  IMAGE: ghcr.io/ryosk7/t3box-qemu-lab
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate package publisher
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Reuse or publish generic image
+        id: publish
+        env:
+          TAG: ${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
+        run: |
+          set -Eeuo pipefail
+          ref="$IMAGE:$TAG"
+          if ! docker pull "$ref"; then
+            # Explicit allowlist: no private source, credentials or product binary in context.
+            ctx="$(mktemp -d)"
+            cp tests/virtual-lab/qemu-prepare.sh tests/virtual-lab/Dockerfile.qemu "$ctx/"
+            docker build --platform linux/arm64 -f "$ctx/Dockerfile.qemu" -t "$ref" "$ctx"
+            docker push "$ref"
+          fi
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "$digest"
