@@ -131,7 +131,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg iproute2 openssl stress-ng
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg iproute2 openssl stress-ng
       - uses: actions/download-artifact@v4
         with:
           name: ci-native-binaries
@@ -170,7 +170,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - run: sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
       - uses: actions/download-artifact@v4
         with:
           name: ci-native-binaries

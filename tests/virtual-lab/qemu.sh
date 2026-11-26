@@ -27,11 +27,15 @@ uname -a
 /bin/modprobe vivid n_devs=1 multiplanar=1
 /bin/modprobe snd-aloop
 v4l2-ctl --list-devices
-v4l2-ctl -d /dev/video0 --set-fmt-video=width=320,height=240,pixelformat=YUYV --set-parm=30
+v4l2-ctl -d /dev/video0 --list-inputs
+v4l2-ctl -d /dev/video0 --set-input=0
+v4l2-ctl -d /dev/video0 --list-formats-ext
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=320,height=180,pixelformat=YUYV --set-parm=30
+v4l2-ctl -d /dev/video0 --get-fmt-video --get-parm
 aplay -l
 aplay -D hw:Loopback,0,0 -t raw -f S16_LE -c 2 -r 48000 /tone.raw &
 feed=$!
-export T3BOX_VIDEO=/dev/video0 T3BOX_AUDIO=hw:Loopback,1,0 T3BOX_WIDTH=320 T3BOX_HEIGHT=240
+export T3BOX_VIDEO=/dev/video0 T3BOX_AUDIO=hw:Loopback,1,0 T3BOX_WIDTH=320 T3BOX_HEIGHT=180
 timeout 12 t3box-native-probe >/tmp/probe.log 2>&1 || { cat /tmp/probe.log; exit 1; }
 cat /tmp/probe.log
 kill "$feed" 2>/dev/null || true
@@ -52,10 +56,10 @@ grep -q '^LAB_PASS' "$out/serial.log"
 python3 - "$out/serial.log" <<'PY'
 import re,sys
 s=open(sys.argv[1]).read()
-v=re.findall(r'^video seq=(\d+) time=(\d+)us 320x240 format=Yuyv422 bytes=(\d+)',s,re.M)
+v=re.findall(r'^video seq=(\d+) time=(\d+)us 320x180 format=Yuyv422 bytes=(\d+)',s,re.M)
 a=re.findall(r'^audio time=(\d+)us rate=48000 channels=2 samples=(\d+) peak=([-\d.]+)dBFS rms=([-\d.]+)dBFS clipped=(\d+)',s,re.M)
 assert len(v)==20 and len(a)==40
-assert all(int(x[2])==320*240*2 for x in v)
+assert all(int(x[2])==320*180*2 for x in v)
 assert all(int(b[0])>int(a[0]) for a,b in zip(v,v[1:]))
 assert all(int(x[1])>0 and int(x[4])==0 for x in a)
 assert sum(float(x[3])>-40 for x in a)>=30
