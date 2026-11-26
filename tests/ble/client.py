@@ -37,9 +37,9 @@ def parse_setup_uri(text):
 
 
 class Session:
-    def __init__(self, client):
+    def __init__(self, client, att):
         self.client = client
-        self.att = max(20, client.mtu_size - 3)
+        self.att = att
         self.message_id = 0
         self.pending = {}
 
@@ -47,7 +47,12 @@ class Session:
         def on_notify(_char, data: bytearray):
             mid, index, count = data[0], data[1], data[2]
             print(f"notify {uuid[4:8]} {bytes(data).hex()}", flush=True)
-            parts = self.pending.setdefault((uuid, mid), {"count": count, "parts": {}})
+            parts = self.pending.get((uuid, mid))
+            if parts is None:
+                print(f"unexpected notification for message {mid}", flush=True)
+                return
+            # The response's fragment count is independent of the request's.
+            parts.setdefault("count", count)
             if parts["count"] != count or index in parts["parts"]:
                 print(f"framing violation: have {sorted(parts['parts'])}/{parts['count']} got {index}/{count}", flush=True)
                 return
@@ -67,7 +72,7 @@ class Session:
         frags = [data[i:i + chunk] for i in range(0, len(data), chunk)]
         assert len(frags) <= 64
         future = asyncio.get_running_loop().create_future()
-        self.pending[(uuid, mid)] = {"count": len(frags), "parts": {}, "future": future}
+        self.pending[(uuid, mid)] = {"parts": {}, "future": future}
         for i, f in enumerate(frags):
             await self.client.write_gatt_char(uuid, bytes([mid, i, len(frags)]) + f, response=True)
         result = json.loads(await asyncio.wait_for(future, timeout))
@@ -99,6 +104,7 @@ async def main():
     ap.add_argument("setup_uri")
     ap.add_argument("--adapter", default="hci1")
     ap.add_argument("--pair", action="store_true")
+    ap.add_argument("--min-mtu", action="store_true", help="fragment requests at the 20-byte minimum")
     args = ap.parse_args()
     secret = parse_setup_uri(args.setup_uri)
     device = await find(args.adapter)
@@ -106,7 +112,14 @@ async def main():
     async with BleakClient(device, adapter=args.adapter, timeout=30) as client:
         if args.pair:
             await client.pair()
-        s = Session(client)
+        # bleak reports 23 unless the negotiated MTU is acquired explicitly.
+        acquire = getattr(client._backend, "_acquire_mtu", None)
+        if acquire is not None:
+            await acquire()
+        att = max(20, min(client.mtu_size, 512) - 3)
+        if args.min_mtu:
+            att = 20  # worst case: many small fragments in both directions
+        s = Session(client, att)
         print(f"mtu {client.mtu_size} att {s.att}", flush=True)
         for uuid in (PAIRING_RESPONSE, SCAN_REQUEST, WIFI_CONFIG):
             await s.subscribe(uuid)

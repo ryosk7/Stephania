@@ -6,7 +6,7 @@
 # disposable VM. Usage: tests/ble/run-e2e.sh <target-dir> [--encrypted]
 set -Eeuo pipefail
 target=${1:?target dir with t3box-provision and t3box-ble}
-encrypted=${2:-}
+mode=${2:-}
 work=$(mktemp -d)
 logs=${BLE_E2E_LOGS:-$work}
 pids=()
@@ -39,15 +39,18 @@ T3BOX_PROVISION_SOCKET="$work/provisioning.sock" T3BOX_CREDENTIALS_DIR="$work" \
 for _ in $(seq 50); do [ -S "$work/provisioning.sock" ] && break; sleep 0.1; done
 test ! -e "$work/t3box-setup.txt" || { echo "setup file was not consumed"; exit 1; }
 
-enc=0; pair=()
-if [ "$encrypted" = "--encrypted" ]; then enc=1; pair=(--pair); fi
+enc=0; extra=()
+case "$mode" in
+  --encrypted) enc=1; extra=(--pair) ;;
+  --min-mtu) extra=(--min-mtu) ;;
+esac
 sudo env T3BOX_BLE_DEBUG=1 T3BOX_PROVISION_SOCKET="$work/provisioning.sock" T3BOX_BLE_ADAPTER=hci0 T3BOX_BLE_REQUIRE_ENCRYPTION=$enc \
   "$target/t3box-ble" >"$logs/ble.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do grep -q advertising "$logs/ble.log" && break; sleep 0.2; done
 cat "$logs/ble.log"
 
 status=0
-sudo timeout 180 python3 "$(dirname "$0")/client.py" "$uri" --adapter hci1 "${pair[@]}" || status=$?
+sudo timeout 180 python3 "$(dirname "$0")/client.py" "$uri" --adapter hci1 "${extra[@]}" || status=$?
 if [ $status -ne 0 ]; then
   echo "---- t3box-ble"; cat "$logs/ble.log"
   echo "---- provision"; cat "$logs/provision.log"

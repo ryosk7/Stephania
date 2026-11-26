@@ -204,7 +204,9 @@ jobs:
           cargo build --locked -p t3box-ble
           cargo test --locked -p t3box-ble
           cargo clippy --locked -p t3box-ble -- -D warnings
-      - name: BLE end-to-end (link encryption off)
+      - name: BLE end-to-end (link encryption off, negotiated MTU)
         run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug
+      - name: BLE end-to-end (20-byte request fragments)
+        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug --min-mtu
       - name: BLE end-to-end (link encryption required, Just Works pairing)
         run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug --encrypted
