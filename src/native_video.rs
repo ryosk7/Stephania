@@ -1,6 +1,5 @@
-//! Native video path: V4L2 frame -> Rust I420 conversion -> libx264 -> RTMPS.
-//! This is a video-only engineering integration. The venue audio path still
-//! requires native AAC encoding and sample-clock synchronization.
+//! Native video codec and RTMP publishing are independently owned.
+//! The synchronous facade preserves the existing public API and behavior.
 use crate::{
     colorspace::{self, I420Frame},
     media_core::{PixelFormat, VideoFrame},
@@ -10,27 +9,27 @@ use crate::{
 };
 use std::io::{self, Read, Write};
 
-pub struct NativeVideoPipeline<T: Read + Write> {
+/// Owns the native encoder and reusable conversion buffer; no network I/O.
+/// Construct on its owning thread (the libx264 handle is not assumed Send).
+pub struct NativeVideoEncoder {
     encoder: X264Backend,
-    publisher: EncodedPublisher<T>,
-    emitted: u64,
     i420: I420Frame,
 }
 
-impl<T: Read + Write> NativeVideoPipeline<T> {
-    pub fn new(
-        session: PublishSession<T>, width: usize, height: usize, fps: u32, bitrate_kbps: u32,
-    ) -> io::Result<Self> {
-        let mut encoder = X264Backend::new(width, height, fps, bitrate_kbps, true)?;
-        let mut publisher = EncodedPublisher::new(session)?;
-        let (sps, pps) = encoder.configuration()?;
-        publisher.avc_configuration(0, &sps, &pps)?;
-        Ok(Self { encoder, publisher, emitted: 0, i420: I420Frame {
-            width, height, timestamp_us: 0, bytes: Vec::new(),
-        } })
+impl NativeVideoEncoder {
+    pub fn new(width: usize, height: usize, fps: u32, bitrate_kbps: u32) -> io::Result<Self> {
+        Ok(Self {
+            encoder: X264Backend::new(width, height, fps, bitrate_kbps, true)?,
+            i420: I420Frame { width, height, timestamp_us: 0, bytes: Vec::new() },
+        })
     }
 
-    pub fn push_frame(&mut self, frame: &VideoFrame) -> io::Result<()> {
+    pub fn configuration(&mut self) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        self.encoder.configuration()
+    }
+
+    /// The returned access unit owns all NAL bytes and may cross a thread boundary.
+    pub fn encode(&mut self, frame: &VideoFrame) -> io::Result<Option<EncodedAccessUnit>> {
         let width = frame.width as usize;
         let height = frame.height as usize;
         match frame.format {
@@ -43,13 +42,29 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
             )?,
             PixelFormat::Mjpeg => return Err(invalid("MJPEG capture decoding is not yet implemented")),
         };
-        if let Some(unit) = self.encoder.encode_i420(&self.i420)? {
-            self.publish_unit(&unit)?;
-        }
-        Ok(())
+        self.encoder.encode_i420(&self.i420)
     }
 
-    fn publish_unit(&mut self, unit: &EncodedAccessUnit) -> io::Result<()> {
+    pub fn finish(mut self) -> io::Result<Vec<EncodedAccessUnit>> {
+        self.encoder.finish()
+    }
+}
+
+/// Owns the confirmed RTMP session. No raw video or codec state.
+/// Once a write fails the caller must discard this session, not retry a partial message.
+pub struct NativeMediaSink<T: Read + Write> {
+    publisher: EncodedPublisher<T>,
+    emitted: u64,
+}
+
+impl<T: Read + Write> NativeMediaSink<T> {
+    pub fn new(session: PublishSession<T>, sps: &[u8], pps: &[u8]) -> io::Result<Self> {
+        let mut publisher = EncodedPublisher::new(session)?;
+        publisher.avc_configuration(0, sps, pps)?;
+        Ok(Self { publisher, emitted: 0 })
+    }
+
+    pub fn publish_unit(&mut self, unit: &EncodedAccessUnit) -> io::Result<()> {
         if unit.pts_us > u64::from(u32::MAX) * 1000 ||
             unit.dts_us > u64::from(u32::MAX) * 1000 {
             return Err(invalid("RTMP timestamp overflow"));
@@ -65,7 +80,6 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
         Ok(())
     }
 
-    /// Send AAC on the same confirmed RTMP session as video.
     pub fn configure_audio(&mut self, asc: &[u8]) -> io::Result<()> {
         self.publisher.aac_configuration(0, asc)
     }
@@ -74,12 +88,48 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
         self.publisher.aac_frame(timestamp_ms, raw)
     }
 
-    /// Push delayed frames before disconnecting.
-    pub fn finish(mut self) -> io::Result<(PublishSession<T>, u64)> {
-        for unit in self.encoder.finish()? {
-            self.publish_unit(&unit)?;
+    pub fn finish(self) -> (PublishSession<T>, u64) {
+        (self.publisher.into_session(), self.emitted)
+    }
+}
+
+/// Compatibility facade: no extra queue, thread, allocation or latency policy.
+pub struct NativeVideoPipeline<T: Read + Write> {
+    encoder: NativeVideoEncoder,
+    sink: NativeMediaSink<T>,
+}
+
+impl<T: Read + Write> NativeVideoPipeline<T> {
+    pub fn new(
+        session: PublishSession<T>, width: usize, height: usize, fps: u32, bitrate_kbps: u32,
+    ) -> io::Result<Self> {
+        let mut encoder = NativeVideoEncoder::new(width, height, fps, bitrate_kbps)?;
+        let (sps, pps) = encoder.configuration()?;
+        let sink = NativeMediaSink::new(session, &sps, &pps)?;
+        Ok(Self { encoder, sink })
+    }
+
+    pub fn push_frame(&mut self, frame: &VideoFrame) -> io::Result<()> {
+        if let Some(unit) = self.encoder.encode(frame)? {
+            self.sink.publish_unit(&unit)?;
         }
-        Ok((self.publisher.into_session(), self.emitted))
+        Ok(())
+    }
+
+    pub fn configure_audio(&mut self, asc: &[u8]) -> io::Result<()> {
+        self.sink.configure_audio(asc)
+    }
+
+    pub fn push_aac(&mut self, timestamp_ms: u32, raw: &[u8]) -> io::Result<()> {
+        self.sink.push_aac(timestamp_ms, raw)
+    }
+
+    pub fn finish(self) -> io::Result<(PublishSession<T>, u64)> {
+        let Self { encoder, mut sink } = self;
+        for unit in encoder.finish()? {
+            sink.publish_unit(&unit)?;
+        }
+        Ok(sink.finish())
     }
 }
 
@@ -155,6 +205,42 @@ mod tests {
         let frame=reader.read_message(&mut input).unwrap();
         assert_eq!(frame.type_id,9);
         assert_eq!(frame.payload[1],1);
+    }
+    #[test]
+    fn codec_and_sink_can_be_used_independently() {
+        fn assert_send<T: Send>() {}
+        assert_send::<EncodedAccessUnit>();
+        assert_send::<NativeMediaSink<Duplex>>();
+        let mut encoder = NativeVideoEncoder::new(64,64,30,800).unwrap();
+        let (sps,pps) = encoder.configuration().unwrap();
+        let mut units = Vec::new();
+        for i in 0..4 {
+            let frame = VideoFrame {
+                timestamp_us: i*33_333, sequence: i,
+                width:64,height:64,row_stride_bytes:128,
+                format:PixelFormat::Yuyv422, bytes:vec![128;64*64*2],
+            };
+            if let Some(unit) = encoder.encode(&frame).unwrap() { units.push(unit); }
+        }
+        units.extend(encoder.finish().unwrap());
+        assert_eq!(units.len(),4);
+        assert!(units[0].is_keyframe);
+        let mut sink = NativeMediaSink::new(mock_session(), &sps, &pps).unwrap();
+        for unit in &units { sink.publish_unit(unit).unwrap(); }
+        let (session,count) = sink.finish();
+        assert_eq!(count,4);
+        let bytes = session.into_inner().outgoing;
+        let mut reader = ChunkReader::new();
+        let mut input = bytes.as_slice();
+        for _ in 0..3 { assert_eq!(reader.read_message(&mut input).unwrap().type_id,20); }
+        assert_eq!(reader.read_message(&mut input).unwrap().payload[1],0);
+        for unit in units {
+            let msg = reader.read_message(&mut input).unwrap();
+            assert_eq!(msg.type_id,9);
+            assert_eq!(msg.timestamp_ms,(unit.dts_us/1000) as u32);
+            assert_eq!(msg.payload[1],1);
+        }
+        assert!(input.is_empty());
     }
     #[test]
     fn unsupported_jpeg_fails_without_encoding() {
