@@ -102,6 +102,12 @@ jobs:
           SCENARIO: ${{ matrix.scenario }}
           T3BOX_ROOT: ${{ github.workspace }}
         run: timeout 60 bash ci/transport-suite.sh "$SCENARIO"
+      - name: Publish transport results even on failure
+        if: always()
+        run: |
+          for report in transport-results/*/summary.md e2e-results/summary.md; do
+            if [[ -f "$report" ]]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -136,7 +142,10 @@ jobs:
           T3BOX_BENCH_PREBUILT: "1"
         run: |
           timeout 60 bash ci/pi5-benchmark.sh ci-results
-          cat ci-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish quality results even on failure
+        if: always()
+        run: |
+          if [[ -f ci-results/summary.md ]]; then cat ci-results/summary.md >> "$GITHUB_STEP_SUMMARY"; else echo "Quality measurements incomplete; inspect artifacts and logs." >> "$GITHUB_STEP_SUMMARY"; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

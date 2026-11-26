@@ -10,7 +10,7 @@ trap 'rm -rf "$work"' EXIT
 ffmpeg -v error -y -f lavfi -i 'testsrc2=size=1920x1080:rate=30' \
   -vf "drawbox=x=50:y=50:w=1820:h=450:color=white:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:text='T3Box LT  fn main  1234567890':fontsize=22:fontcolor=black:x=75:y=90,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:text='Small code  0123456789  ABCDEFGHIJKLMNOPQRSTUVWXYZ':fontsize=14:fontcolor=black:x=75:y=160" \
   -frames:v 120 -threads 1 -pix_fmt yuyv422 -f rawvideo "$work/input.yuv"
-ffmpeg -v error -y -f rawvideo -pixel_format yuyv422 -video_size 1920x1080 -framerate 30 -i "$work/input.yuv" -pix_fmt yuv420p -c:v ffv1 "$work/ref.mkv"
+ffmpeg -v error -y -f rawvideo -pixel_format yuyv422 -video_size 1920x1080 -framerate 30 -i "$work/input.yuv" -pix_fmt yuv420p -threads 1 -f rawvideo "$work/ref.yuv"
 lscpu > "$out/cpu.txt"
 free -b > "$out/host-memory.txt"
 uname -a > "$out/kernel.txt"
@@ -32,17 +32,16 @@ for preset in ${T3BOX_BENCH_PRESET:-ultrafast veryfast}; do
     ffprobe -v error -count_frames -show_streams -of json "$out/$name.h264" > "$out/$name.video.json"
     ffprobe -v error -show_streams -of json "$out/$name.aac" > "$out/$name.audio.json"
     ffmpeg -v error -xerror -i "$out/$name.aac" -f null -
-    ffmpeg -v info -xerror -r 30 -i "$out/$name.h264" -i "$work/ref.mkv" \
-      -lavfi '[0:v]settb=AVTB,setpts=N/30/TB[a];[1:v]settb=AVTB,setpts=N/30/TB[b];[a][b]psnr' -f null - 2>"$out/$name.psnr.log"
-    ffmpeg -v info -xerror -r 30 -i "$out/$name.h264" -i "$work/ref.mkv" \
-      -lavfi '[0:v]settb=AVTB,setpts=N/30/TB[a];[1:v]settb=AVTB,setpts=N/30/TB[b];[a][b]ssim' -f null - 2>"$out/$name.ssim.log"
-    ffmpeg -v error -y -i "$out/$name.h264" -frames:v 1 "$out/$name.preview.png"
+    # Decode once for both full-reference metrics and all preview/OCR samples.
+    ffmpeg -v info -xerror -r 30 -i "$out/$name.h264" -f rawvideo -pixel_format yuv420p -video_size 1920x1080 -framerate 30 -i "$work/ref.yuv" \
+      -filter_complex '[0:v]settb=AVTB,setpts=N/30/TB,split=3[a][c][p];[1:v]settb=AVTB,setpts=N/30/TB,split=2[b][d];[a][b]psnr[ps];[c][d]ssim[ss];[p]select=not(mod(n\,30)),setpts=N/30/TB[preview]' \
+      -map '[ps]' -map '[ss]' -f null - -map '[preview]' -fps_mode passthrough -threads 1 -y "$out/$name.preview-%d.png" 2>"$out/$name.metrics.log"
     for ts in 0 1 2 3; do
-      ffmpeg -v error -y -ss "$ts" -i "$out/$name.h264" -frames:v 1 -vf "crop=1500:65:60:145,scale=3000:130" "$out/$name.text-$ts.png"
+      ffmpeg -v error -y -i "$out/$name.preview-$((ts+1)).png" -frames:v 1 -vf "crop=1500:65:60:145,scale=3000:130" "$out/$name.text-$ts.png"
       tesseract "$out/$name.text-$ts.png" stdout --psm 7 2>/dev/null > "$out/$name.text-$ts.txt"
     done
     if ffmpeg -hide_banner -filters 2>/dev/null | grep -w libvmaf >/dev/null; then
-      ffmpeg -v error -xerror -r 30 -i "$out/$name.h264" -i "$work/ref.mkv" -lavfi "[0:v]settb=AVTB,setpts=N/30/TB[a];[1:v]settb=AVTB,setpts=N/30/TB[b];[a][b]libvmaf=log_fmt=json:log_path=$out/$name.vmaf.json" -f null -
+      ffmpeg -v error -xerror -r 30 -i "$out/$name.h264" -f rawvideo -pixel_format yuv420p -video_size 1920x1080 -framerate 30 -i "$work/ref.yuv" -lavfi "[0:v]settb=AVTB,setpts=N/30/TB[a];[1:v]settb=AVTB,setpts=N/30/TB[b];[a][b]libvmaf=log_fmt=json:log_path=$out/$name.vmaf.json" -f null -
     else
       echo "libvmaf unavailable in runner FFmpeg" > "$out/$name.vmaf-unavailable.txt"
     fi

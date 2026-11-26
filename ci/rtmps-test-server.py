@@ -7,6 +7,7 @@ import struct
 import sys
 import pathlib
 import json
+import time
 
 out = pathlib.Path(sys.argv[1])
 import os
@@ -72,6 +73,9 @@ def serve(s, index):
     last = {}
     first = {}
     max_skew_ms = 0
+    video_arrivals = []
+    video_ts = []
+    video_bytes = 0
     with (out / f"session-{index}.flv").open("wb") as f:
         f.write(b"FLV\x01\x05\0\0\0\x09\0\0\0\0")
         while True:
@@ -90,6 +94,10 @@ def serve(s, index):
                 if kind == 9 and not counts[key]:
                     first_key = payload[0] >> 4 == 1
                 counts[key] += 1
+                if kind == 9:
+                    video_arrivals.append(time.monotonic())
+                    video_ts.append(ts)
+                    video_bytes += len(payload)
                 first.setdefault(key, ts)
                 if 8 in last and 9 in last:
                     max_skew_ms = max(max_skew_ms, abs(last[8] - last[9]))
@@ -97,6 +105,11 @@ def serve(s, index):
             if index == 1 and counts["video"] >= first_limit and counts["audio"] >= 20:
                 break
     assert config == {8,9} and first_key and min(counts.values()) > 0
+    counts["first_video_arrival_s"] = video_arrivals[0]
+    counts["last_video_arrival_s"] = video_arrivals[-1]
+    counts["video_media_span_ms"] = video_ts[-1] - video_ts[0]
+    counts["video_max_gap_ms"] = max((b-a for a,b in zip(video_ts,video_ts[1:])),default=0)
+    counts["video_payload_bytes"] = video_bytes
     counts["first_pts_ms"] = first
     counts["last_pts_ms"] = {"audio": last[8], "video": last[9]}
     counts["max_packet_timestamp_skew_ms"] = max_skew_ms

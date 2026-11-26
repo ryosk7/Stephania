@@ -127,3 +127,17 @@ raw quality bitstreams on success. Actual billable usage and wall time
 depend on account limits, rounding and cache; job-count reduction is not a
 measured cost reduction. Required check should be ci-gate after validating
 branch protection; this change does not modify repository rules.
+
+## Measured media acceptance (provisional)
+
+Normal CI exposes Markdown and JSON reports even when threshold checks fail.
+Native codec profiles measure 1080p30 frame counts, offline FPS, p95 processing
+time, process CPU, peak RSS, bitrate, PSNR, SSIM, OCR and optional VMAF.
+Production ultrafast gates: >=30 offline FPS, >=30 dB PSNR, >=0.90 SSIM,
+>=90% normalized OCR similarity, <=1 GiB peak RSS, all frames decoded.
+Veryfast speed is comparative. Local RTMPS receiver gates media FPS >=29,
+arrival FPS >=27, estimated missing <=3%, final timestamp difference <=100ms,
+max packet timestamp skew <=250ms and last-to-first recovery gap <=10s.
+These are initial engineering thresholds, not hardware or YouTube guarantees.
+No extra runner is required; each quality profile decodes once for PSNR/SSIM
+and four preview samples. The existing 60s suite timeout remains.
