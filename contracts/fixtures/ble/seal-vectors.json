@@ -1,0 +1,12 @@
+{
+ "description": "ChaCha20-Poly1305 seal vectors computed with Python cryptography: key = MAC(owner_key, 't3box-seal-v1'), nonce = operation_nonce[:12], AAD = operation.",
+ "vectors": [
+  {
+   "owner_key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "operation_nonce": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+   "operation": "wifi.configure",
+   "plaintext_hex": "7b2273736964223a224c54222c227365637572697479223a227770612d70736b222c2270736b223a2270617373776f726431227d",
+   "sealed_hex": "8177ae1fce8374017c670a5d0b90a8e45d123f7687955892c6ee7eecaf1d7b98d71c9d4b7a43c7a54e406d002ee4c03fc536503d0c7683d5d7bf45818959f29d423cd0ae"
+  }
+ ]
+}

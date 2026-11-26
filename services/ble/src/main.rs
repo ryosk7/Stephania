@@ -1,38 +1,50 @@
-//! t3box-ble: BlueZ GATT adapter for T3Box provisioning.
+//! t3box-ble: BlueZ GATT adapter for T3Box provisioning (protocol v2).
 //!
-//! A thin process that publishes the provisioning service over BLE and
-//! forwards every characteristic read/write to `t3box-provision` over its
-//! Unix socket (`gatt.read` / `gatt.write`, docs/IPC.md framing). It holds no
-//! secrets and makes no decisions; the protocol lives in the device core.
+//! A thin process with no secrets and no protocol decisions: it publishes
+//! one service with two characteristics and forwards request fragments to
+//! `t3box-provision` (`gatt.request`, docs/IPC.md framing).
 //!
-//! Contract details implemented here (contracts/ble-protocol.md):
-//! - Reads: the value is fetched once at offset 0 and cached per
-//!   (device, characteristic) so ATT long reads (offset > 0) return slices of
-//!   the same value. A fresh offset-0 read refreshes it. This matters for
-//!   PairingChallenge, whose read has a side effect.
-//! - Writes: each fragment is forwarded; when the device core returns a
-//!   response (or an error), it is notified on the same characteristic,
-//!   fragmented to the client's ATT payload under the request's message id.
+//! BlueZ robustness measures implemented here (contracts/ble-protocol.md
+//! § "BlueZ robustness"):
+//! - Minimal, fixed GATT layout: a static 19-byte Info read (fits a
+//!   minimum-MTU read, never a long read) and one RPC characteristic
+//!   (write-with-response + indicate). No dynamic reads at all.
+//! - Responses are sent as **indications**: each fragment waits for the
+//!   client's ATT confirmation before the next is sent.
+//! - No BLE pairing or bonding is required (link encryption off by default;
+//!   confidentiality and authentication are at the application layer).
+//! - One active central at a time; other centrals get `InProgress` until the
+//!   active one disconnects or idles out. Partial transfers are dropped on
+//!   disconnect.
+//! - Self-healing: if bluetoothd restarts, the adapter disappears or is
+//!   powered off, the process exits non-zero so systemd restarts it and
+//!   re-registers the application and advertisement. Advertising is checked
+//!   periodically and re-registered if BlueZ dropped it.
+//! - Adapter selection prefers a USB controller (external dongle) over the
+//!   on-board UART controller when `T3BOX_BLE_ADAPTER=auto`.
 
-use bluer::adv::{Advertisement, Type as AdvType};
+use bluer::adv::{Advertisement, AdvertisementHandle, Type as AdvType};
 use bluer::gatt::local::{
     Application, Characteristic, CharacteristicNotifier, CharacteristicNotify, CharacteristicNotifyMethod,
     CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, ReqError, Service,
 };
-use bluer::Address;
-use futures::FutureExt;
+use bluer::{Adapter, Address, DeviceEvent, DeviceProperty, SessionEvent};
+use futures::{FutureExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use t3box::ipc::{read_frame, write_frame, IO_TIMEOUT};
-use t3box::provisioning::{fragment, hex};
-use t3box::provisioning_gatt::{Characteristic as Char, SERVICE_UUID};
-use uuid::Uuid;
+use t3box::provisioning::{fragment, hex, MIN_ATT_PAYLOAD};
+use t3box::provisioning_gatt::{INFO_UUID, INFO_VALUE, RPC_UUID, SERVICE_UUID};
 
-/// Socket client to t3box-provision. Serialised: the device core handles one
-/// request at a time anyway, and BLE provisioning is low rate.
+/// An idle central stops blocking others after this long.
+const PEER_IDLE: Duration = Duration::from_secs(30);
+const WATCHDOG_PERIOD: Duration = Duration::from_secs(10);
+
+/// Socket client to t3box-provision; one long-lived connection, reconnected
+/// once on failure (provision restarts are expected under systemd).
 struct Provision {
     path: PathBuf,
     stream: Option<UnixStream>,
@@ -44,7 +56,8 @@ impl Provision {
         for attempt in 0..2 {
             if self.stream.is_none() {
                 let s = UnixStream::connect(&self.path).map_err(|e| format!("provision_unavailable: {}", e.kind()))?;
-                let _ = s.set_read_timeout(Some(IO_TIMEOUT * 10)); // Wi-Fi join may take ~30 s
+                // A Wi-Fi join may take ~30 s inside the device core.
+                let _ = s.set_read_timeout(Some(IO_TIMEOUT * 10));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
                 self.stream = Some(s);
             }
@@ -61,8 +74,7 @@ impl Provision {
                         Err(v["error"]["code"].as_str().unwrap_or("internal_error").to_string())
                     };
                 }
-                // Stale connection (provision restarted): reconnect once.
-                Err(_) if attempt == 0 => { self.stream = None; }
+                Err(_) if attempt == 0 => self.stream = None,
                 Err(e) => { self.stream = None; return Err(format!("provision_unavailable: {e}")); }
             }
         }
@@ -75,23 +87,41 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-/// ATT payload for notifications: MTU − 3, within protocol bounds.
+/// ATT payload for indications: MTU − 3, within protocol bounds.
 pub fn att_payload(mtu: u16) -> usize {
-    (mtu as usize).saturating_sub(3).clamp(t3box::provisioning::MIN_ATT_PAYLOAD, 509)
+    (mtu as usize).saturating_sub(3).clamp(MIN_ATT_PAYLOAD, 509)
 }
 
-/// Slice a cached long-read value at `offset`.
-pub fn slice_at(value: &[u8], offset: u16) -> Result<Vec<u8>, ReqError> {
-    let offset = offset as usize;
-    if offset > value.len() { Err(ReqError::InvalidOffset) } else { Ok(value[offset..].to_vec()) }
+/// Which central may currently talk to the device.
+#[derive(Debug, Default)]
+pub struct PeerGate {
+    active: Option<(Address, Instant)>,
 }
 
-type Notifiers = Arc<tokio::sync::Mutex<HashMap<Uuid, CharacteristicNotifier>>>;
+impl PeerGate {
+    /// Admit `peer` if no other central is active (or the active one idled).
+    /// Returns the displaced peer when another central idled out.
+    pub fn admit(&mut self, peer: Address, now: Instant) -> Result<Option<Address>, ReqError> {
+        match self.active {
+            Some((current, _)) if current == peer => { self.active = Some((peer, now)); Ok(None) }
+            Some((_, last)) if now.duration_since(last) < PEER_IDLE => Err(ReqError::InProgress),
+            previous => { self.active = Some((peer, now)); Ok(previous.map(|(p, _)| p)) }
+        }
+    }
+
+    pub fn release(&mut self, peer: Address) -> bool {
+        if matches!(self.active, Some((p, _)) if p == peer) { self.active = None; true } else { false }
+    }
+
+    pub fn active(&self) -> Option<Address> { self.active.map(|(p, _)| p) }
+}
 
 struct Shared {
     provision: Mutex<Provision>,
-    read_cache: Mutex<HashMap<(Address, Uuid), Vec<u8>>>,
-    notifiers: Notifiers,
+    gate: Mutex<PeerGate>,
+    watched: Mutex<std::collections::HashSet<Address>>,
+    notifier: tokio::sync::Mutex<Option<CharacteristicNotifier>>,
+    adapter: Adapter,
 }
 
 async fn provision_call(shared: &Arc<Shared>, method: &'static str, params: Value) -> Result<Value, String> {
@@ -101,151 +131,214 @@ async fn provision_call(shared: &Arc<Shared>, method: &'static str, params: Valu
         .map_err(|_| "internal_error".to_string())?
 }
 
-fn characteristic(c: Char, shared: &Arc<Shared>, encrypt: bool) -> Characteristic {
-    let uuid: Uuid = c.uuid().parse().expect("valid uuid");
-    let mut ch = Characteristic { uuid, ..Default::default() };
-    if !c.writable() {
-        let shared = Arc::clone(shared);
-        ch.read = Some(CharacteristicRead {
+/// Watch a central's connection (once per address) and release it on
+/// disconnect, dropping its partial transfer in the device core.
+fn watch_disconnect(shared: &Arc<Shared>, peer: Address) {
+    if !shared.watched.lock().unwrap_or_else(|e| e.into_inner()).insert(peer) {
+        return;
+    }
+    let shared = Arc::clone(shared);
+    tokio::spawn(async move {
+        if let Ok(device) = shared.adapter.device(peer) {
+            if let Ok(events) = device.events().await {
+                let mut events = Box::pin(events);
+                while let Some(ev) = events.next().await {
+                    if let DeviceEvent::PropertyChanged(DeviceProperty::Connected(false)) = ev { break; }
+                }
+            }
+        }
+        shared.watched.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
+        shared.gate.lock().unwrap_or_else(|e| e.into_inner()).release(peer);
+        let _ = provision_call(&shared, "gatt.disconnect", json!({"peer": peer.to_string()})).await;
+    });
+}
+
+async fn on_write(shared: Arc<Shared>, value: Vec<u8>, peer: Address, mtu: u16, offset: u16) -> Result<(), ReqError> {
+    if value.is_empty() || offset != 0 {
+        return Err(ReqError::InvalidValueLength);
+    }
+    let displaced = shared.gate.lock().unwrap_or_else(|e| e.into_inner()).admit(peer, Instant::now())?;
+    if let Some(previous) = displaced {
+        let _ = provision_call(&shared, "gatt.disconnect", json!({"peer": previous.to_string()})).await;
+    }
+    watch_disconnect(&shared, peer);
+    let message_id = value[0];
+    let r = provision_call(&shared, "gatt.request", json!({"peer": peer.to_string(), "fragment_hex": hex(&value)})).await;
+    let response = match r {
+        Ok(v) => match v["response_hex"].as_str() {
+            Some(h) => unhex(h).ok_or(ReqError::Failed)?,
+            None => return Ok(()), // more fragments expected
+        },
+        Err(_) => return Err(ReqError::Failed),
+    };
+    let att = att_payload(mtu);
+    // Indicate after the write is acknowledged; each fragment is confirmed.
+    tokio::spawn(async move {
+        let Ok(frags) = fragment(message_id, &response, att) else { return };
+        let mut guard = shared.notifier.lock().await;
+        let Some(n) = guard.as_mut() else {
+            eprintln!("t3box-ble: response dropped, client not subscribed to indications");
+            return;
+        };
+        for f in frags {
+            if let Err(e) = n.notify(f).await {
+                eprintln!("t3box-ble: indication failed: {e}");
+                *guard = None;
+                return;
+            }
+        }
+    });
+    Ok(())
+}
+
+fn rpc_characteristic(shared: &Arc<Shared>, encrypt: bool) -> Characteristic {
+    let write_shared = Arc::clone(shared);
+    let notify_shared = Arc::clone(shared);
+    Characteristic {
+        uuid: RPC_UUID.parse().expect("uuid"),
+        write: Some(CharacteristicWrite {
+            write: true,
+            encrypt_write: encrypt,
+            method: CharacteristicWriteMethod::Fun(Box::new(move |value, req| {
+                on_write(Arc::clone(&write_shared), value, req.device_address, req.mtu, req.offset).boxed()
+            })),
+            ..Default::default()
+        }),
+        notify: Some(CharacteristicNotify {
+            indicate: true,
+            method: CharacteristicNotifyMethod::Fun(Box::new(move |notifier| {
+                let shared = Arc::clone(&notify_shared);
+                async move { *shared.notifier.lock().await = Some(notifier); }.boxed()
+            })),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn info_characteristic(encrypt: bool) -> Characteristic {
+    Characteristic {
+        uuid: INFO_UUID.parse().expect("uuid"),
+        read: Some(CharacteristicRead {
             read: true,
             encrypt_read: encrypt,
-            fun: Box::new(move |req| {
-                let shared = Arc::clone(&shared);
-                async move {
-                    let key = (req.device_address, uuid);
-                    if req.offset > 0 {
-                        let cache = shared.read_cache.lock().unwrap_or_else(|e| e.into_inner());
-                        return cache.get(&key).map_or(Err(ReqError::InvalidOffset), |v| slice_at(v, req.offset));
-                    }
-                    let r = provision_call(&shared, "gatt.read", json!({"uuid": c.uuid()})).await;
-                    let value = match r {
-                        Ok(v) => v["value_hex"].as_str().and_then(unhex).ok_or(ReqError::Failed)?,
-                        Err(code) if code == "not_owner" || code == "forbidden" => return Err(ReqError::NotAuthorized),
-                        Err(code) if code.starts_with("provision_unavailable") => return Err(ReqError::Failed),
-                        Err(_) => return Err(ReqError::NotPermitted),
-                    };
-                    shared.read_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, value.clone());
-                    Ok(value)
-                }
-                .boxed()
-            }),
+            fun: Box::new(|req| async move {
+                // Static and ≤ 22 bytes: never needs a long read.
+                Ok(INFO_VALUE.get(req.offset as usize..).ok_or(ReqError::InvalidOffset)?.to_vec())
+            }.boxed()),
             ..Default::default()
-        });
-        return ch;
+        }),
+        ..Default::default()
     }
-    let write_shared = Arc::clone(shared);
-    ch.write = Some(CharacteristicWrite {
-        write: true,
-        encrypt_write: encrypt,
-        method: CharacteristicWriteMethod::Fun(Box::new(move |value, req| {
-            let shared = Arc::clone(&write_shared);
-            async move {
-                if value.is_empty() || req.offset != 0 { return Err(ReqError::InvalidValueLength); }
-                let message_id = value[0];
-                let r = provision_call(&shared, "gatt.write", json!({"uuid": c.uuid(), "fragment_hex": hex(&value)})).await;
-                let response = match r {
-                    Ok(v) => match v["response_hex"].as_str() {
-                        Some(h) => unhex(h).ok_or(ReqError::Failed)?,
-                        None => return Ok(()), // more fragments expected
-                    },
-                    Err(code) if code.starts_with("provision_unavailable") => return Err(ReqError::Failed),
-                    // Contract: device errors are notified as {"error": code}.
-                    Err(code) => serde_json::to_vec(&json!({"error": code})).map_err(|_| ReqError::Failed)?,
-                };
-                let att = att_payload(req.mtu);
-                let notifiers = Arc::clone(&shared.notifiers);
-                // Notify after the write is acknowledged.
-                tokio::spawn(async move {
-                    let Ok(frags) = fragment(message_id, &response, att) else { return };
-                    let mut map = notifiers.lock().await;
-                    let Some(n) = map.get_mut(&uuid) else {
-                        eprintln!("t3box-ble: response for {uuid} dropped: client not subscribed");
-                        return;
-                    };
-                    if std::env::var_os("T3BOX_BLE_DEBUG").is_some() {
-                        eprintln!("t3box-ble: notify {uuid} id={message_id} att={att} {} fragment(s)", frags.len());
-                    }
-                    for f in frags {
-                        if n.notify(f).await.is_err() { map.remove(&uuid); return; }
-                    }
-                });
-                Ok(())
+}
+
+/// `auto`: prefer a USB-attached controller (external dongle) over the
+/// on-board one; otherwise BlueZ's default adapter.
+async fn pick_adapter(session: &bluer::Session) -> bluer::Result<Adapter> {
+    match std::env::var("T3BOX_BLE_ADAPTER").unwrap_or_else(|_| "auto".into()).as_str() {
+        "auto" | "" => {
+            for name in session.adapter_names().await? {
+                let real = std::fs::canonicalize(format!("/sys/class/bluetooth/{name}/device")).unwrap_or_default();
+                if real.to_string_lossy().contains("/usb") {
+                    return session.adapter(&name);
+                }
             }
-            .boxed()
-        })),
+            session.default_adapter().await
+        }
+        name => session.adapter(name),
+    }
+}
+
+async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<AdvertisementHandle> {
+    adapter.advertise(Advertisement {
+        advertisement_type: AdvType::Peripheral,
+        // 128-bit UUID (18 bytes) + flags (3) fit a legacy 31-byte
+        // advertisement; BlueZ moves the name to the scan response if needed.
+        service_uuids: [SERVICE_UUID.parse().expect("uuid")].into_iter().collect(),
+        local_name: Some(name.to_owned()),
+        discoverable: Some(true),
         ..Default::default()
-    });
-    let notifiers = Arc::clone(&shared.notifiers);
-    ch.notify = Some(CharacteristicNotify {
-        notify: true,
-        method: CharacteristicNotifyMethod::Fun(Box::new(move |notifier| {
-            let notifiers = Arc::clone(&notifiers);
-            async move { notifiers.lock().await.insert(uuid, notifier); }.boxed()
-        })),
-        ..Default::default()
-    });
-    ch
+    }).await
+}
+
+fn fatal(kind: bluer::ErrorKind, message: &str) -> bluer::Error {
+    bluer::Error { kind, message: message.into() }
 }
 
 #[tokio::main]
-async fn main() -> bluer::Result<()> {
+async fn main() {
+    if let Err(e) = run().await {
+        // Non-zero exit: systemd restarts us and we re-register cleanly.
+        eprintln!("t3box-ble: fatal: {e}");
+        std::process::exit(2);
+    }
+}
+
+async fn run() -> bluer::Result<()> {
     let socket = std::env::var_os("T3BOX_PROVISION_SOCKET").map(PathBuf::from)
         .unwrap_or_else(|| "/run/t3box-provision/provisioning.sock".into());
-    // LE link encryption on by default; the app-layer HMAC proofs do not
-    // depend on it, it only hides traffic. Can be disabled for test benches.
-    let encrypt = std::env::var("T3BOX_BLE_REQUIRE_ENCRYPTION").as_deref() != Ok("0");
+    // Off by default: requiring link encryption forces BLE pairing/bonding,
+    // the most common source of interoperability failures. The protocol
+    // authenticates and seals at the application layer instead.
+    let encrypt = std::env::var("T3BOX_BLE_REQUIRE_ENCRYPTION").as_deref() == Ok("1");
     let session = bluer::Session::new().await?;
-    let adapter = match std::env::var("T3BOX_BLE_ADAPTER") {
-        Ok(name) if !name.is_empty() => session.adapter(&name)?,
-        _ => session.default_adapter().await?,
-    };
+    let adapter = pick_adapter(&session).await?;
     adapter.set_powered(true).await?;
     let address = adapter.address().await?;
     let name = format!("T3Box-{:02X}{:02X}", address.0[4], address.0[5]);
-    let _ = adapter.set_alias(name.clone()).await;
 
     let shared = Arc::new(Shared {
         provision: Mutex::new(Provision { path: socket, stream: None, next: 0 }),
-        read_cache: Mutex::new(HashMap::new()),
-        notifiers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        gate: Mutex::new(PeerGate::default()),
+        watched: Mutex::new(Default::default()),
+        notifier: tokio::sync::Mutex::new(None),
+        adapter: adapter.clone(),
     });
-    let service_uuid: Uuid = SERVICE_UUID.parse().expect("valid uuid");
     let app = Application {
         services: vec![Service {
-            uuid: service_uuid,
+            uuid: SERVICE_UUID.parse().expect("uuid"),
             primary: true,
-            characteristics: Char::ALL.into_iter().map(|c| characteristic(c, &shared, encrypt)).collect(),
+            characteristics: vec![info_characteristic(encrypt), rpc_characteristic(&shared, encrypt)],
             ..Default::default()
         }],
         ..Default::default()
     };
     let _app = adapter.serve_gatt_application(app).await?;
-    let _adv = adapter.advertise(Advertisement {
-        advertisement_type: AdvType::Peripheral,
-        service_uuids: [service_uuid].into_iter().collect(),
-        local_name: Some(name.clone()),
-        discoverable: Some(true),
-        ..Default::default()
-    }).await?;
-    eprintln!("t3box-ble: advertising {name} on {} (encryption {})", adapter.name(), if encrypt { "required" } else { "off" });
+    let mut adv = advertise(&adapter, &name).await?;
+    eprintln!("t3box-ble: advertising {name} on {} (link encryption {})", adapter.name(), if encrypt { "required" } else { "off" });
 
+    let adapter_name = adapter.name().to_owned();
+    let mut session_events = Box::pin(session.events().await?);
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
-    Ok(())
+    let mut tick = tokio::time::interval(WATCHDOG_PERIOD);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = term.recv() => return Ok(()),
+            ev = session_events.next() => match ev {
+                Some(SessionEvent::AdapterRemoved(n)) if n == adapter_name => return Err(fatal(bluer::ErrorKind::NotFound, "adapter removed")),
+                None => return Err(fatal(bluer::ErrorKind::Failed, "bluetoothd connection lost")),
+                _ => {}
+            },
+            _ = tick.tick() => {
+                // Errors here mean bluetoothd restarted or the adapter vanished.
+                if !adapter.is_powered().await? {
+                    return Err(fatal(bluer::ErrorKind::NotReady, "adapter powered off"));
+                }
+                let idle = shared.gate.lock().unwrap_or_else(|e| e.into_inner()).active().is_none();
+                if idle && adapter.active_advertising_instances().await? == 0 {
+                    eprintln!("t3box-ble: advertising was dropped by BlueZ; re-registering");
+                    drop(adv);
+                    adv = advertise(&adapter, &name).await?;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn long_read_slicing() {
-        let v: Vec<u8> = (0..300u16).map(|i| i as u8).collect();
-        assert_eq!(slice_at(&v, 0).unwrap(), v);
-        assert_eq!(slice_at(&v, 299).unwrap(), vec![43]);
-        assert_eq!(slice_at(&v, 300).unwrap(), Vec::<u8>::new());
-        assert!(matches!(slice_at(&v, 301), Err(ReqError::InvalidOffset)));
-    }
 
     #[test]
     fn att_payload_bounds() {
@@ -260,5 +353,26 @@ mod tests {
         assert_eq!(unhex("00ff"), Some(vec![0, 255]));
         assert_eq!(unhex("0"), None);
         assert_eq!(unhex("zz"), None);
+    }
+
+    #[test]
+    fn single_active_central_with_idle_takeover() {
+        let a = Address([1, 2, 3, 4, 5, 6]);
+        let b = Address([6, 5, 4, 3, 2, 1]);
+        let t = Instant::now();
+        let mut g = PeerGate::default();
+        assert_eq!(g.admit(a, t), Ok(None));
+        assert_eq!(g.admit(a, t + Duration::from_secs(5)), Ok(None));
+        assert_eq!(g.admit(b, t + Duration::from_secs(10)), Err(ReqError::InProgress));
+        // a idles out: b takes over and a's partial state must be dropped.
+        assert_eq!(g.admit(b, t + Duration::from_secs(5) + PEER_IDLE), Ok(Some(a)));
+        assert!(!g.release(a));
+        assert!(g.release(b));
+        assert_eq!(g.admit(a, t + Duration::from_secs(100)), Ok(None));
+    }
+
+    #[test]
+    fn info_value_never_needs_a_long_read() {
+        assert!(INFO_VALUE.len() <= 22);
     }
 }

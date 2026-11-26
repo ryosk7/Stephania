@@ -1,86 +1,51 @@
-//! GATT characteristic semantics for provisioning (contracts/ble-protocol.md).
+//! Provisioning protocol v2: one request/response channel over GATT
+//! (contracts/ble-protocol.md).
 //!
-//! [`GattService`] is the whole device-side behaviour behind the BLE
-//! characteristics: reads return complete JSON messages (the transport
-//! fragments them with [`crate::provisioning::fragment`]), writes arrive as
-//! fragments and are reassembled per characteristic. A BlueZ D-Bus adapter
-//! only has to map characteristic UUIDs to [`Characteristic`] and forward
-//! bytes; it is not implemented yet.
+//! Designed around common BlueZ / Linux BLE failure modes:
+//! - No dynamic characteristic reads (no ATT long reads, no read side
+//!   effects): every operation is a request message written in fragments
+//!   to the single RPC characteristic; the response is indicated back.
+//! - No BLE pairing/bonding: authentication is HMAC-based and Wi-Fi
+//!   credentials are sealed at the application layer.
+//! - Lost responses are recoverable: mutating requests are kept in a small
+//!   replay cache, so a client that reconnects and resends the identical
+//!   request (same message id and bytes) gets the same response without the
+//!   operation running twice.
+//! - Per-peer reassembly state, dropped on disconnect, so interleaved or
+//!   abandoned transfers from different centrals cannot corrupt each other.
+//! - Stateless operations (no read cursors): scan results return in one
+//!   response.
 //!
-//! Network changes go through [`NetworkBackend`] (NetworkManager in
-//! production, fakes in tests). Ownership changes are persisted through
-//! [`OwnershipStore`] *before* they are acknowledged.
+//! A transport (BlueZ adapter, socket test harness) calls
+//! [`RpcService::handle_fragment`] for every written fragment and indicates
+//! the returned bytes, fragmented with [`crate::provisioning::fragment`]
+//! under the request's message id.
 
 use crate::provisioning::{
-    hex, parse_wifi_configuration, unhex, ClaimError, FrameError, NetworkState, Ownership, OwnershipManager,
-    Reassembler, WifiConfiguration, NONCE_BYTES,
+    hex, open, parse_wifi_configuration, unhex, ClaimError, FrameError, NetworkState, Ownership, OwnershipManager,
+    Reassembler, WifiConfiguration,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-pub const PROTOCOL_VERSION: u64 = 1;
-pub const MAX_SCAN_RESULTS: usize = 60;
-/// Worst-case entry (32-byte SSID, rssi -100, "unsupported") is 75 bytes;
-/// 5 per page (~446 bytes) keeps every read within the 512-byte limit.
-pub const SCAN_PAGE_SIZE: usize = 5;
-/// ATT attribute values are at most 512 bytes (Bluetooth Core, Vol 3 Part F).
-pub const MAX_READ_BYTES: usize = 512;
-pub const SERVICE_UUID: &str = "7c3b0001-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+pub const PROTOCOL_VERSION: u64 = 2;
+/// New service UUID per protocol major version, so clients never apply a
+/// cached GATT layout of another version.
+pub const SERVICE_UUID: &str = "7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+/// Static, tiny (fits one minimum-MTU read): `{"v":2,"p":"t3box"}`.
+pub const INFO_UUID: &str = "7c3b0101-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+/// Write (with response) request fragments; responses are indicated.
+pub const RPC_UUID: &str = "7c3b0102-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+pub const INFO_VALUE: &[u8] = br#"{"v":2,"p":"t3box"}"#;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Characteristic {
-    ProtocolVersion,
-    DeviceInformation,
-    PairingChallenge,
-    PairingResponse,
-    WifiScanRequest,
-    WifiScanResults,
-    WifiConfiguration,
-    NetworkStatus,
-    ManagementEndpoint,
-    DevicePublicKey,
-    OperationChallenge,
-}
-
-impl Characteristic {
-    pub const ALL: [Characteristic; 11] = [
-        Self::ProtocolVersion, Self::DeviceInformation, Self::PairingChallenge, Self::PairingResponse,
-        Self::WifiScanRequest, Self::WifiScanResults, Self::WifiConfiguration, Self::NetworkStatus,
-        Self::ManagementEndpoint, Self::DevicePublicKey, Self::OperationChallenge,
-    ];
-
-    fn suffix(self) -> u16 {
-        match self {
-            Self::ProtocolVersion => 0x0002, Self::DeviceInformation => 0x0003, Self::PairingChallenge => 0x0004,
-            Self::PairingResponse => 0x0005, Self::WifiScanRequest => 0x0006, Self::WifiScanResults => 0x0007,
-            Self::WifiConfiguration => 0x0008, Self::NetworkStatus => 0x0009, Self::ManagementEndpoint => 0x000a,
-            Self::DevicePublicKey => 0x000b, Self::OperationChallenge => 0x000c,
-        }
-    }
-
-    pub fn uuid(self) -> String {
-        format!("7c3b{:04x}-5d1e-4a6f-9b0e-3a1f2c4d5e60", self.suffix())
-    }
-
-    pub fn from_uuid(uuid: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.uuid().eq_ignore_ascii_case(uuid))
-    }
-
-    pub fn writable(self) -> bool {
-        matches!(self, Self::PairingResponse | Self::WifiScanRequest | Self::WifiConfiguration)
-    }
-
-    /// Operation name an authenticated write must carry.
-    fn operation(self) -> Option<&'static str> {
-        match self {
-            Self::WifiScanRequest => Some("wifi.scan"),
-            Self::WifiConfiguration => Some("wifi.configure"),
-            _ => None,
-        }
-    }
-}
+/// Scan results are returned in one response; 40 worst-case entries
+/// (~75 bytes each) stay under the 4096-byte message limit.
+pub const MAX_SCAN_RESULTS: usize = 40;
+pub const REPLAY_TTL: Duration = Duration::from_secs(60);
+pub const REPLAY_ENTRIES: usize = 8;
+pub const MAX_PEERS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
@@ -135,40 +100,27 @@ impl OwnershipStore for FileOwnershipStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GattError {
-    NotReadable,
-    NotWritable,
-    Frame(FrameError),
-    Request(&'static str),
-    Claim(ClaimError),
-    Storage,
+pub fn claim_error_code(c: &ClaimError) -> &'static str {
+    match c {
+        ClaimError::NotClaimable => "not_claimable",
+        ClaimError::NoPairingInProgress => "no_challenge",
+        ClaimError::PairingExpired => "challenge_expired",
+        ClaimError::LockedOut => "locked_out",
+        ClaimError::InvalidOwnerId => "invalid_owner_id",
+        ClaimError::BadProof => "bad_proof",
+        ClaimError::NotOwner => "not_owner",
+        ClaimError::PhysicalConfirmationRequired => "physical_confirmation_required",
+        ClaimError::Random => "internal_error",
+    }
 }
 
-impl GattError {
-    pub fn code(&self) -> &'static str {
-        match self {
-            GattError::NotReadable => "not_readable",
-            GattError::NotWritable => "not_writable",
-            GattError::Frame(FrameError::TooLarge) => "too_large",
-            GattError::Frame(FrameError::PayloadTooSmall) => "payload_too_small",
-            GattError::Frame(FrameError::Malformed) => "malformed",
-            GattError::Frame(FrameError::Inconsistent) => "inconsistent",
-            GattError::Frame(FrameError::Duplicate) => "duplicate",
-            GattError::Request(code) => code,
-            GattError::Claim(c) => match c {
-                ClaimError::NotClaimable => "not_claimable",
-                ClaimError::NoPairingInProgress => "no_pairing_in_progress",
-                ClaimError::PairingExpired => "pairing_expired",
-                ClaimError::LockedOut => "locked_out",
-                ClaimError::InvalidOwnerId => "invalid_owner_id",
-                ClaimError::BadProof => "bad_proof",
-                ClaimError::NotOwner => "not_owner",
-                ClaimError::PhysicalConfirmationRequired => "physical_confirmation_required",
-                ClaimError::Random => "internal_error",
-            },
-            GattError::Storage => "storage_failed",
-        }
+fn frame_error_code(e: &FrameError) -> &'static str {
+    match e {
+        FrameError::TooLarge => "too_large",
+        FrameError::PayloadTooSmall => "payload_too_small",
+        FrameError::Malformed => "malformed",
+        FrameError::Inconsistent => "inconsistent",
+        FrameError::Duplicate => "duplicate",
     }
 }
 
@@ -182,239 +134,245 @@ fn network_name(state: NetworkState) -> &'static str {
     }
 }
 
-pub struct GattService<N: NetworkBackend, S: OwnershipStore> {
+/// Error code carried in a `{"error": code}` response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpcError(pub &'static str);
+
+impl From<ClaimError> for RpcError {
+    fn from(c: ClaimError) -> Self { RpcError(claim_error_code(&c)) }
+}
+
+struct Replay {
+    digest: [u8; 32],
+    response: Vec<u8>,
+    at: Instant,
+}
+
+pub struct RpcService<N: NetworkBackend, S: OwnershipStore> {
     ownership: OwnershipManager,
     network: N,
     store: S,
-    reassembly: HashMap<Characteristic, Reassembler>,
+    peers: HashMap<String, (Reassembler, Instant)>,
+    replay: Vec<Replay>,
     network_state: NetworkState,
     network_error: Option<&'static str>,
-    scan: Vec<ScanResult>,
-    scan_cursor: usize,
     pub model: String,
     pub firmware: String,
 }
 
-impl<N: NetworkBackend, S: OwnershipStore> GattService<N, S> {
+fn exact(req: &Map<String, Value>, keys: &[&str]) -> Result<(), RpcError> {
+    if req.len() == keys.len() && keys.iter().all(|k| req.contains_key(*k)) { Ok(()) } else { Err(RpcError("invalid_request")) }
+}
+
+fn hex_field<const N: usize>(req: &Map<String, Value>, key: &str) -> Result<[u8; N], RpcError> {
+    req.get(key).and_then(Value::as_str).and_then(unhex::<N>).ok_or(RpcError("invalid_request"))
+}
+
+fn hex_bytes(req: &Map<String, Value>, key: &str, max: usize) -> Result<Vec<u8>, RpcError> {
+    let s = req.get(key).and_then(Value::as_str).ok_or(RpcError("invalid_request"))?;
+    if !s.len().is_multiple_of(2) || s.len() > max * 2 || !s.is_ascii() {
+        return Err(RpcError("invalid_request"));
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16)).collect::<Result<_, _>>()
+        .map_err(|_| RpcError("invalid_request"))
+}
+
+fn error_bytes(e: RpcError) -> Vec<u8> {
+    json!({"error": e.0}).to_string().into_bytes()
+}
+
+impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
     pub fn new(ownership: OwnershipManager, network: N, store: S) -> Self {
         Self {
             ownership, network, store,
-            reassembly: HashMap::new(),
+            peers: HashMap::new(),
+            replay: Vec::new(),
             network_state: NetworkState::Disconnected,
             network_error: None,
-            scan: Vec::new(),
-            scan_cursor: 0,
             model: "t3box-pi5".into(),
             firmware: env!("CARGO_PKG_VERSION").into(),
         }
     }
 
-    pub fn ownership(&self) -> &Ownership {
-        self.ownership.state()
+    pub fn ownership(&self) -> &Ownership { self.ownership.state() }
+    pub fn network_state(&self) -> NetworkState { self.network_state }
+    pub fn network(&self) -> &N { &self.network }
+
+    /// Forget a peer's partial transfer (call on disconnect).
+    pub fn disconnect(&mut self, peer: &str) {
+        self.peers.remove(peer);
     }
 
-    pub fn network_state(&self) -> NetworkState {
-        self.network_state
-    }
-
-    pub fn network(&self) -> &N {
-        &self.network
-    }
-
-    /// Handle a characteristic read; returns the complete JSON message
-    /// (always ≤ [`MAX_READ_BYTES`], served with ATT long reads).
-    pub fn read(&mut self, c: Characteristic, now: Instant) -> Result<Vec<u8>, GattError> {
-        let value = self.read_value(c, now)?;
-        if value.len() > MAX_READ_BYTES {
-            return Err(GattError::Request("value_too_large"));
+    /// Feed one written fragment from `peer`. Returns the response to
+    /// indicate once the request is complete (errors included, as
+    /// `{"error": code}`), or `None` while more fragments are expected.
+    pub fn handle_fragment(&mut self, peer: &str, fragment: &[u8], now: Instant) -> Option<Vec<u8>> {
+        if !self.peers.contains_key(peer) && self.peers.len() >= MAX_PEERS {
+            // Evict the stalest peer rather than refusing a new central.
+            if let Some(oldest) = self.peers.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone()) {
+                self.peers.remove(&oldest);
+            }
         }
-        Ok(value)
+        let entry = self.peers.entry(peer.to_owned()).or_insert_with(|| (Reassembler::default(), now));
+        entry.1 = now;
+        let message = match entry.0.push(fragment, now) {
+            Ok(Some(m)) => m,
+            Ok(None) => return None,
+            Err(e) => return Some(error_bytes(RpcError(frame_error_code(&e)))),
+        };
+        let message_id = fragment.first().copied().unwrap_or_default();
+        Some(self.handle_message(message_id, &message, now))
     }
 
-    fn read_value(&mut self, c: Characteristic, now: Instant) -> Result<Vec<u8>, GattError> {
-        let value = match c {
-            Characteristic::ProtocolVersion => json!({"version": PROTOCOL_VERSION}),
-            Characteristic::DeviceInformation => json!({
-                "model": self.model, "firmware": self.firmware, "protocol": PROTOCOL_VERSION,
-                "ownership": self.ownership.reported_state(), "network": network_name(self.network_state),
-            }),
-            Characteristic::PairingChallenge => {
+    fn handle_message(&mut self, message_id: u8, message: &[u8], now: Instant) -> Vec<u8> {
+        let digest = {
+            let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+            ctx.update(&[message_id]);
+            ctx.update(message);
+            let mut d = [0u8; 32];
+            d.copy_from_slice(ctx.finish().as_ref());
+            d
+        };
+        self.replay.retain(|r| now.duration_since(r.at) < REPLAY_TTL);
+        if let Some(hit) = self.replay.iter().find(|r| r.digest == digest) {
+            return hit.response.clone();
+        }
+        let (response, cacheable) = match self.dispatch(message, now) {
+            Ok((v, cacheable)) => (v.to_string().into_bytes(), cacheable),
+            Err(e) => (error_bytes(e), false),
+        };
+        if cacheable {
+            if self.replay.len() >= REPLAY_ENTRIES { self.replay.remove(0); }
+            self.replay.push(Replay { digest, response: response.clone(), at: now });
+        }
+        response
+    }
+
+    /// Returns the response and whether it must be replayed for an
+    /// identical retry (mutating or non-repeatable operations).
+    fn dispatch(&mut self, message: &[u8], now: Instant) -> Result<(Value, bool), RpcError> {
+        let Ok(Value::Object(req)) = serde_json::from_slice::<Value>(message) else { return Err(RpcError("invalid_json")) };
+        let op = req.get("op").and_then(Value::as_str).ok_or(RpcError("invalid_request"))?.to_owned();
+        match op.as_str() {
+            "device.info" => {
+                exact(&req, &["op"])?;
+                Ok((json!({
+                    "model": self.model, "firmware": self.firmware, "protocol": PROTOCOL_VERSION,
+                    "ownership": self.ownership.reported_state(), "network": network_name(self.network_state),
+                }), false))
+            }
+            "pairing.challenge" => {
+                exact(&req, &["op"])?;
                 if *self.ownership.state() == Ownership::Unclaimed {
-                    let nonce = self.ownership.begin_pairing(now).map_err(GattError::Claim)?;
-                    json!({"state": "PAIRING", "nonce": hex(&nonce)})
+                    let nonce = self.ownership.begin_pairing(now)?;
+                    Ok((json!({"state": "PAIRING", "nonce": hex(&nonce)}), true))
                 } else {
-                    json!({"state": self.ownership.reported_state()})
+                    Ok((json!({"state": self.ownership.reported_state()}), false))
                 }
             }
-            Characteristic::OperationChallenge => {
-                let nonce = self.ownership.operation_challenge(now).map_err(GattError::Claim)?;
-                json!({"nonce": hex(&nonce)})
+            "pairing.claim" => {
+                exact(&req, &["op", "owner_id", "proof"])?;
+                let owner_id = req["owner_id"].as_str().ok_or(RpcError("invalid_request"))?;
+                let proof = hex_field::<32>(&req, "proof")?;
+                let claimed = self.ownership.complete_pairing(owner_id, &proof, now)?.clone();
+                if self.store.save(&claimed).is_err() {
+                    // Not durable means not claimed: roll back so a retry works.
+                    let _ = self.ownership.factory_reset(true);
+                    return Err(RpcError("storage_failed"));
+                }
+                Ok((json!({"state": "CLAIMED"}), true))
             }
-            Characteristic::WifiScanResults => {
-                self.require_owner()?;
-                let pages = self.scan.len().div_ceil(SCAN_PAGE_SIZE).max(1);
-                let page = self.scan_cursor % pages;
-                self.scan_cursor = page + 1;
-                let networks: Vec<Value> = self.scan.iter().skip(page * SCAN_PAGE_SIZE).take(SCAN_PAGE_SIZE)
-                    .map(|n| json!({"ssid": n.ssid, "rssi": n.rssi, "security": n.security})).collect();
-                json!({"page": page, "pages": pages, "networks": networks})
+            "operation.challenge" => {
+                exact(&req, &["op"])?;
+                let nonce = self.ownership.operation_challenge(now)?;
+                Ok((json!({"nonce": hex(&nonce)}), true))
             }
-            Characteristic::NetworkStatus => match self.network_error {
-                Some(error) => json!({"state": network_name(self.network_state), "error": error}),
-                None => json!({"state": network_name(self.network_state)}),
-            },
+            "wifi.scan" => {
+                exact(&req, &["op", "proof"])?;
+                let proof = hex_field::<32>(&req, "proof")?;
+                self.ownership.authorize("wifi.scan", b"", &proof, now)?;
+                Ok((self.wifi_scan(), true))
+            }
+            "wifi.configure" => {
+                exact(&req, &["op", "sealed", "proof"])?;
+                let sealed = hex_bytes(&req, "sealed", 512)?;
+                let proof = hex_field::<32>(&req, "proof")?;
+                let nonce = self.ownership.authorize("wifi.configure", &sealed, &proof, now)?;
+                let key = *self.ownership.owner_key().ok_or(RpcError("not_owner"))?;
+                let plain = open(&key, &nonce, "wifi.configure", &sealed).ok_or(RpcError("bad_seal"))?;
+                Ok((self.wifi_configure(&plain)?, true))
+            }
+            "network.status" => {
+                exact(&req, &["op"])?;
+                Ok((match self.network_error {
+                    Some(error) => json!({"state": network_name(self.network_state), "error": error}),
+                    None => json!({"state": network_name(self.network_state)}),
+                }, false))
+            }
             // Fail closed until trusted TLS and device identity exist.
-            Characteristic::ManagementEndpoint => json!({"urls": [], "certificate_sha256": null}),
-            Characteristic::DevicePublicKey => json!({"public_key": null}),
-            Characteristic::PairingResponse | Characteristic::WifiScanRequest | Characteristic::WifiConfiguration => {
-                return Err(GattError::NotReadable)
+            "management.endpoint" => {
+                exact(&req, &["op"])?;
+                Ok((json!({"urls": [], "certificate_sha256": null}), false))
             }
-        };
-        Ok(value.to_string().into_bytes())
-    }
-
-    fn require_owner(&self) -> Result<(), GattError> {
-        match self.ownership.state() {
-            Ownership::Claimed { .. } => Ok(()),
-            _ => Err(GattError::Claim(ClaimError::NotOwner)),
+            _ => Err(RpcError("unknown_op")),
         }
-    }
-
-    /// Handle one written fragment. Returns `Some(response JSON)` once a
-    /// complete message has been processed. The transport delivers it as
-    /// notifications on the same characteristic, fragmented with
-    /// [`crate::provisioning::fragment`] using the request's message id
-    /// (`fragment[0]` of the completing write).
-    pub fn write(&mut self, c: Characteristic, fragment: &[u8], now: Instant) -> Result<Option<Vec<u8>>, GattError> {
-        if !c.writable() {
-            return Err(GattError::NotWritable);
-        }
-        let message = match self.reassembly.entry(c).or_default().push(fragment, now).map_err(GattError::Frame)? {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-        let request: Value = serde_json::from_slice(&message).map_err(|_| GattError::Request("invalid_json"))?;
-        let Value::Object(request) = request else { return Err(GattError::Request("not_object")) };
-        let response = match c {
-            Characteristic::PairingResponse => self.pairing_response(&request, now)?,
-            _ => {
-                let payload = self.authenticated(c, &request, now)?;
-                match c {
-                    Characteristic::WifiScanRequest => self.wifi_scan(),
-                    Characteristic::WifiConfiguration => self.wifi_configure(&payload)?,
-                    _ => unreachable!("writable() covers all cases"),
-                }
-            }
-        };
-        Ok(Some(response.to_string().into_bytes()))
-    }
-
-    fn pairing_response(&mut self, request: &serde_json::Map<String, Value>, now: Instant) -> Result<Value, GattError> {
-        let (Some(Value::String(owner_id)), Some(Value::String(proof)), 2) = (request.get("owner_id"), request.get("proof"), request.len()) else {
-            return Err(GattError::Request("invalid_request"));
-        };
-        let proof = unhex::<32>(proof).ok_or(GattError::Request("invalid_request"))?;
-        let claimed = self.ownership.complete_pairing(owner_id, &proof, now).map_err(GattError::Claim)?.clone();
-        if self.store.save(&claimed).is_err() {
-            // Not durable means not claimed: roll back so a retry is possible.
-            let _ = self.ownership.factory_reset(true);
-            return Err(GattError::Storage);
-        }
-        Ok(json!({"state": "CLAIMED"}))
-    }
-
-    /// Verify `{"operation","payload_hex","proof"}` and return the payload.
-    fn authenticated(&mut self, c: Characteristic, request: &serde_json::Map<String, Value>, now: Instant) -> Result<Vec<u8>, GattError> {
-        let expected = c.operation().ok_or(GattError::NotWritable)?;
-        let (Some(Value::String(operation)), Some(Value::String(payload_hex)), Some(Value::String(proof)), 3) =
-            (request.get("operation"), request.get("payload_hex"), request.get("proof"), request.len())
-        else {
-            return Err(GattError::Request("invalid_request"));
-        };
-        if operation != expected {
-            return Err(GattError::Request("wrong_operation"));
-        }
-        if !payload_hex.len().is_multiple_of(2) || !payload_hex.is_ascii() {
-            return Err(GattError::Request("invalid_request"));
-        }
-        let payload: Vec<u8> = (0..payload_hex.len()).step_by(2)
-            .map(|i| u8::from_str_radix(&payload_hex[i..i + 2], 16))
-            .collect::<Result<_, _>>().map_err(|_| GattError::Request("invalid_request"))?;
-        let proof = unhex::<32>(proof).ok_or(GattError::Request("invalid_request"))?;
-        self.ownership.authorize(operation, &payload, &proof, now).map_err(GattError::Claim)?;
-        Ok(payload)
     }
 
     fn wifi_scan(&mut self) -> Value {
         let previous = self.network_state;
         self.network_state = NetworkState::Scanning;
         let result = self.network.scan();
-        self.scan_cursor = 0;
+        // A scan does not change connectivity.
+        self.network_state = previous;
         match result {
             Ok(mut list) => {
-                list.retain(|n| !n.ssid.is_empty() && n.ssid.len() <= 32);
+                list.retain(|n| !n.ssid.is_empty() && n.ssid.len() <= 32 && !n.ssid.chars().any(char::is_control));
                 // Keep the strongest entry per SSID, then order by signal.
                 list.sort_by(|a, b| a.ssid.cmp(&b.ssid).then_with(|| b.rssi.cmp(&a.rssi)));
                 list.dedup_by(|later, kept| later.ssid == kept.ssid);
                 list.sort_by(|a, b| b.rssi.cmp(&a.rssi).then_with(|| a.ssid.cmp(&b.ssid)));
                 list.truncate(MAX_SCAN_RESULTS);
-                self.scan = list;
-                // A scan does not change connectivity.
-                self.network_state = previous;
-                json!({"networks": self.scan.len(), "pages": self.scan.len().div_ceil(SCAN_PAGE_SIZE).max(1)})
+                let networks: Vec<Value> = list.iter().map(|n| json!({"ssid": n.ssid, "rssi": n.rssi, "security": n.security})).collect();
+                json!({"networks": networks})
             }
-            Err(_) => {
-                self.scan.clear();
-                self.network_state = NetworkState::Failed;
-                self.network_error = Some("scan_failed");
-                json!({"networks": 0, "error": "scan_failed"})
-            }
+            Err(_) => json!({"networks": [], "error": "scan_failed"}),
         }
     }
 
-    fn wifi_configure(&mut self, payload: &[u8]) -> Result<Value, GattError> {
-        let config = parse_wifi_configuration(payload).map_err(GattError::Request)?;
+    fn wifi_configure(&mut self, plain: &[u8]) -> Result<Value, RpcError> {
+        let config = parse_wifi_configuration(plain).map_err(RpcError)?;
         self.network_state = NetworkState::Connecting;
         self.network_error = None;
         // Backend errors are reduced to a fixed code so no credential or
         // NetworkManager detail can leak over BLE.
         match self.network.connect(&config) {
-            Ok(()) => { self.network_state = NetworkState::Connected; }
+            Ok(()) => self.network_state = NetworkState::Connected,
             Err(_) => { self.network_state = NetworkState::Failed; self.network_error = Some("join_failed"); }
         }
         Ok(json!({"state": network_name(self.network_state)}))
     }
 
     /// Called by the GPIO handler when the reset button is held at boot.
-    pub fn physical_reset(&mut self) -> Result<(), GattError> {
-        self.ownership.factory_reset(true).map_err(GattError::Claim)?;
-        self.store.save(self.ownership.state()).map_err(|_| GattError::Storage)?;
+    pub fn physical_reset(&mut self) -> Result<(), RpcError> {
+        self.ownership.factory_reset(true)?;
+        self.store.save(self.ownership.state()).map_err(|_| RpcError("storage_failed"))?;
         self.network_state = NetworkState::Disconnected;
         self.network_error = None;
-        self.scan.clear();
+        self.replay.clear();
+        self.peers.clear();
         Ok(())
     }
-}
-
-/// Nonce helper for clients/tests.
-pub fn nonce_from_json(message: &[u8], field: &str) -> Option<[u8; NONCE_BYTES]> {
-    let v: Value = serde_json::from_slice(message).ok()?;
-    unhex::<NONCE_BYTES>(v.get(field)?.as_str()?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provisioning::{claim_proof, derive_owner_key, fragment, operation_proof, WifiSecurity, MIN_ATT_PAYLOAD};
+    use crate::provisioning::{claim_proof, derive_owner_key, fragment, operation_proof, seal, WifiSecurity, MAX_MESSAGE_BYTES, MIN_ATT_PAYLOAD};
 
     const SECRET: [u8; 16] = *b"fedcba9876543210";
 
     #[derive(Default)]
-    struct FakeNetwork {
-        joined: Vec<WifiConfiguration>,
-        fail_join: bool,
-        networks: Vec<ScanResult>,
-    }
+    struct FakeNetwork { joined: Vec<WifiConfiguration>, fail_join: bool, networks: Vec<ScanResult> }
     impl NetworkBackend for FakeNetwork {
         fn scan(&mut self) -> Result<Vec<ScanResult>, String> { Ok(self.networks.clone()) }
         fn connect(&mut self, config: &WifiConfiguration) -> Result<(), String> {
@@ -433,149 +391,203 @@ mod tests {
         }
     }
 
-    type Service = GattService<FakeNetwork, MemoryStore>;
+    type Svc = RpcService<FakeNetwork, MemoryStore>;
 
-    fn service(network: FakeNetwork) -> Service {
-        GattService::new(OwnershipManager::new(SECRET, Ownership::Unclaimed), network, MemoryStore::default())
+    fn svc(network: FakeNetwork) -> Svc {
+        RpcService::new(OwnershipManager::new(SECRET, Ownership::Unclaimed), network, MemoryStore::default())
     }
 
-    /// Virtual phone: writes through the minimum BLE MTU.
-    fn send(s: &mut Service, c: Characteristic, body: &Value, now: Instant) -> Result<Value, GattError> {
-        let bytes = body.to_string().into_bytes();
-        let frags = fragment(9, &bytes, MIN_ATT_PAYLOAD).expect("fits");
-        let mut out = None;
-        for f in &frags { out = s.write(c, f, now)?; }
-        Ok(serde_json::from_slice(&out.expect("complete")).unwrap())
-    }
-
-    fn read(s: &mut Service, c: Characteristic, now: Instant) -> Value {
-        serde_json::from_slice(&s.read(c, now).unwrap()).unwrap()
-    }
-
-    fn claim(s: &mut Service, now: Instant) -> [u8; 32] {
-        let challenge = s.read(Characteristic::PairingChallenge, now).unwrap();
-        let nonce = nonce_from_json(&challenge, "nonce").unwrap();
-        let r = send(s, Characteristic::PairingResponse,
-            &json!({"owner_id":"iphone-1","proof":hex(&claim_proof(&SECRET, &nonce, "iphone-1"))}), now).unwrap();
-        assert_eq!(r["state"], "CLAIMED");
-        derive_owner_key(&SECRET, &nonce, "iphone-1")
-    }
-
-    fn op(s: &mut Service, key: &[u8; 32], c: Characteristic, operation: &str, payload: &[u8], now: Instant) -> Result<Value, GattError> {
-        let nonce = nonce_from_json(&s.read(Characteristic::OperationChallenge, now).unwrap(), "nonce").unwrap();
-        let proof = operation_proof(key, &nonce, operation, payload);
-        send(s, c, &json!({"operation":operation,"payload_hex":hex(payload),"proof":hex(&proof)}), now)
-    }
-
-    #[test]
-    fn worst_case_scan_page_fits_one_attribute() {
-        let now = Instant::now();
-        // 32-byte ASCII and 32-byte multibyte SSIDs (JSON does not escape them).
-        let networks: Vec<ScanResult> = (0..SCAN_PAGE_SIZE as u8).map(|i| ScanResult {
-            ssid: if i % 2 == 0 { format!("{}{}", (b'a' + i) as char, "w".repeat(31)) } else { format!("{}{}", (b'a' + i) as char, "\u{3042}".repeat(10)) + "z" },
-            rssi: -100, security: "unsupported".into(),
-        })
-            .collect();
-        let mut s = service(FakeNetwork { networks, ..Default::default() });
-        let key = claim(&mut s, now);
-        op(&mut s, &key, Characteristic::WifiScanRequest, "wifi.scan", b"{}", now).unwrap();
-        let page = s.read(Characteristic::WifiScanResults, now).unwrap();
-        assert!(page.len() <= MAX_READ_BYTES, "{} bytes", page.len());
-        for c in Characteristic::ALL.into_iter().filter(|c| !c.writable()) {
-            if let Ok(v) = s.read(c, now) { assert!(v.len() <= MAX_READ_BYTES, "{c:?}"); }
+    /// Virtual phone: requests in minimum-MTU fragments.
+    struct Phone { id: u8, peer: &'static str }
+    impl Phone {
+        fn new(peer: &'static str) -> Self { Self { id: 0, peer } }
+        fn send_with_id(&self, s: &mut Svc, id: u8, body: &Value, now: Instant) -> Value {
+            let bytes = body.to_string().into_bytes();
+            let mut out = None;
+            for f in fragment(id, &bytes, MIN_ATT_PAYLOAD).unwrap() { out = s.handle_fragment(self.peer, &f, now); }
+            serde_json::from_slice(&out.expect("complete")).unwrap()
+        }
+        fn send(&mut self, s: &mut Svc, body: Value, now: Instant) -> Value {
+            self.id = self.id.wrapping_add(1);
+            self.send_with_id(s, self.id, &body, now)
+        }
+        fn claim(&mut self, s: &mut Svc, now: Instant) -> [u8; 32] {
+            let c = self.send(s, json!({"op":"pairing.challenge"}), now);
+            let nonce = unhex::<32>(c["nonce"].as_str().unwrap()).unwrap();
+            let r = self.send(s, json!({"op":"pairing.claim","owner_id":"iphone-1","proof":hex(&claim_proof(&SECRET, &nonce, "iphone-1"))}), now);
+            assert_eq!(r, json!({"state":"CLAIMED"}));
+            derive_owner_key(&SECRET, &nonce, "iphone-1")
+        }
+        fn nonce(&mut self, s: &mut Svc, now: Instant) -> [u8; 32] {
+            unhex::<32>(self.send(s, json!({"op":"operation.challenge"}), now)["nonce"].as_str().unwrap()).unwrap()
+        }
+        fn configure(&mut self, s: &mut Svc, key: &[u8; 32], config: &[u8], now: Instant) -> Value {
+            let nonce = self.nonce(s, now);
+            let sealed = seal(key, &nonce, "wifi.configure", config);
+            let proof = operation_proof(key, &nonce, "wifi.configure", &sealed);
+            self.send(s, json!({"op":"wifi.configure","sealed":hex(&sealed),"proof":hex(&proof)}), now)
+        }
+        fn scan(&mut self, s: &mut Svc, key: &[u8; 32], now: Instant) -> Value {
+            let nonce = self.nonce(s, now);
+            let proof = operation_proof(key, &nonce, "wifi.scan", b"");
+            self.send(s, json!({"op":"wifi.scan","proof":hex(&proof)}), now)
         }
     }
 
     #[test]
-    fn uuids_are_unique_and_round_trip() {
-        let mut seen = std::collections::HashSet::new();
-        for c in Characteristic::ALL {
-            assert!(seen.insert(c.uuid()));
-            assert_eq!(Characteristic::from_uuid(&c.uuid().to_uppercase()), Some(c));
-        }
-        assert_eq!(Characteristic::from_uuid(SERVICE_UUID), None);
-    }
-
-    #[test]
-    fn virtual_phone_end_to_end_claim_scan_and_join() {
+    fn end_to_end_claim_scan_join_at_minimum_mtu() {
         let now = Instant::now();
         let networks = (0..45).map(|i| ScanResult { ssid: format!("net{i:02}"), rssi: -30 - i, security: "wpa-psk".into() })
             .chain([ScanResult { ssid: "net00".into(), rssi: -90, security: "open".into() }, ScanResult { ssid: String::new(), rssi: 0, security: "open".into() }])
             .collect();
-        let mut s = service(FakeNetwork { networks, ..Default::default() });
-        assert_eq!(read(&mut s, Characteristic::DeviceInformation, now)["ownership"], "UNCLAIMED");
-        // Unclaimed devices expose nothing owner-only.
-        assert_eq!(s.read(Characteristic::WifiScanResults, now), Err(GattError::Claim(ClaimError::NotOwner)));
-        let key = claim(&mut s, now);
+        let mut s = svc(FakeNetwork { networks, ..Default::default() });
+        let mut p = Phone::new("AA:BB");
+        assert_eq!(p.send(&mut s, json!({"op":"device.info"}), now)["ownership"], "UNCLAIMED");
+        assert_eq!(p.send(&mut s, json!({"op":"operation.challenge"}), now), json!({"error":"not_owner"}));
+        let key = p.claim(&mut s, now);
         assert_eq!(s.store.saved.len(), 1, "persisted before acknowledgement");
-        assert_eq!(read(&mut s, Characteristic::PairingChallenge, now)["state"], "CLAIMED");
-
-        let r = op(&mut s, &key, Characteristic::WifiScanRequest, "wifi.scan", b"{}", now).unwrap();
-        assert_eq!((r["networks"].as_u64(), r["pages"].as_u64()), (Some(45), Some(9)));
-        let pages: Vec<Value> = (0..9).map(|_| read(&mut s, Characteristic::WifiScanResults, now)).collect();
-        assert_eq!(pages[0]["networks"][0]["ssid"], "net00");
-        assert_eq!(pages[0]["networks"][0]["rssi"], -30, "strongest duplicate kept");
-        assert_eq!(pages[8]["networks"].as_array().unwrap().len(), 5);
-        assert_eq!(read(&mut s, Characteristic::WifiScanResults, now)["page"], 0, "cursor wraps");
-
-        let payload = br#"{"ssid":"LT Hall","security":"wpa-psk","psk":"correct horse"}"#;
-        let r = op(&mut s, &key, Characteristic::WifiConfiguration, "wifi.configure", payload, now).unwrap();
-        assert_eq!(r["state"], "CONNECTED");
+        assert_eq!(p.send(&mut s, json!({"op":"pairing.challenge"}), now), json!({"state":"CLAIMED"}));
+        let r = p.scan(&mut s, &key, now);
+        let list = r["networks"].as_array().unwrap();
+        assert_eq!(list.len(), MAX_SCAN_RESULTS);
+        assert_eq!((list[0]["ssid"].as_str(), list[0]["rssi"].as_i64()), (Some("net00"), Some(-30)), "strongest duplicate kept");
+        let r = p.configure(&mut s, &key, br#"{"ssid":"LT Hall","security":"wpa-psk","psk":"correct horse"}"#, now);
+        assert_eq!(r, json!({"state":"CONNECTED"}));
         assert_eq!(s.network().joined[0].security, WifiSecurity::WpaPsk("correct horse".into()));
-        assert_eq!(read(&mut s, Characteristic::NetworkStatus, now)["state"], "CONNECTED");
-        assert_eq!(read(&mut s, Characteristic::ManagementEndpoint, now)["urls"], json!([]));
+        assert_eq!(p.send(&mut s, json!({"op":"network.status"}), now), json!({"state":"CONNECTED"}));
+        assert_eq!(p.send(&mut s, json!({"op":"management.endpoint"}), now)["urls"], json!([]));
+    }
+
+    #[test]
+    fn worst_case_scan_response_fits_one_message_at_minimum_mtu() {
+        let now = Instant::now();
+        let networks = (0..MAX_SCAN_RESULTS + 10).map(|i| ScanResult { ssid: format!("{i:02}{}", "\u{3042}".repeat(10)), rssi: -100, security: "unsupported".into() }).collect();
+        let mut s = svc(FakeNetwork { networks, ..Default::default() });
+        let mut p = Phone::new("p");
+        let key = p.claim(&mut s, now);
+        let nonce = p.nonce(&mut s, now);
+        let proof = operation_proof(&key, &nonce, "wifi.scan", b"");
+        let body = json!({"op":"wifi.scan","proof":hex(&proof)}).to_string().into_bytes();
+        let mut out = None;
+        for f in fragment(77, &body, MIN_ATT_PAYLOAD).unwrap() { out = s.handle_fragment("p", &f, now); }
+        let out = out.unwrap();
+        assert!(out.len() <= MAX_MESSAGE_BYTES, "{} bytes", out.len());
+        assert!(fragment(77, &out, MIN_ATT_PAYLOAD).is_ok(), "indicatable at minimum MTU");
+    }
+
+    #[test]
+    fn identical_retry_replays_response_without_rerunning() {
+        let now = Instant::now();
+        let mut s = svc(FakeNetwork::default());
+        let p = Phone::new("phone");
+        let c = p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now);
+        // Challenge retry (indication lost) returns the same nonce, not a new one.
+        assert_eq!(p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now), c);
+        let nonce = unhex::<32>(c["nonce"].as_str().unwrap()).unwrap();
+        let claim = json!({"op":"pairing.claim","owner_id":"iphone-1","proof":hex(&claim_proof(&SECRET, &nonce, "iphone-1"))});
+        assert_eq!(p.send_with_id(&mut s, 2, &claim, now), json!({"state":"CLAIMED"}));
+        // Lost indication + reconnect from a new address: same bytes, same id.
+        let q = Phone::new("phone-new-rpa");
+        assert_eq!(q.send_with_id(&mut s, 2, &claim, now), json!({"state":"CLAIMED"}));
+        assert_eq!(s.store.saved.len(), 1, "claim ran once");
+        // Different id = new request (not a replay).
+        assert_eq!(q.send_with_id(&mut s, 3, &claim, now), json!({"error":"not_claimable"}));
+        // Replay expires.
+        assert_eq!(q.send_with_id(&mut s, 2, &claim, now + REPLAY_TTL), json!({"error":"not_claimable"}));
     }
 
     #[test]
     fn join_failure_keeps_owner_and_leaks_nothing() {
         let now = Instant::now();
-        let mut s = service(FakeNetwork { fail_join: true, ..Default::default() });
-        let key = claim(&mut s, now);
-        let r = op(&mut s, &key, Characteristic::WifiConfiguration, "wifi.configure", br#"{"ssid":"LT","security":"wpa-psk","psk":"hunter22"}"#, now).unwrap();
-        assert_eq!(r["state"], "FAILED");
-        let status = s.read(Characteristic::NetworkStatus, now).unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&status).unwrap()["error"], "join_failed");
-        assert!(!String::from_utf8_lossy(&status).contains("hunter22"));
+        let mut s = svc(FakeNetwork { fail_join: true, ..Default::default() });
+        let mut p = Phone::new("p");
+        let key = p.claim(&mut s, now);
+        assert_eq!(p.configure(&mut s, &key, br#"{"ssid":"LT","security":"wpa-psk","psk":"hunter22"}"#, now), json!({"state":"FAILED"}));
+        let status = p.send(&mut s, json!({"op":"network.status"}), now);
+        assert_eq!(status, json!({"state":"FAILED","error":"join_failed"}));
+        assert!(!status.to_string().contains("hunter22"));
         assert!(matches!(s.ownership(), Ownership::Claimed { .. }));
     }
 
     #[test]
-    fn unauthenticated_or_mismatched_operations_are_rejected() {
+    fn sealed_payload_and_proofs_are_enforced() {
         let now = Instant::now();
-        let mut s = service(FakeNetwork::default());
-        let key = claim(&mut s, now);
-        let payload = br#"{"ssid":"LT","security":"open"}"#;
-        // Proof for scan replayed against configuration.
-        assert_eq!(op(&mut s, &key, Characteristic::WifiConfiguration, "wifi.scan", payload, now), Err(GattError::Request("wrong_operation")));
-        let wrong_key = [0u8; 32];
-        assert_eq!(op(&mut s, &wrong_key, Characteristic::WifiConfiguration, "wifi.configure", payload, now), Err(GattError::Claim(ClaimError::BadProof)));
-        assert_eq!(send(&mut s, Characteristic::WifiConfiguration, &json!({"operation":"wifi.configure"}), now), Err(GattError::Request("invalid_request")));
-        let bad = op(&mut s, &key, Characteristic::WifiConfiguration, "wifi.configure", br#"{"ssid":"LT","security":"wep"}"#, now);
-        assert_eq!(bad, Err(GattError::Request("invalid_security")));
+        let mut s = svc(FakeNetwork::default());
+        let mut p = Phone::new("p");
+        let key = p.claim(&mut s, now);
+        let config = br#"{"ssid":"LT","security":"open"}"#;
+        // Proof valid but ciphertext sealed under another key: rejected.
+        let nonce = p.nonce(&mut s, now);
+        let sealed = seal(&[0u8; 32], &nonce, "wifi.configure", config);
+        let proof = operation_proof(&key, &nonce, "wifi.configure", &sealed);
+        assert_eq!(p.send(&mut s, json!({"op":"wifi.configure","sealed":hex(&sealed),"proof":hex(&proof)}), now), json!({"error":"bad_seal"}));
+        // Plaintext sent without sealing: rejected.
+        let nonce = p.nonce(&mut s, now);
+        let proof = operation_proof(&key, &nonce, "wifi.configure", config);
+        assert_eq!(p.send(&mut s, json!({"op":"wifi.configure","sealed":hex(config),"proof":hex(&proof)}), now), json!({"error":"bad_seal"}));
+        // Wrong owner key.
+        let nonce = p.nonce(&mut s, now);
+        let sealed = seal(&key, &nonce, "wifi.configure", config);
+        let proof = operation_proof(&[1u8; 32], &nonce, "wifi.configure", &sealed);
+        assert_eq!(p.send(&mut s, json!({"op":"wifi.configure","sealed":hex(&sealed),"proof":hex(&proof)}), now), json!({"error":"bad_proof"}));
+        // Scan proof cannot be used for configure.
+        let nonce = p.nonce(&mut s, now);
+        let proof = operation_proof(&key, &nonce, "wifi.scan", b"");
+        assert_eq!(p.send(&mut s, json!({"op":"wifi.configure","sealed":"00","proof":hex(&proof)}), now), json!({"error":"bad_proof"}));
         assert!(s.network().joined.is_empty());
-        assert_eq!(s.write(Characteristic::NetworkStatus, &[1, 0, 1, b'x'], now), Err(GattError::NotWritable));
-        assert_eq!(s.read(Characteristic::PairingResponse, now), Err(GattError::NotReadable));
+        for bad in [json!({"op":"nope"}), json!({"op":"device.info","x":1}), json!({"x":1})] {
+            assert!(p.send(&mut s, bad, now).get("error").is_some());
+        }
     }
 
     #[test]
-    fn claim_is_not_acknowledged_if_it_cannot_be_persisted() {
+    fn per_peer_reassembly_isolates_interleaved_transfers() {
         let now = Instant::now();
-        let mut s = GattService::new(OwnershipManager::new(SECRET, Ownership::Unclaimed), FakeNetwork::default(), MemoryStore { fail: true, ..Default::default() });
-        let nonce = nonce_from_json(&s.read(Characteristic::PairingChallenge, now).unwrap(), "nonce").unwrap();
-        let r = send(&mut s, Characteristic::PairingResponse, &json!({"owner_id":"p","proof":hex(&claim_proof(&SECRET, &nonce, "p"))}), now);
-        assert_eq!(r, Err(GattError::Storage));
-        assert_eq!(*s.ownership(), Ownership::Unclaimed);
+        let mut s = svc(FakeNetwork::default());
+        let a = fragment(5, json!({"op":"device.info"}).to_string().as_bytes(), MIN_ATT_PAYLOAD).unwrap();
+        let b = fragment(5, json!({"op":"network.status"}).to_string().as_bytes(), MIN_ATT_PAYLOAD).unwrap();
+        assert!(a.len() > 1 && b.len() > 1);
+        assert_eq!(s.handle_fragment("A", &a[0], now), None);
+        assert_eq!(s.handle_fragment("B", &b[0], now), None);
+        let mut ra = None;
+        for f in &a[1..] { ra = s.handle_fragment("A", f, now); }
+        let mut rb = None;
+        for f in &b[1..] { rb = s.handle_fragment("B", f, now); }
+        assert_eq!(serde_json::from_slice::<Value>(&ra.unwrap()).unwrap()["protocol"], 2);
+        assert_eq!(serde_json::from_slice::<Value>(&rb.unwrap()).unwrap()["state"], "DISCONNECTED");
+        // Abandoned transfer is dropped on disconnect.
+        assert_eq!(s.handle_fragment("A", &a[0], now), None);
+        s.disconnect("A");
+        let mut r = None;
+        for f in &a[1..] { r = s.handle_fragment("A", f, now); }
+        assert!(r.is_none(), "stale fragments after disconnect never complete a message");
+        // Framing violations answer with an error instead of hanging.
+        let bad = s.handle_fragment("C", &[1, 3, 2, b'x'], now).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bad).unwrap(), json!({"error":"malformed"}));
     }
 
     #[test]
-    fn physical_reset_unclaims_and_persists() {
+    fn claim_not_acknowledged_if_not_persisted_and_reset_clears_state() {
         let now = Instant::now();
-        let mut s = service(FakeNetwork::default());
-        claim(&mut s, now);
-        s.physical_reset().unwrap();
+        let mut s = RpcService::new(OwnershipManager::new(SECRET, Ownership::Unclaimed), FakeNetwork::default(), MemoryStore { fail: true, ..Default::default() });
+        let mut p = Phone::new("p");
+        let c = p.send(&mut s, json!({"op":"pairing.challenge"}), now);
+        let nonce = unhex::<32>(c["nonce"].as_str().unwrap()).unwrap();
+        let r = p.send(&mut s, json!({"op":"pairing.claim","owner_id":"p","proof":hex(&claim_proof(&SECRET, &nonce, "p"))}), now);
+        assert_eq!(r, json!({"error":"storage_failed"}));
         assert_eq!(*s.ownership(), Ownership::Unclaimed);
-        assert_eq!(s.store.saved.last(), Some(&Ownership::Unclaimed));
-        assert_eq!(GattError::Claim(ClaimError::LockedOut).code(), "locked_out");
+        let mut t = svc(FakeNetwork::default());
+        p.claim(&mut t, now);
+        t.physical_reset().unwrap();
+        assert_eq!(*t.ownership(), Ownership::Unclaimed);
+        assert_eq!(t.store.saved.last(), Some(&Ownership::Unclaimed));
+    }
+
+    #[test]
+    fn info_value_fits_one_minimum_mtu_read() {
+        assert!(INFO_VALUE.len() <= MIN_ATT_PAYLOAD + 2, "ATT_MTU 23 read returns up to 22 bytes");
+        let v: Value = serde_json::from_slice(INFO_VALUE).unwrap();
+        assert_eq!(v["v"], PROTOCOL_VERSION);
     }
 
     #[cfg(unix)]

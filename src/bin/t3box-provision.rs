@@ -6,9 +6,10 @@
 //! adapter is a separate thin process that forwards characteristic reads and
 //! writes here; it is not implemented yet.
 //!
-//! Methods: `gatt.read {uuid}` → `{value_hex}`; `gatt.write {uuid,
-//! fragment_hex}` → `{response_hex|null, message_id}`; the GATT adapter
-//! notifies `response_hex` fragmented under `message_id`. Physical reset is intentionally not
+//! Methods (protocol v2, contracts/ble-protocol.md):
+//! `gatt.request {peer, fragment_hex}` → `{response_hex|null, message_id}`;
+//! the GATT adapter indicates `response_hex` fragmented under `message_id`.
+//! `gatt.disconnect {peer}` drops that peer's partial transfer. Physical reset is intentionally not
 //! reachable over the socket; it will come from the GPIO handler.
 #[cfg(unix)]
 fn main() {
@@ -32,7 +33,7 @@ mod unix {
     use t3box::ipc::{self, PeerPolicy};
     use t3box::nm::{NetworkManagerBackend, Nmcli};
     use t3box::provisioning::{hex, import_setup_file, load_or_create_setup_secret, OwnershipManager, SetupImport};
-    use t3box::provisioning_gatt::{Characteristic, FileOwnershipStore, GattError, GattService, NetworkBackend, OwnershipStore, ScanResult};
+    use t3box::provisioning_gatt::{FileOwnershipStore, NetworkBackend, OwnershipStore, RpcService, ScanResult};
 
     fn env_path(key: &str, default: &str) -> PathBuf {
         std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| default.into())
@@ -78,10 +79,10 @@ mod unix {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&secrets_dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("runtime dir: {e}"))?;
                 let iface = std::env::var("T3BOX_WIFI_INTERFACE").unwrap_or_else(|_| "wlan0".into());
-                serve(&socket, &policy, GattService::new(ownership, NetworkManagerBackend { runner: Nmcli, interface: iface, secrets_dir }, store))
+                serve(&socket, &policy, RpcService::new(ownership, NetworkManagerBackend { runner: Nmcli, interface: iface, secrets_dir }, store))
             }
             #[cfg(feature = "ci-virtual")]
-            "virtual" => serve(&socket, &policy, GattService::new(ownership, VirtualNetwork, store)),
+            "virtual" => serve(&socket, &policy, RpcService::new(ownership, VirtualNetwork, store)),
             other => Err(format!("unsupported T3BOX_NETWORK_BACKEND: {other}")),
         }
     }
@@ -91,36 +92,38 @@ mod unix {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
     }
 
-    fn handle<N: NetworkBackend, S: OwnershipStore>(service: &mut GattService<N, S>, frame: &[u8]) -> Value {
+    fn valid_peer(p: &str) -> bool {
+        (1..=64).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'-' | b'_' | b'.'))
+    }
+
+    fn handle<N: NetworkBackend, S: OwnershipStore>(service: &mut RpcService<N, S>, frame: &[u8]) -> Value {
         let err = |id: Option<&str>, code: &str, msg: &str| json!({"version":1,"request_id":id,"ok":false,"error":{"code":code,"message":msg}});
         let Ok(Value::Object(req)) = serde_json::from_slice::<Value>(frame) else { return err(None, "invalid_request", "not a JSON object") };
         let id = req.get("request_id").and_then(Value::as_str).filter(|s| (1..=64).contains(&s.len()));
         let Some(id) = id else { return err(None, "invalid_request", "invalid request_id") };
         if req.get("version") != Some(&json!(1)) { return err(Some(id), "unsupported_version", "version must be 1"); }
         let params = req.get("params").and_then(Value::as_object);
-        let uuid = params.and_then(|p| p.get("uuid")).and_then(Value::as_str);
-        let Some(c) = uuid.and_then(Characteristic::from_uuid) else { return err(Some(id), "invalid_params", "unknown characteristic uuid") };
-        let now = Instant::now();
+        let Some(peer) = params.and_then(|p| p.get("peer")).and_then(Value::as_str).filter(|p| valid_peer(p)) else {
+            return err(Some(id), "invalid_params", "peer required");
+        };
         let result = match req.get("method").and_then(Value::as_str) {
-            Some("gatt.read") => service.read(c, now).map(|v| json!({"value_hex": hex(&v)})),
-            Some("gatt.write") => {
-                let Some(fragment) = params.and_then(|p| p.get("fragment_hex")).and_then(Value::as_str).and_then(unhex) else {
+            Some("gatt.request") => {
+                let Some(fragment) = params.and_then(|p| p.get("fragment_hex")).and_then(Value::as_str).and_then(unhex).filter(|f| !f.is_empty()) else {
                     return err(Some(id), "invalid_params", "fragment_hex required");
                 };
-                let message_id = fragment.first().copied();
-                service.write(c, &fragment, now).map(|r| json!({"response_hex": r.map(|b| hex(&b)), "message_id": message_id}))
+                let message_id = fragment[0];
+                let response = service.handle_fragment(peer, &fragment, Instant::now());
+                json!({"response_hex": response.map(|b| hex(&b)), "message_id": message_id})
             }
+            Some("gatt.disconnect") => { service.disconnect(peer); json!({}) }
             _ => return err(Some(id), "unknown_method", "unknown method"),
         };
-        match result {
-            Ok(v) => json!({"version":1,"request_id":id,"ok":true,"result":v}),
-            Err(e) => err(Some(id), e.code(), match e { GattError::Storage => "ownership could not be persisted", _ => "request rejected" }),
-        }
+        json!({"version":1,"request_id":id,"ok":true,"result":result})
     }
 
     /// One connection at a time: provisioning is low-rate and the service is
     /// single-owner state, so serial handling is the simplest bounded design.
-    fn serve<N: NetworkBackend, S: OwnershipStore>(socket: &std::path::Path, policy: &PeerPolicy, mut service: GattService<N, S>) -> Result<(), String> {
+    fn serve<N: NetworkBackend, S: OwnershipStore>(socket: &std::path::Path, policy: &PeerPolicy, mut service: RpcService<N, S>) -> Result<(), String> {
         let listener = ipc::bind(socket).map_err(|e| format!("bind {}: {e}", socket.display()))?;
         eprintln!("t3box-provision: listening on {}", socket.display());
         let own = unsafe_getuid();
