@@ -8,6 +8,8 @@ User=t3box
 Group=t3box
 ExecStart=/usr/local/bin/t3box
 Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
+# Control service uid (see t3box.sysusers.conf); root and t3box are implicit.
+Environment=T3BOX_IPC_ALLOWED_UIDS=852
 # Control socket directory; only the t3box group (control service) may enter.
 RuntimeDirectory=t3box
 RuntimeDirectoryMode=0750

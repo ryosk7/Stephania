@@ -52,6 +52,7 @@ pub mod code {
     pub const NOT_IMPLEMENTED: &str = "not_implemented";
     pub const ENGINE_START_FAILED: &str = "engine_start_failed";
     pub const BUSY: &str = "busy";
+    pub const FORBIDDEN: &str = "forbidden";
 }
 
 /// Snapshot of engine state reported through `engine.status`.
@@ -65,6 +66,34 @@ pub struct EngineStatus {
     pub native_worker_running: bool,
     pub restart_attempts: u64,
     pub last_error: String,
+}
+
+/// Identity of this engine process. The management plane compares
+/// `instance_id` across calls to detect engine restarts and reconcile its view
+/// (it must never assume state survived a restart).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineInstance {
+    pub instance_id: String,
+    pub started: std::time::Instant,
+}
+
+impl EngineInstance {
+    pub fn new() -> Self {
+        let mut bytes = [0u8; 8];
+        // /dev/urandom is always present on Linux; fall back to time+pid.
+        let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
+        if random.is_err() {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64).unwrap_or_default();
+            bytes = (nanos ^ ((std::process::id() as u64) << 32)).to_be_bytes();
+        }
+        let instance_id = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        Self { instance_id, started: std::time::Instant::now() }
+    }
+}
+
+impl Default for EngineInstance {
+    fn default() -> Self { Self::new() }
 }
 
 impl EngineStatus {
@@ -81,6 +110,7 @@ impl EngineStatus {
 /// The engine operations the IPC layer may invoke. Implemented by the real
 /// stream controller in the `t3box` binary and by fakes in tests.
 pub trait EngineControl: Send + Sync {
+    fn instance(&self) -> &EngineInstance;
     fn status(&self) -> EngineStatus;
     fn start(&self) -> Result<(), String>;
     fn stop(&self);
@@ -151,8 +181,10 @@ pub fn error_response(request_id: Option<&str>, error: &IpcError) -> Value {
     })
 }
 
-fn status_result(s: &EngineStatus) -> Value {
+fn status_result(s: &EngineStatus, instance: &EngineInstance) -> Value {
     json!({
+        "instance_id": instance.instance_id,
+        "uptime_ms": instance.started.elapsed().as_millis() as u64,
         "state": s.state(),
         "streaming_requested": s.streaming_requested,
         "native_worker_running": s.native_worker_running,
@@ -162,7 +194,7 @@ fn status_result(s: &EngineStatus) -> Value {
     })
 }
 
-fn capabilities_result() -> Value {
+fn capabilities_result(instance: &EngineInstance) -> Value {
     json!({
         "ipc_version": IPC_VERSION,
         "methods": METHODS,
@@ -171,6 +203,7 @@ fn capabilities_result() -> Value {
         "compositor": false,
         "phone_camera": false,
         "max_frame_bytes": MAX_FRAME_BYTES,
+        "instance_id": instance.instance_id,
     })
 }
 
@@ -201,8 +234,8 @@ fn scene_param(params: Option<&Value>) -> Result<&Value, IpcError> {
 /// exercised exhaustively in unit tests.
 pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>) -> Result<Value, IpcError> {
     match method {
-        "engine.status" => { no_params(params)?; Ok(status_result(&engine.status())) }
-        "engine.capabilities" => { no_params(params)?; Ok(capabilities_result()) }
+        "engine.status" => { no_params(params)?; Ok(status_result(&engine.status(), engine.instance())) }
+        "engine.capabilities" => { no_params(params)?; Ok(capabilities_result(engine.instance())) }
         "stream.start" => {
             no_params(params)?;
             engine.start().map_err(|e| ipc_err(code::ENGINE_START_FAILED, e))?;
@@ -283,6 +316,54 @@ pub fn serve_connection<S: Read + Write>(engine: &dyn EngineControl, stream: &mu
     }
 }
 
+/// Which local users may use the control socket. Root and the engine's own
+/// user are always allowed; additional uids (the control service user) come
+/// from `T3BOX_IPC_ALLOWED_UIDS` (comma separated). Filesystem permissions
+/// still apply first; this is defence in depth against a misconfigured mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerPolicy {
+    pub allowed_uids: Vec<u32>,
+}
+
+impl PeerPolicy {
+    pub fn from_env() -> Result<Self, String> {
+        let mut allowed_uids = Vec::new();
+        if let Ok(list) = std::env::var("T3BOX_IPC_ALLOWED_UIDS") {
+            for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                allowed_uids.push(part.parse::<u32>().map_err(|_| format!("invalid uid in T3BOX_IPC_ALLOWED_UIDS: {part}"))?);
+            }
+        }
+        Ok(Self { allowed_uids })
+    }
+
+    pub fn allows(&self, peer_uid: u32, own_uid: u32) -> bool {
+        peer_uid == 0 || peer_uid == own_uid || self.allowed_uids.contains(&peer_uid)
+    }
+}
+
+/// Peer uid via SO_PEERCRED. `None` when the platform cannot tell.
+#[cfg(target_os = "linux")]
+pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: valid fd owned by `stream`; `cred`/`len` point to properly sized locals.
+    let rc = unsafe {
+        libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(), &mut len)
+    };
+    (rc == 0 && len as usize == std::mem::size_of::<libc::ucred>()).then_some(cred.uid)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn peer_uid(_stream: &UnixStream) -> Option<u32> { None }
+
+#[cfg(unix)]
+fn own_uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
+}
+
 #[cfg(unix)]
 struct ConnectionSlot(Arc<AtomicUsize>);
 
@@ -332,8 +413,9 @@ pub fn bind(path: &std::path::Path) -> io::Result<UnixListener> {
 /// Accept connections forever. Each accepted connection gets its own thread;
 /// connections beyond [`MAX_CONNECTIONS`] receive a `busy` error and are closed.
 #[cfg(unix)]
-pub fn serve(listener: UnixListener, engine: Arc<dyn EngineControl>) {
+pub fn serve(listener: UnixListener, engine: Arc<dyn EngineControl>, policy: PeerPolicy) {
     let active = Arc::new(AtomicUsize::new(0));
+    let own = own_uid();
     for connection in listener.incoming() {
         let mut stream: UnixStream = match connection {
             Ok(s) => s,
@@ -341,6 +423,16 @@ pub fn serve(listener: UnixListener, engine: Arc<dyn EngineControl>) {
         };
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+        // Fail closed on Linux if credentials cannot be read.
+        let permitted = match peer_uid(&stream) {
+            Some(uid) => policy.allows(uid, own),
+            None => !cfg!(target_os = "linux"),
+        };
+        if !permitted {
+            let body = serde_json::to_vec(&error_response(None, &ipc_err(code::FORBIDDEN, "peer not permitted"))).unwrap_or_default();
+            let _ = write_frame(&mut stream, &body);
+            continue;
+        }
         let Some(slot) = try_acquire(&active) else {
             let body = serde_json::to_vec(&error_response(None, &ipc_err(code::BUSY, "too many connections"))).unwrap_or_default();
             let _ = write_frame(&mut stream, &body);
@@ -366,8 +458,10 @@ mod tests {
     struct Fake {
         calls: Mutex<Vec<&'static str>>,
         fail_start: bool,
+        instance: EngineInstance,
     }
     impl EngineControl for Fake {
+        fn instance(&self) -> &EngineInstance { &self.instance }
         fn status(&self) -> EngineStatus {
             self.calls.lock().unwrap().push("status");
             EngineStatus { streaming_requested: false, native_worker_running: false, restart_attempts: 3, last_error: "x\"y".into() }
@@ -392,6 +486,22 @@ mod tests {
         assert_eq!(r["result"]["state"], "idle");
         assert_eq!(r["result"]["youtube_ingest_confirmed"], false);
         assert_eq!(r["result"]["last_error"], "x\"y");
+        assert_eq!(r["result"]["instance_id"].as_str().unwrap().len(), 16);
+        assert!(r["result"]["uptime_ms"].is_u64());
+    }
+
+    #[test]
+    fn instances_are_distinct() {
+        assert_ne!(EngineInstance::new().instance_id, EngineInstance::new().instance_id);
+    }
+
+    #[test]
+    fn peer_policy() {
+        let p = PeerPolicy { allowed_uids: vec![1001] };
+        assert!(p.allows(0, 999));
+        assert!(p.allows(999, 999));
+        assert!(p.allows(1001, 999));
+        assert!(!p.allows(1002, 999));
     }
 
     #[test]
@@ -496,7 +606,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o660);
         let engine: Arc<dyn EngineControl> = Arc::new(Fake::default());
-        std::thread::spawn(move || serve(listener, engine));
+        #[cfg(target_os = "linux")]
+        {
+            let probe = UnixListener::bind(dir.join("probe.sock")).unwrap();
+            let c = UnixStream::connect(dir.join("probe.sock")).unwrap();
+            let (server_side, _) = probe.accept().unwrap();
+            assert_eq!(peer_uid(&server_side), Some(own_uid()));
+            drop(c);
+        }
+        std::thread::spawn(move || serve(listener, engine, PeerPolicy { allowed_uids: vec![] }));
 
         let request = |s: &mut UnixStream, id: &str| {
             let body = serde_json::to_vec(&json!({"version":1,"request_id":id,"method":"engine.capabilities"})).unwrap();

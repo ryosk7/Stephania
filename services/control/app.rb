@@ -15,6 +15,8 @@ require_relative "lib/scene_validator"
 # enrollment exist (docs/STUDIO-ARCHITECTURE.md safety gates).
 class Control < Sinatra::Base
   MAX_BODY_BYTES = 65_536
+  MAX_REVISIONS_KEPT = 50
+  MIGRATIONS = File.expand_path("db/migrations", __dir__)
   ID = /\A[a-zA-Z0-9_-]{1,64}\z/
   ALLOWED_HOSTS = %w[localhost 127.0.0.1].freeze
 
@@ -44,12 +46,23 @@ class Control < Sinatra::Base
 
     def configure_storage(path)
       database = Sequel.sqlite(path, max_connections: 1, timeout: 1000)
-      database.create_table? :scenes do
-        String :id, primary_key: true
-        Integer :revision, null: false
-        String :document, text: true, null: false
-      end
+      database.run("PRAGMA foreign_keys = ON")
+      database.run("PRAGMA journal_mode = WAL") unless path == ":memory:"
+      Sequel.extension :migration
+      Sequel::Migrator.run(database, MIGRATIONS)
       self.db = database
+      @engine_instance = nil
+    end
+
+    # Restart reconciliation: remember the last engine instance seen and
+    # report whether it changed. Thread-safe under multi-threaded Puma.
+    def observe_engine_instance(instance_id)
+      @engine_mutex ||= Mutex.new
+      @engine_mutex.synchronize do
+        previous = @engine_instance
+        @engine_instance = instance_id
+        !previous.nil? && previous != instance_id
+      end
     end
 
     def configure_from_env(env = ENV)
@@ -127,7 +140,9 @@ class Control < Sinatra::Base
   end
 
   get "/api/v1/status" do
-    json_reply(engine_call("engine.status"))
+    result = engine_call("engine.status")
+    restarted = Control.observe_engine_instance(result["instance_id"])
+    json_reply(result.merge("engine_restarted" => restarted))
   end
 
   get "/api/v1/engine/capabilities" do
@@ -152,6 +167,24 @@ class Control < Sinatra::Base
     json_reply(scene_json(row))
   end
 
+  get "/api/v1/scenes/:id/revisions" do
+    row = scene_row(params[:id])
+    fail_with 404, "not_found", "scene does not exist" unless row
+    revisions = settings.db[:scene_revisions].where(scene_id: row[:id]).reverse(:revision).all
+    json_reply(revisions.map { |r| {revision: r[:revision], created_at_unix: r[:created_at_unix], document: JSON.parse(r[:document])} })
+  end
+
+  delete "/api/v1/scenes/:id" do
+    row = scene_row(params[:id])
+    fail_with 404, "not_found", "scene does not exist" unless row
+    expected = Integer(params["revision"], exception: false)
+    fail_with 422, "invalid_request", "revision query parameter required" unless expected
+    deleted = settings.db[:scenes].where(id: row[:id], revision: expected).delete
+    fail_with 409, "revision_conflict", "scene revision is #{row[:revision]}" if deleted.zero?
+    status 204
+    ""
+  end
+
   # Draft save with optimistic concurrency. `revision` is the revision the
   # client last saw (0 to create). Saving a draft never changes Program.
   put "/api/v1/scenes/:id" do
@@ -167,14 +200,21 @@ class Control < Sinatra::Base
     end
     revision = input["revision"]
     document = JSON.generate(input["document"])
-    saved = settings.db.transaction(mode: :immediate) do
-      row = settings.db[:scenes].where(id: id).first
+    db = settings.db
+    saved = db.transaction(mode: :immediate) do
+      row = db[:scenes].where(id: id).first
       if (row && row[:revision] != revision) || (!row && revision != 0)
         false
-      elsif row
-        settings.db[:scenes].where(id: id).update(revision: revision + 1, document: document)
       else
-        settings.db[:scenes].insert(id: id, revision: 1, document: document)
+        if row
+          db[:scenes].where(id: id).update(revision: revision + 1, document: document)
+        else
+          db[:scenes].insert(id: id, revision: 1, document: document)
+        end
+        db[:scene_revisions].insert(scene_id: id, revision: revision + 1, document: document, created_at_unix: Time.now.to_i)
+        cutoff = revision + 1 - MAX_REVISIONS_KEPT
+        db[:scene_revisions].where(scene_id: id).where(Sequel[:revision] <= cutoff).delete
+        true
       end
     end
     fail_with 409, "revision_conflict", "scene was modified; reload and retry" unless saved

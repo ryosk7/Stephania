@@ -35,10 +35,18 @@ paths:
       summary: Engine status (IPC engine.status)
       responses:
         "200":
-          description: Engine status. native_worker_running is worker activity, not ingest confirmation.
+          description: |
+            Engine status (ipc.schema.json#/$defs/engine_status) plus engine_restarted,
+            true when instance_id differs from the previous call (clients must re-read
+            state). native_worker_running is worker activity, not ingest confirmation.
           content:
             application/json:
-              schema: {$ref: "ipc.schema.json#/$defs/engine_status"}
+              schema:
+                allOf:
+                  - {$ref: "ipc.schema.json#/$defs/engine_status"}
+                  - type: object
+                    required: [engine_restarted]
+                    properties: {engine_restarted: {type: boolean}}
         default: {$ref: "#/components/responses/Error"}
   /engine/capabilities:
     get:
@@ -102,6 +110,33 @@ paths:
                 document: {$ref: "scene.schema.json"}
       responses:
         "200": {description: Saved, content: {application/json: {schema: {$ref: "#/components/schemas/StoredScene"}}}}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete a draft (and its history) at the expected revision
+      parameters:
+        - {name: revision, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        "204": {description: Deleted}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes/{id}/revisions:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/Id"}}
+    get:
+      summary: Bounded draft history, newest first (last 50 revisions)
+      responses:
+        "200":
+          description: Revisions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [revision, created_at_unix, document]
+                  properties:
+                    revision: {type: integer, minimum: 1}
+                    created_at_unix: {type: integer}
+                    document: {$ref: "scene.schema.json"}
         default: {$ref: "#/components/responses/Error"}
   /program/transition:
     post:

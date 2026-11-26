@@ -11,19 +11,59 @@ class EngineIntegrationTest < Minitest::Test
     @dir = Dir.mktmpdir("t3box-engine")
     @socket = File.join(@dir, "engine.sock")
     @log = File.join(@dir, "engine.log")
-    env = {"T3BOX_ENGINE_SOCKET" => @socket, "T3BOX_OUTPUT" => ""}
-    @pid = Process.spawn(env, @bin, out: @log, err: @log)
-    50.times { break if File.socket?(@socket); sleep 0.1 }
-    assert File.socket?(@socket), "engine did not create socket: #{File.read(@log)}"
+    start_engine
     @client = EngineClient.new(socket_path: @socket)
   end
 
-  def teardown
+  def start_engine
+    env = {"T3BOX_ENGINE_SOCKET" => @socket, "T3BOX_OUTPUT" => ""}
+    @pid = Process.spawn(env, @bin, out: @log, err: @log)
+    50.times { break if File.socket?(@socket) && can_connect?; sleep 0.1 }
+    assert can_connect?, "engine did not serve socket: #{File.read(@log)}"
+  end
+
+  def can_connect?
+    UNIXSocket.open(@socket).close
+    true
+  rescue SystemCallError
+    false
+  end
+
+  def stop_engine
     return unless @pid
 
     Process.kill("TERM", @pid)
     Process.wait(@pid)
-    FileUtils.remove_entry(@dir)
+    @pid = nil
+  end
+
+  def teardown
+    stop_engine
+    FileUtils.remove_entry(@dir) if @dir
+  end
+
+  # Kill the engine, start a new process on the same (now stale) socket path
+  # and verify the control plane reports the restart.
+  def test_restart_is_detected_through_control
+    Control.configure_storage(":memory:")
+    Control.token = "t" * 32
+    Control.engine = @client
+    session = Rack::Test::Session.new(Rack::MockSession.new(Control))
+    session.header "Host", "localhost"
+    session.header "Authorization", "Bearer #{"t" * 32}"
+    session.get "/api/v1/status"
+    first = JSON.parse(session.last_response.body)
+    assert_match(/\A[0-9a-f]{16}\z/, first["instance_id"])
+    assert_equal false, first["engine_restarted"]
+    stop_engine
+    session.get "/api/v1/status"
+    assert_equal 503, session.last_response.status
+    start_engine
+    session.get "/api/v1/status"
+    second = JSON.parse(session.last_response.body)
+    refute_equal first["instance_id"], second["instance_id"]
+    assert_equal true, second["engine_restarted"]
+    assert_equal "idle", second["state"]
   end
 
   def test_status_capabilities_and_fail_closed_paths

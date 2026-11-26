@@ -11,14 +11,15 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use stream::{Config, Controller};
-use t3box::ipc::{EngineControl, EngineStatus};
+use t3box::ipc::{EngineControl, EngineInstance, EngineStatus, PeerPolicy};
 
 /// Default location of the versioned control socket (docs/IPC.md).
 const DEFAULT_ENGINE_SOCKET: &str = "/run/t3box/engine.sock";
 
-struct IpcEngine(Arc<Controller>);
+struct IpcEngine(Arc<Controller>, EngineInstance);
 
 impl EngineControl for IpcEngine {
+    fn instance(&self) -> &EngineInstance { &self.1 }
     fn status(&self) -> EngineStatus {
         let (desired, _process_running, restarts, last_error) = self.0.status();
         EngineStatus {
@@ -45,11 +46,15 @@ fn engine_socket_path() -> Option<std::path::PathBuf> {
 /// the engine: the media plane must keep running if management is broken.
 fn start_engine_ipc(controller: &Arc<Controller>) {
     let Some(path) = engine_socket_path() else { return };
+    let policy = match PeerPolicy::from_env() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("T3Box engine IPC disabled: {e}"); return; }
+    };
     match t3box::ipc::bind(&path) {
         Ok(listener) => {
-            let engine: Arc<dyn EngineControl> = Arc::new(IpcEngine(Arc::clone(controller)));
+            let engine: Arc<dyn EngineControl> = Arc::new(IpcEngine(Arc::clone(controller), EngineInstance::new()));
             let spawned = std::thread::Builder::new().name("t3box-ipc-accept".into())
-                .spawn(move || t3box::ipc::serve(listener, engine));
+                .spawn(move || t3box::ipc::serve(listener, engine, policy));
             match spawned {
                 Ok(_) => println!("T3Box engine IPC: {}", path.display()),
                 Err(e) => eprintln!("T3Box engine IPC thread failed: {e}"),
