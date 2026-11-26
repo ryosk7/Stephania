@@ -78,6 +78,12 @@ fn number(key: &str, default: u32, min: u32, max: u32) -> Result<u32, String> {
     Ok(value)
 }
 
+#[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+struct NativeWorker {
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    handle: thread::JoinHandle<std::io::Result<()>>,
+}
+
 // Ask FFmpeg to finish its current packet and write the muxer trailer.
 // Bound the wait below the HTTP client's stop deadline; kill only if needed.
 fn stop_child(child: &mut Child) -> Result<(), String> {
@@ -99,6 +105,8 @@ fn stop_child(child: &mut Child) -> Result<(), String> {
 }
 
 struct State {
+    #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+    native: Option<NativeWorker>,
     child: Option<Child>,
     desired: bool,
     restarts: u64,
@@ -114,7 +122,11 @@ pub struct Controller {
 impl Controller {
     pub fn new(config: Config) -> Self {
         let ctrl = Self {
-            state: Arc::new(Mutex::new(State { child: None, desired: false, restarts: 0, last_error: String::new() })),
+            state: Arc::new(Mutex::new(State {
+                #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+                native: None,
+                child: None, desired: false, restarts: 0, last_error: String::new()
+            })),
             config,
         };
         let worker = ctrl.clone();
@@ -131,7 +143,17 @@ impl Controller {
                     Err(e) => { s.last_error = e.to_string(); s.child = None; }
                 }
             }
-            if s.desired && s.child.is_none() {
+            #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+            if let Some(worker) = s.native.take_if(|w| w.handle.is_finished()) {
+                    s.last_error = match worker.handle.join() {
+                        Ok(Ok(())) => String::new(),
+                        Ok(Err(e)) => format!("native publisher stopped ({:?})", e.kind()),
+                        Err(_) => "native publisher panicked".into(),
+                    };
+                    // A native worker handles transient retries itself.
+                    s.desired = false;
+            }
+            if s.desired && !Self::running(&s) {
                 // Only retry configured output; avoid runaway spawning on unconfigured devices.
                 if let Err(e) = worker.spawn(&mut s) { s.last_error = e; }
                 s.restarts += 1;
@@ -140,9 +162,23 @@ impl Controller {
         ctrl
     }
 
+    fn running(state: &State) -> bool {
+        #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+        if state.native.is_some() { return true; }
+        state.child.is_some()
+    }
+
     fn spawn(&self, state: &mut State) -> Result<(), String> {
         if self.config.output.is_empty() { return Err("T3BOX_OUTPUT is not configured".into()); }
         if self.config.output == "file:" { return Err("file output path is empty".into()); }
+        // Explicit native mode initially; preserve the file/synthetic FFmpeg
+        // path and its existing CI contract until native file output exists.
+        if env::var("T3BOX_BACKEND").as_deref() == Ok("native") {
+            #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+            { return self.spawn_native(state); }
+            #[cfg(not(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac")))]
+            { return Err("native backend is not compiled in".into()); }
+        }
         // Stream key in a command-line argument may be readable by local processes.
         // Use a dedicated unprivileged account and restrict local login access.
         let child = Command::new("ffmpeg")
@@ -156,9 +192,51 @@ impl Controller {
         Ok(())
     }
 
+    #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+    fn spawn_native(&self, state: &mut State) -> Result<(), String> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use t3box::{native_av, native_capture::CaptureSettings, media_core::PixelFormat};
+        if self.config.test_sources || !self.config.output.starts_with("rtmps://") {
+            return Err("native controller requires hardware input and RTMPS output".into());
+        }
+        if self.config.preset != "ultrafast" {
+            return Err("native controller currently supports only ultrafast".into());
+        }
+        if !self.config.width.is_multiple_of(2) || !self.config.height.is_multiple_of(2) {
+            return Err("native controller requires even dimensions".into());
+        }
+        t3box::rtmps_tls::Target::parse(&self.config.output).map_err(|e| e.to_string())?;
+        let preferred_format = match env::var("T3BOX_PIXEL_FORMAT").as_deref() {
+            Ok("nv12") => PixelFormat::Nv12,
+            Ok("yuyv") | Err(_) => PixelFormat::Yuyv422,
+            _ => return Err("unsupported native pixel format".into()),
+        };
+        let settings = native_av::Settings {
+            capture: CaptureSettings {
+                video_path: self.config.video_device.clone(),
+                audio_device: self.config.audio_device.clone(),
+                width: self.config.width, height: self.config.height, preferred_format,
+                ..CaptureSettings::default()
+            },
+            fps: self.config.fps, video_bitrate: self.config.bitrate_kbps,
+            audio_bitrate: number("T3BOX_AUDIO_BITRATE_KBPS", 160, 64, 320)?,
+            max_frames: 0,
+        };
+        let url = self.config.output.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&cancel);
+        let handle = thread::Builder::new().name("t3box-native-publisher".into())
+            .spawn(move || native_av::run_with_settings(&url, &settings, || signal.load(Ordering::Acquire)))
+            .map_err(|e| e.to_string())?;
+        state.native = Some(NativeWorker { cancel, handle });
+        state.last_error.clear();
+        Ok(())
+    }
+
     pub fn start(&self) -> Result<(), String> {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.desired { return Ok(()); }
+        if Self::running(&s) { return Err("previous stream is still stopping".into()); }
         self.spawn(&mut s)?;
         s.desired = true;
         Ok(())
@@ -167,9 +245,23 @@ impl Controller {
     pub fn stop(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.desired = false;
+        #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+        if let Some(worker) = &s.native {
+            worker.cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
         if let Some(mut child) = s.child.take() {
             if let Err(error) = stop_child(&mut child) { s.last_error = error; }
         }
+    }
+
+    pub fn native_running(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+        {
+            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.native.as_ref().is_some_and(|w| !w.handle.is_finished())
+        }
+        #[cfg(not(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac")))]
+        { false }
     }
 
     pub fn status(&self) -> (bool, bool, u64, String) {
