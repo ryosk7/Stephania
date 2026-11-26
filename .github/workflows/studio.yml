@@ -1,10 +1,10 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
 concurrency:
@@ -183,3 +183,28 @@ jobs:
           CI: '1'
           EXPO_OFFLINE: '1'
         run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/t3box-export"
+  ble-e2e:
+    # Real BlueZ stack with two virtual LE controllers (hci_vhci + btvirt).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq bluez bluez-test-tools libdbus-1-dev pkg-config >/dev/null
+      - run: sudo pip3 install --break-system-packages -q bleak==3.1.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ble-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build device core and BLE adapter
+        run: |
+          cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
+          cargo build --locked -p t3box-ble
+          cargo test --locked -p t3box-ble
+          cargo clippy --locked -p t3box-ble -- -D warnings
+      - name: BLE end-to-end (link encryption off)
+        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug
+      - name: BLE end-to-end (link encryption required, Just Works pairing)
+        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug --encrypted
