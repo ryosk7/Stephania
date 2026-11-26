@@ -16,10 +16,13 @@ pub struct AacPacket {
     pub raw: Vec<u8>,
 }
 
+const MAX_PACKET_BYTES: usize = 8192;
+
 pub struct AacBackend {
     handle: NonNull<c_void>,
     last_pts: Option<i64>,
     finished: bool,
+    scratch: Box<[u8; MAX_PACKET_BYTES]>,
 }
 
 impl AacBackend {
@@ -27,7 +30,7 @@ impl AacBackend {
         if !(64..=320).contains(&bitrate_kbps) { return Err(invalid("AAC bitrate out of range")); }
         let handle = NonNull::new(unsafe { t3aac_open((bitrate_kbps * 1000) as i32) })
             .ok_or_else(|| io::Error::other("AAC encoder initialization failed"))?;
-        Ok(Self { handle, last_pts: None, finished: false })
+        Ok(Self { handle, last_pts: None, finished: false, scratch: Box::new([0; MAX_PACKET_BYTES]) })
     }
 
     pub fn configuration(&self) -> io::Result<Vec<u8>> {
@@ -64,13 +67,12 @@ impl AacBackend {
     fn receive(&mut self) -> io::Result<Vec<AacPacket>> {
         let mut packets = Vec::new();
         for _ in 0..64 {
-            let mut raw = vec![0; 8192];
             let mut pts = 0;
-            let n = unsafe { t3aac_receive(self.handle.as_ptr(), raw.as_mut_ptr(), 8192, &mut pts) };
+            let n = unsafe { t3aac_receive(self.handle.as_ptr(), self.scratch.as_mut_ptr(), MAX_PACKET_BYTES as i32, &mut pts) };
             if n == 0 { return Ok(packets); }
-            if !(1..=8192).contains(&n) { return Err(io::Error::other("AAC packet failed")); }
-            raw.truncate(n as usize);
-            packets.push(AacPacket { pts_samples: pts, raw });
+            if !(1..=MAX_PACKET_BYTES as i32).contains(&n) { return Err(io::Error::other("AAC packet failed")); }
+            // Copy only the actual packet; the fixed FFI receive buffer stays owned by the encoder.
+            packets.push(AacPacket { pts_samples: pts, raw: self.scratch[..n as usize].to_vec() });
         }
         Err(io::Error::other("AAC output limit exceeded"))
     }
@@ -87,6 +89,23 @@ fn invalid(message: &'static str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receive_storage_is_reused_and_packets_are_independent() {
+        let mut encoder = AacBackend::new(128).unwrap();
+        let address = encoder.scratch.as_ptr();
+        let mut packets = Vec::new();
+        for i in 0..8 {
+            let pcm = PcmBlock { pts_samples: i * 1024, sample_rate: 48000,
+                channels: 2, interleaved: vec![i as i16 * 100; 2048] };
+            packets.extend(encoder.encode(&pcm).unwrap());
+            assert_eq!(encoder.scratch.as_ptr(), address);
+        }
+        let first = packets[0].raw.clone();
+        packets.extend(encoder.finish().unwrap());
+        encoder.scratch.fill(0);
+        assert_eq!(packets[0].raw, first);
+        assert!(packets.iter().all(|p| !p.raw.is_empty() && p.raw.len() <= MAX_PACKET_BYTES));
+    }
     #[test]
     fn encodes_and_flushes_real_aac_lc() {
         let mut encoder = AacBackend::new(128).unwrap();
