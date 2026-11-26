@@ -79,9 +79,10 @@ fn status_json(controller: &Controller) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs()).unwrap_or(0);
     let (desired, process_running, restarts, last_error) = controller.status();
+    let native_running = controller.native_running();
     format!(
-        "{{\"state\":\"{}\",\"streaming_requested\":{},\"ffmpeg_process_running\":{},\"youtube_ingest_confirmed\":false,\"video_devices\":[{videos}],\"audio_capture_available\":{},\"wifi_interfaces\":[{wifi}],\"cpu_temperature_c\":{temp},\"restart_attempts\":{},\"last_error\":\"{}\",\"timestamp_unix\":{now}}}",
-        if process_running { "transmitting_unverified" } else { "idle" },
+        "{{\"state\":\"{}\",\"streaming_requested\":{},\"ffmpeg_process_running\":{},\"native_worker_running\":{native_running},\"youtube_ingest_confirmed\":false,\"video_devices\":[{videos}],\"audio_capture_available\":{},\"wifi_interfaces\":[{wifi}],\"cpu_temperature_c\":{temp},\"restart_attempts\":{},\"last_error\":\"{}\",\"timestamp_unix\":{now}}}",
+        if native_running { if desired { "native_worker_active" } else { "stopping" } } else if process_running { "transmitting_unverified" } else { "idle" },
         desired, process_running, audio_capture_available(), restarts, escape_json(&last_error)
     )
 }
