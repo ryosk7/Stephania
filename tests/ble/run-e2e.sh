@@ -19,6 +19,7 @@ cleanup() {
   touch "$work/stop"
   for p in "${pids[@]}"; do sudo kill "$p" 2>/dev/null || true; done
   sudo pkill -x t3box-ble 2>/dev/null || true
+  sudo pkill -x bluetoothd 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -31,7 +32,6 @@ fi
 
 start_bluetoothd() {
   sudo /usr/libexec/bluetooth/bluetoothd -n -d >>"$logs/bluetoothd.log" 2>&1 &
-  echo $! >"$work/bluetoothd.pid"
   for _ in $(seq 50); do sudo btmgmt --index 0 info >/dev/null 2>&1 && break; sleep 0.1; done
   for i in 0 1; do sudo btmgmt --index "$i" power on >/dev/null; done
 }
@@ -83,7 +83,9 @@ run_client() {
 run_client claim
 
 echo "== restarting bluetoothd (adapter must self-heal)"
-sudo kill "$(cat "$work/bluetoothd.pid")"; sleep 1
+sudo pkill -x bluetoothd
+for _ in $(seq 50); do pgrep -x bluetoothd >/dev/null || break; sleep 0.1; done
+pgrep -x bluetoothd >/dev/null && { echo "bluetoothd did not stop"; exit 1; }
 start_bluetoothd
 wait_adverts 2 || { echo "t3box-ble did not re-register after bluetoothd restart"; dump; exit 1; }
 grep -q "exited; restarting" "$logs/ble.log" && echo "PASS t3box-ble exited and was restarted by its supervisor"
