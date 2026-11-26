@@ -43,8 +43,14 @@ class Contracts(unittest.TestCase):
             (root/"ultrafast-6000.complete").unlink()
             self.assertNotEqual(self.run_report(root,"ultrafast-6000").returncode,0)
 
+    def test_workflow_plain_scalar(self):
+        for p in (CI.parent/".github/workflows").glob("*.yml"):
+            for line in p.read_text().splitlines():
+                if line.strip().startswith(("- run: ", "run: ")):
+                    self.assertFalse(line.rstrip().endswith(":"), f"{p}: {line}")
+
     def test_shell_syntax(self):
-        for p in CI.glob("*.sh"):
+        for p in list(CI.glob("*.sh"))+list((CI.parent/"tests").glob("*.sh")):
             subprocess.run(["bash","-n",str(p)],check=True)
 
 if __name__ == "__main__":

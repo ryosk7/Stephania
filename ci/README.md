@@ -153,3 +153,17 @@ check competing load remains active. The planner runs inexpensive negative
 contract tests before dispatching costly workers. The codec image verifies
 runtime shared-library resolution before timing. No physical calibration or
 unmeasured quality claims are made.
+
+## Repository-wide CI audit
+
+The invalid YAML plain scalar ending in a colon is replaced with a block.
+Default-feature builds/tests are explicitly checked alongside all-feature
+builds. Controller smoke now requires decoded H.264/AAC, correct status,
+idempotent start/stop, 403 cross-origin and 404 unknown endpoints. Logical
+fault tests require every modeled outage to recover, not merely a minimum
+number of recoveries. Optional soak validates completed frames, elapsed
+time, OOM and telemetry presence. Physical smoke now validates codec,
+geometry, audio and decoded frame counts; it still tests the FFmpeg
+compatibility route only. Uncovered: real device hotplug, native capture
+on Pi, NetworkManager success paths, systemd deployment, YouTube ingest,
+async RTMP controls, hardware-clock calibration and long-run leak proof.

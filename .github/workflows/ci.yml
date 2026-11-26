@@ -51,8 +51,11 @@ jobs:
         with:
           key: x86-check
       - uses: ./.github/actions/native-deps
-      - run: cargo test --locked --all-features -- --skip accelerated_ci::
+      - run: |
+          cargo test --locked --all-features -- --skip accelerated_ci::
+          cargo test --locked --no-default-features
       - run: cargo clippy --all-targets --locked --all-features -- -D warnings
+      - run: cargo build --release --locked --no-default-features --bin t3box
 
   arm64-logical:
     needs: plan
@@ -72,6 +75,9 @@ jobs:
         run: |
           mkdir -p fast-results
           /usr/bin/time -f 'elapsed_seconds=%e' -o fast-results/timing.txt timeout 60 cargo test --release --locked --all-features -- --nocapture --test-threads=2 2>&1 | tee fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_three_hour_clock_and_framing ... ok" fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_venue_fault_scenarios ... ok" fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_transition_matches_real_pcm_path ... ok" fast-results/simulation.txt
           cat fast-results/timing.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
