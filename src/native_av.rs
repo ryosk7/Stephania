@@ -119,25 +119,28 @@ impl VirtualCapture {
     }
 }
 
-fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn() -> bool) -> io::Result<()> {
+fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
     // Opt-in until the independent network benchmark validates the budget.
     let watchdog = if env::var("T3BOX_DEADLINE_TRANSPORT").as_deref() == Ok("1") {
-        let guard = crate::transport_deadline::DeadlineWatchdog::start(session.tcp_monitor()?)?;
+        let guard = crate::transport_deadline::DeadlineWatchdog::start_with_queue_budget(
+            session.tcp_monitor()?, crate::transport_deadline::QueueBudget {
+                max_not_sent_bytes: (rate.current() * 150 / 8).max(32_768),
+                max_sustained: Duration::from_millis(500),
+            })?;
         session.set_media_deadline(guard.handle(), Duration::from_millis(500));
         Some(guard)
     } else { None };
     let telemetry = session.tcp_monitor().ok();
     let mut next_sample = Instant::now();
     let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
-    let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
     let content_aware = adaptive && env::var("T3BOX_CONTENT_AWARE").as_deref() == Ok("1");
-    let mut network_rate = s.video_bitrate;
-    let mut applied_rate = s.video_bitrate;
+    let mut network_rate = if adaptive { rate.current() } else { s.video_bitrate };
+    let mut applied_rate = network_rate;
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
-        s.capture.height as usize, s.fps, s.video_bitrate)?;
-    if adaptive { pipeline.reconfigure_rate(s.video_bitrate, 500)?; }
+        s.capture.height as usize, s.fps, network_rate)?;
+    if adaptive { pipeline.reconfigure_rate(network_rate, 500)?; }
     if content_aware { pipeline.enable_content_analysis(); }
     pipeline.configure_audio(&aac.configuration()?)?;
     let origin = timestamp_us();
@@ -242,12 +245,16 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
         s.capture.height as usize, s.fps, s.video_bitrate, true)?;
     let mut sources = Sources::open(s)?;
     let mut failures = 0u32;
+    let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
     while !cancelled() {
         let started = Instant::now();
-        match publish(url, s, &mut sources, &cancelled) {
+        match publish(url, s, &mut sources, &mut rate, &cancelled) {
             Ok(()) => return Ok(()),
             Err(e) if !reconnect::retryable(&e) => return Err(e),
             Err(e) => {
+                if env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1") {
+                    rate.reconnect();
+                }
                 if started.elapsed() >= Duration::from_secs(60) { failures = 0; }
                 failures = failures.saturating_add(1);
                 let delay = reconnect::retry_delay(failures);

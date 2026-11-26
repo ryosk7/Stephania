@@ -22,6 +22,16 @@ impl RateController {
             current: ceiling, previous_retrans: None, healthy: 0, cooldown: 0 }
     }
 
+    pub fn current(&self) -> u32 { self.current }
+
+    /// Preserve the configured ceiling across sessions but restart conservatively.
+    pub fn reconnect(&mut self) {
+        self.current = (self.current * 3 / 4).max(self.floor);
+        self.previous_retrans = None;
+        self.healthy = 0;
+        self.cooldown = 3;
+    }
+
     /// Called once per second, only on a successful TCP sample.
     /// Estimated serialization time is a heuristic, not measured network delay.
     pub fn observe(&mut self, sample: Observation) -> Option<u32> {
@@ -71,6 +81,17 @@ mod tests {
         assert_eq!(c.observe(sample(0,1)),Some(4700));
         for _ in 0..30 { c.observe(sample(0,1)); }
         assert!(c.current <= 8000);
+    }
+    #[test]
+    fn reconnect_preserves_reduced_rate_and_ceiling() {
+        let mut c = RateController::new(8000);
+        c.observe(sample(200_000,0));
+        c.reconnect();
+        assert_eq!(c.current(),4500);
+        for _ in 0..7 { assert_eq!(c.observe(sample(0,0)),None); }
+        assert_eq!(c.observe(sample(0,0)),Some(4700));
+        for _ in 0..100 { c.observe(sample(0,0)); }
+        assert_eq!(c.current(),8000);
     }
     #[test]
     fn floor_and_missing_samples() {

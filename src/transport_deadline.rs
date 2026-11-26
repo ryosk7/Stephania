@@ -6,6 +6,29 @@ struct State { deadline: Option<Instant>, stopped: bool, expired: bool }
 
 type Shared = (Mutex<State>, Condvar);
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+pub struct QueueBudget {
+    pub max_not_sent_bytes: u32,
+    pub max_sustained: Duration,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct QueuePressure { since: Option<Instant> }
+
+#[cfg(target_os = "linux")]
+impl QueuePressure {
+    fn observe(&mut self, now: Instant, queued: Option<u32>, budget: QueueBudget) -> bool {
+        if queued.is_some_and(|n| n > budget.max_not_sent_bytes) {
+            now.duration_since(*self.since.get_or_insert(now)) >= budget.max_sustained
+        } else {
+            self.since = None;
+            false
+        }
+    }
+}
+
 pub struct DeadlineWatchdog {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
@@ -45,13 +68,40 @@ impl DeadlineHandle {
 
 impl DeadlineWatchdog {
     pub fn start(socket: TcpStream) -> io::Result<Self> {
+        Self::start_inner(socket, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn start_with_queue_budget(socket: TcpStream, budget: QueueBudget) -> io::Result<Self> {
+        Self::start_inner(socket, Some(budget))
+    }
+
+    fn start_inner(socket: TcpStream, #[cfg(target_os = "linux")] budget: Option<QueueBudget>,
+        #[cfg(not(target_os = "linux"))] _budget: Option<()>) -> io::Result<Self> {
         let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
         let copy = Arc::clone(&shared);
         let worker = thread::Builder::new().name("t3box-deadline".into()).spawn(move || {
             let (lock, wake) = &*copy;
             let Ok(mut state) = lock.lock() else { return; };
+            #[cfg(target_os = "linux")]
+            let mut pressure = QueuePressure::default();
+            #[cfg(target_os = "linux")]
+            let mut next_sample = Instant::now();
             loop {
                 if state.stopped { break; }
+                #[cfg(target_os = "linux")]
+                if let Some(budget) = budget {
+                    let now = Instant::now();
+                    if now >= next_sample {
+                        next_sample = now + Duration::from_millis(50);
+                        let queued = crate::tcp_telemetry::TcpSample::read(&socket).ok().map(|s| s.not_sent_bytes);
+                        if pressure.observe(now, queued, budget) {
+                            state.expired = true;
+                            let _ = socket.shutdown(Shutdown::Both);
+                            break;
+                        }
+                    }
+                }
                 if let Some(deadline) = state.deadline {
                     let now = Instant::now();
                     if now >= deadline {
@@ -59,9 +109,18 @@ impl DeadlineWatchdog {
                         let _ = socket.shutdown(Shutdown::Both);
                         break;
                     }
-                    let Ok((next,_)) = wake.wait_timeout(state, deadline-now) else { break; };
+                    let wait = deadline-now;
+                    #[cfg(target_os = "linux")]
+                    let wait = if budget.is_some() { wait.min(next_sample.saturating_duration_since(now)) } else { wait };
+                    let Ok((next,_)) = wake.wait_timeout(state, wait) else { break; };
                     state = next;
                 } else {
+                    #[cfg(target_os = "linux")]
+                    if budget.is_some() {
+                        let Ok((next,_)) = wake.wait_timeout(state, next_sample.saturating_duration_since(Instant::now())) else { break; };
+                        state = next;
+                        continue;
+                    }
                     let Ok(next) = wake.wait(state) else { break; };
                     state = next;
                 }
@@ -91,6 +150,20 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1",0)).unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         (client,listener.accept().unwrap().0)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sustained_queue_pressure_is_not_a_single_burst() {
+        let mut p = QueuePressure::default();
+        let b = QueueBudget { max_not_sent_bytes: 100_000, max_sustained: Duration::from_millis(500) };
+        let t = Instant::now();
+        assert!(!p.observe(t, Some(200_000), b));
+        assert!(!p.observe(t+Duration::from_millis(400), Some(200_000), b));
+        assert!(!p.observe(t+Duration::from_millis(450), Some(0), b));
+        assert!(!p.observe(t+Duration::from_millis(500), Some(200_000), b));
+        assert!(p.observe(t+Duration::from_millis(1000), Some(200_000), b));
+        assert!(!p.observe(t+Duration::from_millis(1050), None, b));
     }
 
     #[test]
