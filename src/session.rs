@@ -17,11 +17,12 @@ pub struct PublishSession<T> {
     transport: T,
     incoming: ChunkReader,
     state: State,
+    media_buffer: Vec<u8>,
 }
 
 impl<T: Read + Write> PublishSession<T> {
     pub fn new(transport: T) -> Self {
-        Self { transport, incoming: ChunkReader::new(), state: State::New }
+        Self { transport, incoming: ChunkReader::new(), state: State::New, media_buffer: Vec::new() }
     }
 
     pub fn state(&self) -> State { self.state }
@@ -43,8 +44,12 @@ impl<T: Read + Write> PublishSession<T> {
         if payload.is_empty() || payload.len() > 1024 * 1024 {
             return Err(invalid("invalid media message length"));
         }
-        let mut writer = RtmpChunkWriter::new(&mut self.transport, 128)?;
+        // Preserve RTMP framing, but avoid thousands of tiny TLS writes.
+        // Reuse bounded scratch; no cross-message buffering or retry on failure.
+        self.media_buffer.clear();
+        let mut writer = RtmpChunkWriter::new(&mut self.media_buffer, 128)?;
         writer.message(chunk_stream_id, type_id, stream_id, timestamp_ms, payload)?;
+        self.transport.write_all(&self.media_buffer)?;
         self.transport.flush()
     }
 
@@ -187,6 +192,36 @@ mod tests {
         Duplex { read: Cursor::new(out.into_inner()), written: vec![] }
     }
 
+    #[test]
+    fn large_media_write_is_batched_and_wire_identical() {
+        struct Counted { inner: Duplex, writes: usize, flushes: usize }
+        impl Read for Counted {
+            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> { self.inner.read(b) }
+        }
+        impl Write for Counted {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.inner.write(b)
+            }
+            fn flush(&mut self) -> io::Result<()> { self.flushes += 1; Ok(()) }
+        }
+        let mut session = PublishSession::new(Counted { inner: transcript(false), writes: 0, flushes: 0 });
+        session.connect("live2", "rtmps://example.test/live2").unwrap();
+        session.create_stream().unwrap();
+        session.publish("test").unwrap();
+        let payload = vec![0x55; 735_000];
+        for ts in [100, 0x0100_0000] {
+            let before = session.transport.inner.written.len();
+            let writes = session.transport.writes;
+            let flushes = session.transport.flushes;
+            let mut expected = RtmpChunkWriter::new(Vec::new(), 128).unwrap();
+            expected.message(6, 9, 1, ts, &payload).unwrap();
+            session.send_media(9, ts, &payload).unwrap();
+            assert_eq!(&session.transport.inner.written[before..], expected.into_inner().as_slice());
+            assert_eq!(session.transport.writes - writes, 1);
+            assert_eq!(session.transport.flushes - flushes, 1);
+        }
+    }
     #[test]
     fn mock_server_accepts_connect_create_and_publish() {
         let mut session = PublishSession::new(transcript(false));
