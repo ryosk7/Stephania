@@ -45,11 +45,13 @@ impl X264Backend {
     pub fn configuration(&mut self) -> io::Result<(Vec<u8>, Vec<u8>)> {
         let encoder = self.encoder.as_mut().ok_or_else(||invalid("encoder was flushed"))?;
         let headers = encoder.headers().map_err(codec_error)?;
-        let nals = avcc_nals(headers.entirety())?;
-        let sps = nals.iter().find(|n| n[0] & 0x1f == 7)
-            .cloned().ok_or_else(||invalid("x264 did not provide SPS"))?;
-        let pps = nals.iter().find(|n| n[0] & 0x1f == 8)
-            .cloned().ok_or_else(||invalid("x264 did not provide PPS"))?;
+        let mut nals = avcc_nals(headers.entirety())?;
+        let sps_index = nals.iter().position(|n| n[0] & 0x1f == 7)
+            .ok_or_else(||invalid("x264 did not provide SPS"))?;
+        let sps = nals.swap_remove(sps_index);
+        let pps_index = nals.iter().position(|n| n[0] & 0x1f == 8)
+            .ok_or_else(||invalid("x264 did not provide PPS"))?;
+        let pps = nals.swap_remove(pps_index);
         Ok((sps, pps))
     }
 
