@@ -1,0 +1,153 @@
+name: Virtual Lab scenarios
+on:
+  push:
+    branches: [test/virtual-lab]
+  workflow_dispatch:
+    inputs:
+      kernel:
+        description: Run dedicated kernel-device host (requires t3box-lab runner)
+        type: boolean
+        default: false
+      soak:
+        description: Run three-hour full controller stream
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * 1"
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: virtual-lab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lab-native-binaries
+          path: |
+            target/release/t3box
+            target/release/t3box-native-av
+            target/release/t3box-ci-encode
+          retention-days: 1
+          compression-level: 0
+  capabilities:
+    if: github.event_name == 'workflow_dispatch' && inputs.kernel
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y v4l-utils alsa-utils kmod
+      - name: Report host kernel capabilities (diagnostic only)
+        run: bash tests/virtual-lab/probe.sh || echo 'Hosted kernel unavailable; QEMU integration is the required separate test' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-capabilities
+          path: evidence/
+  controller:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        input: [virtual]
+        fault: [none, disconnect, stall]
+        network: [clean, venue]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: actions/download-artifact@v4
+        with:
+          name: lab-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
+      - uses: actions/cache@v4
+        with:
+          path: .lab-fixture
+          key: lab-mixed-arm64-${{ hashFiles('tests/virtual-lab/fixture.py', 'ci/images/media-tools.Dockerfile') }}
+      - run: LAB_FIXTURE_CACHE=.lab-fixture LAB_MEDIA=mixed LAB_INPUT=${{ matrix.input }} LAB_FAULT=${{ matrix.fault }} LAB_NETWORK=${{ matrix.network }} bash ci/images/media-run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: controller-${{ matrix.input }}-${{ matrix.fault }}-${{ matrix.network }}
+          path: evidence/
+  kernel:
+    if: github.event_name == 'workflow_dispatch' && inputs.kernel
+    runs-on: [self-hosted, Linux, ARM64, t3box-lab]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release --locked --all-features --bin t3box
+      - run: LAB_INPUT=kernel LAB_SECONDS=30 bash tests/virtual-lab/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-native
+          path: evidence/
+  soak:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.soak
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: actions/download-artifact@v4
+        with:
+          name: lab-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box
+      - run: LAB_SECONDS=10800 LAB_FAULT=none bash ci/images/media-run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-controller-soak
+          path: |
+            evidence/*.json
+            evidence/*.jsonl
+            evidence/*.log
+  real-media:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        network: [clean, venue]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: actions/download-artifact@v4
+        with:
+          name: lab-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
+      - run: LAB_MEDIA=real LAB_SECONDS=30 LAB_NETWORK=${{ matrix.network }} bash ci/images/media-run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-media-${{ matrix.network }}
+          path: evidence/
+          compression-level: 0

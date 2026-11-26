@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, test/virtual-lab]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: read
+  packages: read
+  actions: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,7 +37,14 @@ jobs:
           python3 ci/test-ci-contracts.py
           python3 ci/plan.py --self-test
           python3 -m compileall -q ci
-          for f in ci/*.sh tests/*.sh; do bash -n "$f"; done
+          for f in ci/*.sh tests/*.sh tests/virtual-lab/*.sh; do bash -n "$f"; done
+          python3 -m compileall -q tests/virtual-lab
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: actionlint-v1.7.7-${{ runner.os }}-${{ runner.arch }}
       - name: Validate workflow syntax and expressions
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color -shellcheck="" -pyflakes=""
@@ -52,18 +61,41 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          command: |
+            cargo test --locked --all-features -- --skip accelerated_ci::
+            cargo test --locked --no-default-features
+            cargo clippy --all-targets --locked --all-features -- -D warnings
+            cargo build --release --locked --no-default-features --bin t3box
+
+  arm64-build:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
         with:
-          key: x86-check
-      - uses: ./.github/actions/native-deps
-      - run: |
-          cargo test --locked --all-features -- --skip accelerated_ci::
-          cargo test --locked --no-default-features
-      - run: cargo clippy --all-targets --locked --all-features -- -D warnings
-      - run: cargo build --release --locked --no-default-features --bin t3box
+          command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-native-binaries
+          path: |
+            target/release/t3box
+            target/release/t3box-native-av
+            target/release/t3box-ci-encode
+          retention-days: 1
+          compression-level: 0
 
   arm64-logical:
     needs: plan
@@ -72,20 +104,23 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
         with:
-          key: arm-logical
-      - uses: ./.github/actions/native-deps
-      - name: Build release tests once
-        run: cargo test --release --locked --all-features --no-run
-      - name: Native unit and accelerated simulation (60s)
+          command: |
+            cargo test --release --locked --all-features --no-run
+            mkdir -p fast-results
+            /usr/bin/time -f 'elapsed_seconds=%e' -o fast-results/timing.txt timeout 60 cargo test --release --locked --all-features -- --test-threads=2 2>&1 | tee fast-results/simulation.txt
+      - name: Verify simulation evidence
         run: |
-          mkdir -p fast-results
-          /usr/bin/time -f 'elapsed_seconds=%e' -o fast-results/timing.txt timeout 60 cargo test --release --locked --all-features -- --test-threads=2 2>&1 | tee fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_three_hour_clock_and_framing ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_venue_fault_scenarios ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_transition_matches_real_pcm_path ... ok" fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_three_hour_rtmp_roundtrip ... ok" fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_three_hour_rate_recovery ... ok" fast-results/simulation.txt
           cat fast-results/timing.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -95,7 +130,7 @@ jobs:
           retention-days: 3
 
   arm64-transport:
-    needs: plan
+    needs: [plan, arm64-build]
     if: needs.plan.outputs.full == 'true'
     strategy:
       fail-fast: false
@@ -105,14 +140,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg iproute2 openssl stress-ng
+      - uses: actions/download-artifact@v4
         with:
-          key: transport-${{ matrix.scenario }}
-      - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y --no-install-recommends ffmpeg iproute2 openssl stress-ng
-      - name: Build release binaries once
-        run: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av
+          name: ci-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
       - name: Run selected transport suite (60s)
         env:
           SCENARIO: ${{ matrix.scenario }}
@@ -132,7 +165,7 @@ jobs:
           retention-days: 3
 
   arm64-quality:
-    needs: plan
+    needs: [plan, arm64-build]
     if: needs.plan.outputs.full == 'true'
     strategy:
       fail-fast: false
@@ -142,18 +175,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
+      - uses: actions/download-artifact@v4
         with:
-          key: quality-${{ matrix.preset }}
-      - uses: ./.github/actions/native-deps
-      - run: sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
-      - run: cargo build --release --locked --features native-aac,native-x264 --bin t3box-ci-encode
+          name: ci-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
       - name: Prepare constrained encoder image
         run: |
-          docker build -t t3box-bench -f ci/Dockerfile.benchmark .
-          docker run --rm --entrypoint ldd t3box-bench /app/t3box-ci-encode | tee /tmp/encoder-libs.txt
-          ! grep -q "not found" /tmp/encoder-libs.txt
+          bash ci/images/benchmark.sh
       - name: Measure quality profiles (60s)
         env:
           T3BOX_BENCH_PRESET: ${{ matrix.preset }}
@@ -180,15 +214,34 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [plan, rust-check, arm64-logical, arm64-transport, arm64-quality, arm64-soak]
+    needs: [plan, rust-check, arm64-build, arm64-logical, arm64-transport, arm64-quality, arm64-soak]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
+      - name: Record CI elapsed time and job durations
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/ci-jobs.json"
+          python3 - "$RUNNER_TEMP/ci-jobs.json" <<'PY'
+          import datetime,json,os,sys
+          jobs=json.load(open(sys.argv[1]))['jobs']
+          ts=lambda s:datetime.datetime.fromisoformat(s.replace('Z','+00:00'))
+          starts=[ts(j['started_at']) for j in jobs if j.get('started_at') and j['conclusion']!='skipped']
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(f'## CI elapsed to gate: {(datetime.datetime.now(datetime.timezone.utc)-min(starts)).total_seconds():.1f}s\\n\\n')
+              f.write('| Job | Seconds | Result |\\n|---|---:|---|\\n')
+              for j in jobs:
+                  if j.get('started_at') and j.get('completed_at') and j['conclusion']!='skipped':
+                      f.write(f"| {j['name']} | {(ts(j['completed_at'])-ts(j['started_at'])).total_seconds():.1f} | {j['conclusion']} |\\n")
+          PY
       - env:
           PLAN: ${{ needs.plan.result }}
           REASON: ${{ needs.plan.outputs.reason }}
           FULL: ${{ needs.plan.outputs.full }}
           RUST: ${{ needs.rust-check.result }}
+          BUILD: ${{ needs.arm64-build.result }}
           LOGICAL: ${{ needs.arm64-logical.result }}
           TRANSPORT: ${{ needs.arm64-transport.result }}
           QUALITY: ${{ needs.arm64-quality.result }}
@@ -199,11 +252,11 @@ jobs:
           echo "Coverage selection: $REASON" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$SOAK_REQUESTED" == true ]]; then test "$SOAK" = success; else test "$SOAK" = skipped; fi
           if [[ "$FULL" == true ]]; then
-            for result in "$RUST" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = success; done
+            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = success; done
           else
             test "$FULL" = false
             test "$REASON" = docs-only
-            for result in "$RUST" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = skipped; done
+            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = skipped; done
           fi
 
   arm64-soak:
@@ -212,6 +265,10 @@ jobs:
     timeout-minutes: 220
     steps:
       - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Dependencies

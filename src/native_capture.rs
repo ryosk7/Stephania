@@ -187,7 +187,11 @@ fn capture_video_session(settings: &CaptureSettings, queue: &Weak<SharedVideoQue
     let actual = device.set_format(&format)?;
     if actual.width != settings.width || actual.height != settings.height ||
         actual.fourcc != format.fourcc {
-        return Err(invalid("V4L2 driver did not accept requested capture format"));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!(
+            "V4L2 capture format rejected: requested {}x{} {:?}, negotiated {}x{} {:?} (stride {})",
+            settings.width, settings.height, format.fourcc, actual.width, actual.height,
+            actual.fourcc, actual.stride,
+        )));
     }
     let mut stream = Stream::with_buffers(&device, Type::VideoCapture, 4)?;
     loop {

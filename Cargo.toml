@@ -7,7 +7,7 @@ description = "Raspberry Pi 5 LT stream box controller foundation"
 license = "MIT"
 
 [features]
-default = []
+default = ["native-capture", "native-x264", "native-aac"]
 native-capture = ["dep:v4l", "dep:alsa"]
 native-x264 = []
 native-aac = []

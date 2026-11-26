@@ -55,6 +55,7 @@ impl Sources {
             return Ok(Self::Virtual(VirtualCapture {
                 origin: timestamp_us(), video_index: 0, audio_index: 0,
                 width: s.capture.width, height: s.capture.height, fps: s.fps,
+                fixture: VirtualFixture::open(s)?,
             }));
         }
         Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, AlsaAudioSource::open(s.capture.clone())?))
@@ -63,7 +64,7 @@ impl Sources {
         match self {
             Self::Hardware(v, _) => v.try_latest_frame(max_age),
             #[cfg(feature = "ci-virtual")]
-            Self::Virtual(v) => Ok(v.video()),
+            Self::Virtual(v) => v.video(),
         }
     }
     fn audio(&mut self) -> io::Result<Option<crate::media_core::AudioFrame>> {
@@ -82,23 +83,70 @@ struct VirtualCapture {
     width: u32,
     height: u32,
     fps: u32,
+    fixture: Option<VirtualFixture>,
+}
+#[cfg(feature = "ci-virtual")]
+struct VirtualFixture {
+    video: std::fs::File,
+    frames: u64,
+}
+#[cfg(feature = "ci-virtual")]
+impl VirtualFixture {
+    fn open(s: &Settings) -> io::Result<Option<Self>> {
+        let Some(path) = env::var_os("T3BOX_LAB_VIDEO") else { return Ok(None); };
+        let video = std::fs::File::open(path)?;
+        let frame_bytes = u64::from(s.capture.width)*u64::from(s.capture.height)*2;
+        let len = video.metadata()?.len();
+        if frame_bytes == 0 || len == 0 || !len.is_multiple_of(frame_bytes) {
+            return Err(invalid("invalid lab fixture length"));
+        }
+        Ok(Some(Self { video, frames: len/frame_bytes }))
+    }
+    fn read(&mut self, index: u64, bytes: &mut [u8]) -> io::Result<()> {
+        use std::io::{Read,Seek,SeekFrom};
+        self.video.seek(SeekFrom::Start(index % self.frames * bytes.len() as u64))?;
+        self.video.read_exact(bytes)
+    }
 }
 #[cfg(feature = "ci-virtual")]
 impl VirtualCapture {
-    fn video(&mut self) -> Option<crate::media_core::VideoFrame> {
+    fn video(&mut self) -> io::Result<Option<crate::media_core::VideoFrame>> {
         let now = timestamp_us();
         let available = (now.saturating_sub(self.origin)) * u64::from(self.fps) / 1_000_000;
-        if self.video_index > available { return None; }
+        if self.video_index > available { return Ok(None); }
+        if self.video_index == 0 && env::var_os("T3BOX_LAB_MARKERS").is_some() {
+            #[repr(C)]
+            struct Timespec { sec: std::ffi::c_long, nsec: std::ffi::c_long }
+            unsafe extern "C" { fn clock_gettime(clock: std::ffi::c_int, value: *mut Timespec) -> std::ffi::c_int; }
+            let before = timestamp_us();
+            let mut t = Timespec { sec: 0, nsec: 0 };
+            let result = unsafe { clock_gettime(1, &mut t) };
+            let after = timestamp_us();
+            if result != 0 { return Err(io::Error::last_os_error()); }
+            let epoch_ns = i128::from(t.sec)*1_000_000_000 + i128::from(t.nsec)
+                - i128::from((before+after)/2-self.origin)*1000;
+            eprintln!("lab source epoch_ns={epoch_ns} uncertainty_us={}", after-before);
+        }
         self.video_index = available + 1;
         let timestamp_us = self.origin + available * 1_000_000 / u64::from(self.fps);
         let mut bytes = vec![0; self.width as usize * self.height as usize * 2];
+        if let Some(fixture) = &mut self.fixture { fixture.read(available, &mut bytes)?; } else {
         for (i, pixel) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let y = (16 + ((i / 32 + available as usize * 3) % 200)) as u8;
             pixel.copy_from_slice(&[y, 128, y, 128]);
         }
-        Some(crate::media_core::VideoFrame { timestamp_us, sequence: available,
+        }
+        // Optional source sequence marker survives lossy encoding. 32 bits, 16x16 blocks.
+        if self.width >= 512 && self.height >= 16 && env::var_os("T3BOX_LAB_MARKERS").is_some() {
+            for y in 0..16usize { for x in 0..512usize {
+                let i = (y*self.width as usize+x)*2;
+                bytes[i] = if (available >> (x/16)) & 1 == 1 {235} else {16};
+                bytes[i+1]=128;
+            }}
+        }
+        Ok(Some(crate::media_core::VideoFrame { timestamp_us, sequence: available,
             width: self.width, height: self.height, row_stride_bytes: self.width as usize * 2,
-            format: PixelFormat::Yuyv422, bytes })
+            format: PixelFormat::Yuyv422, bytes }))
     }
     fn audio(&mut self) -> Option<crate::media_core::AudioFrame> {
         let now = timestamp_us();
@@ -108,8 +156,10 @@ impl VirtualCapture {
         self.audio_index = self.audio_index.max(available.saturating_sub(4));
         let index = self.audio_index;
         self.audio_index += 1;
+        let markers = env::var_os("T3BOX_LAB_MARKERS").is_some();
         let samples = (0..1024).flat_map(|j| {
             let v = ((((index * 1024 + j) % 109) as i16) - 54) * 200;
+            let v = if markers && (index*1024+j)%48000 < 2400 { v } else if markers {0} else {v};
             [v,v]
         }).collect();
         Some(crate::media_core::AudioFrame {

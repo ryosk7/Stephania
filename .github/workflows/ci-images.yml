@@ -1,0 +1,57 @@
+name: Publish generic CI images
+on:
+  push:
+    branches: [test/virtual-lab, main]
+    paths:
+      - ci/images/*.Dockerfile
+      - .github/workflows/ci-images.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: generic-ci-images-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: build
+          - runner: ubuntu-24.04
+            arch: amd64
+            image: build
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: runtime
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: media-tools
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: qemu-tools
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish only generic environment
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          ctx="$(mktemp -d)"
+          trap 'rm -rf "$ctx"' EXIT
+          cp "ci/images/$IMAGE.Dockerfile" "$ctx/Dockerfile"
+          hash="$(sha256sum "$ctx/Dockerfile" | cut -d' ' -f1)"
+          ref="ghcr.io/ryosk7/t3box-ci-$IMAGE:$ARCH-$hash"
+          if ! docker pull "$ref"; then
+            docker build --platform "linux/$ARCH" -t "$ref" "$ctx"
+            docker push "$ref"
+          fi
+          docker inspect --format '{{index .RepoDigests 0}}' "$ref" | tee -a "$GITHUB_STEP_SUMMARY"

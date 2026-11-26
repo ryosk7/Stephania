@@ -1,0 +1,72 @@
+name: QEMU kernel device integration
+on:
+  push:
+    branches: [test/virtual-lab]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: qemu-lab-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  IMAGE: ghcr.io/ryosk7/t3box-qemu-lab
+jobs:
+  guest:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: actions/cache/restore@v4
+        id: boot-cache
+        with:
+          path: .qemu-lab
+          key: qemu-lab-${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
+      - name: Restore generic boot image
+        env:
+          TAG: ${{ hashFiles('tests/virtual-lab/qemu-prepare.sh', 'tests/virtual-lab/Dockerfile.qemu') }}
+        run: |
+          set -Eeuo pipefail
+          if [[ ! -s .qemu-lab/Image || ! -s .qemu-lab/root.cpio.gz ]]; then
+            # Anonymous pull when public; authenticated fallback while private.
+            REF="$IMAGE:$TAG"
+            if ! docker pull "$REF"; then
+              ctx="$(mktemp -d)"
+              cp tests/virtual-lab/qemu-prepare.sh tests/virtual-lab/Dockerfile.qemu "$ctx/"
+              docker build --platform linux/arm64 -f "$ctx/Dockerfile.qemu" -t "$REF" "$ctx"
+              rm -rf "$ctx"
+            fi
+            digest="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$REF")"
+            REF="${digest:-$REF}"
+            mkdir -p .qemu-lab
+            id="$(docker create "$REF" /unused)"
+            docker cp "$id:/image/." .qemu-lab/
+            docker rm "$id"
+          fi
+          (cd .qemu-lab; sha256sum -c manifest.txt)
+      - uses: actions/cache/save@v4
+        if: steps.boot-cache.outputs.cache-hit != 'true'
+        with:
+          path: .qemu-lab
+          key: ${{ steps.boot-cache.outputs.cache-primary-key }}
+      - uses: ./.github/actions/cached-build
+        with:
+          command: cargo build --release --locked --no-default-features --features native-capture --bin t3box-native-probe
+      - run: bash ci/images/pull.sh qemu-tools
+      - name: Kernel capture gate (60 seconds including overlay)
+        run: |
+          mkdir -p vm-evidence
+          /usr/bin/time -f 'elapsed_seconds=%e' -o vm-evidence/timing.txt timeout --kill-after=2s 58s bash ci/images/qemu-run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qemu-kernel-evidence
+          path: vm-evidence/
+          retention-days: 7
