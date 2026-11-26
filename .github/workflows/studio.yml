@@ -1,0 +1,35 @@
+name: Studio foundation
+on:
+  pull_request:
+    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', '.github/workflows/studio.yml']
+  push:
+    branches: [main]
+    paths: ['apps/studio/**', 'services/control/**', 'contracts/**', '.github/workflows/studio.yml']
+permissions:
+  contents: read
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/control
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - run: bundle exec ruby test/control_test.rb
+  studio:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
