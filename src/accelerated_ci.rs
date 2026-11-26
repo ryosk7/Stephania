@@ -78,12 +78,15 @@ fn accelerated_venue_fault_scenarios() {
         let mut failures = 0u32;
         let mut online = true;
         let mut seen_outage = false;
+        let mut seed_outages = 0;
+        let mut seed_recoveries = 0;
         for i in 0..VIDEO_FRAMES {
             let r = random(&mut rng);
-            if online && r.is_multiple_of(9000) {
+            if online && i + 2000 < VIDEO_FRAMES && r.is_multiple_of(9000) {
                 online = false;
                 seen_outage = true;
                 outages += 1;
+                seed_outages += 1;
                 link_up = i + 30 + r % 600;
                 failures = 1;
                 retry_at = i + reconnect::retry_delay(failures).as_secs()*30;
@@ -93,6 +96,8 @@ fn accelerated_venue_fault_scenarios() {
                 if i >= link_up {
                     online = true;
                     recovered += 1;
+                    seed_recoveries += 1;
+                    assert!(i-link_up <= 960);
                     failures = 0;
                 } else {
                     failures += 1;
@@ -109,14 +114,17 @@ fn accelerated_venue_fault_scenarios() {
             if r % 100 < 85 {
                 let frame = q.pop().unwrap();
                 assert!(last.is_none_or(|p| frame.sequence > p));
-                assert!(i-frame.sequence <= 4 + 100); // finite service lag in seeded cases
+                assert!(i-frame.sequence <= 4); // newest bounded queue under per-frame arrivals
                 last = Some(frame.sequence);
             }
         }
         dropped += q.dropped();
         assert!(seen_outage);
+        assert!(online);
+        assert_eq!(seed_outages, seed_recoveries);
     }
-    assert!(outages > 100 && recovered > 100 && dropped > 0);
+    assert!(outages > 100 && dropped > 0);
+    assert_eq!(outages, recovered);
     assert!(!reconnect::retryable(&io::Error::from(io::ErrorKind::PermissionDenied)));
     println!("{} modeled video events; {outages} outages, {recovered} recoveries, {dropped} queue drops; {:.3}s",
         16*VIDEO_FRAMES, start.elapsed().as_secs_f64());

@@ -17,3 +17,9 @@ jobs:
           arecord -l
       - name: Capture physical video + audio
         run: bash tests/hardware.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: physical-capture-evidence
+          path: hardware-results/
+          retention-days: 3

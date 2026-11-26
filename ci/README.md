@@ -127,3 +127,57 @@ raw quality bitstreams on success. Actual billable usage and wall time
 depend on account limits, rounding and cache; job-count reduction is not a
 measured cost reduction. Required check should be ci-gate after validating
 branch protection; this change does not modify repository rules.
+
+## Measured media acceptance (provisional)
+
+Normal CI exposes Markdown and JSON reports even when threshold checks fail.
+Native codec profiles measure 1080p30 frame counts, offline FPS, p95 processing
+time, process CPU, peak RSS, bitrate, PSNR, SSIM, OCR and optional VMAF.
+Production ultrafast gates: >=30 offline FPS, >=30 dB PSNR, >=0.90 SSIM,
+>=90% normalized OCR similarity, <=1 GiB peak RSS, all frames decoded.
+Veryfast speed is comparative. Local RTMPS receiver gates media FPS >=29,
+arrival FPS >=27, estimated missing <=3%, final timestamp difference <=100ms,
+max packet timestamp skew <=250ms and last-to-first recovery gap <=10s.
+These are initial engineering thresholds, not hardware or YouTube guarantees.
+No extra runner is required; each quality profile decodes once for PSNR/SSIM
+and four preview samples. The existing 60s suite timeout remains.
+
+## CI review safeguards
+
+Quality jobs require exact expected profile names and per-profile completion
+markers, collect partial failures, and emit evidence even when a profile
+fails. VMAF is opt-in (T3BOX_BENCH_VMAF=1) to protect the fast gate budget.
+Transport scenarios write to separate artifact directories, preserve partial
+receives, require the dynamic impairment worker to finish successfully and
+check competing load remains active. The planner runs inexpensive negative
+contract tests before dispatching costly workers. The codec image verifies
+runtime shared-library resolution before timing. No physical calibration or
+unmeasured quality claims are made.
+
+## Repository-wide CI audit
+
+The invalid YAML plain scalar ending in a colon is replaced with a block.
+Default-feature builds/tests are explicitly checked alongside all-feature
+builds. Controller smoke now requires decoded H.264/AAC, correct status,
+idempotent start/stop, 403 cross-origin and 404 unknown endpoints. Logical
+fault tests require every modeled outage to recover, not merely a minimum
+number of recoveries. Optional soak validates completed frames, elapsed
+time, OOM and telemetry presence. Physical smoke now validates codec,
+geometry, audio and decoded frame counts; it still tests the FFmpeg
+compatibility route only. Uncovered: real device hotplug, native capture
+on Pi, NetworkManager success paths, systemd deployment, YouTube ingest,
+async RTMP controls, hardware-clock calibration and long-run leak proof.
+
+## Verification assurance revision
+
+All executable changes now run all four codec profiles and both transport
+groups. Only documentation-only PRs may skip expensive jobs. Unknown
+changes run full coverage. The aggregate gate includes explicitly requested
+soak results. Workflow expressions are checked using pinned actionlint;
+Python and shell syntax and negative measurement contracts run in the
+planner. Quality evidence requires 120 PSNR and SSIM frame records, decoded
+audio duration and non-silent unclipped signal, positive finite performance
+metrics, and a unique expected profile manifest. Transport additionally
+checks audio packet coverage and maximum video timestamp gap. Reports remain
+provisional; neither hardware acceptance nor full production equivalence
+is claimed. Real-device smoke is separate, manual and not a YouTube test.
