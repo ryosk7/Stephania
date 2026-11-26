@@ -7,7 +7,8 @@
 //! writes here; it is not implemented yet.
 //!
 //! Methods: `gatt.read {uuid}` → `{value_hex}`; `gatt.write {uuid,
-//! fragment_hex}` → `{response_hex|null}`. Physical reset is intentionally not
+//! fragment_hex}` → `{response_hex|null, message_id}`; the GATT adapter
+//! notifies `response_hex` fragmented under `message_id`. Physical reset is intentionally not
 //! reachable over the socket; it will come from the GPIO handler.
 #[cfg(unix)]
 fn main() {
@@ -106,7 +107,8 @@ mod unix {
                 let Some(fragment) = params.and_then(|p| p.get("fragment_hex")).and_then(Value::as_str).and_then(unhex) else {
                     return err(Some(id), "invalid_params", "fragment_hex required");
                 };
-                service.write(c, &fragment, now).map(|r| json!({"response_hex": r.map(|b| hex(&b))}))
+                let message_id = fragment.first().copied();
+                service.write(c, &fragment, now).map(|r| json!({"response_hex": r.map(|b| hex(&b)), "message_id": message_id}))
             }
             _ => return err(Some(id), "unknown_method", "unknown method"),
         };

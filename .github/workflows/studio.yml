@@ -1,10 +1,10 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
 concurrency:
@@ -145,3 +145,41 @@ jobs:
       - name: Build and test the exact shipped page (QR round-trip via jsQR)
         run: npm test
       - run: cat dist/SHA256SUMS
+  mobile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: provision-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build device provisioning service (virtual network backend)
+        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        working-directory: packages/provisioning-client
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/mobile
+      - run: npm run typecheck
+        working-directory: apps/mobile
+      - name: BLE transport against Rust device core (must not skip)
+        working-directory: apps/mobile
+        shell: bash
+        env:
+          T3BOX_PROVISION_BIN: ${{ github.workspace }}/target/debug/t3box-provision
+        run: |
+          npx vitest run --reporter=verbose | tee vitest.log
+          grep -q 'BlePlxTransport against Rust device core' vitest.log
+          if grep -qiE 'skipped|↓' vitest.log; then echo "device-core test skipped" >&2; exit 1; fi
+      - name: Metro bundle for iOS and Android
+        working-directory: apps/mobile
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
+        run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/t3box-export"

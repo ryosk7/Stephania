@@ -20,3 +20,31 @@ export function fragment(messageId: number, message: Uint8Array, attPayload: num
   }
   return out;
 }
+
+/** Reassembles notified response fragments for one message id. */
+export class Reassembler {
+  private parts: (Uint8Array | undefined)[] = [];
+  private count = 0;
+  private bytes = 0;
+  constructor(readonly messageId: number) {}
+
+  /** Returns the complete message, null while incomplete; throws on violations. */
+  push(fragment: Uint8Array): Uint8Array | null {
+    if (fragment.length <= HEADER_BYTES) throw new Error('malformed');
+    const [id, index, count] = fragment;
+    if (id !== this.messageId) return null; // another message's fragment
+    if (count === 0 || count > MAX_FRAGMENTS || index >= count) throw new Error('malformed');
+    if (this.count === 0) { this.count = count; this.parts = Array.from({length: count}, () => undefined); }
+    if (count !== this.count) throw new Error('inconsistent');
+    if (this.parts[index]) throw new Error('duplicate');
+    const body = fragment.subarray(HEADER_BYTES);
+    this.bytes += body.length;
+    if (this.bytes > MAX_MESSAGE_BYTES) throw new Error('too_large');
+    this.parts[index] = body;
+    if (this.parts.some(p => !p)) return null;
+    const out = new Uint8Array(this.bytes);
+    let o = 0;
+    for (const p of this.parts as Uint8Array[]) { out.set(p, o); o += p.length; }
+    return out;
+  }
+}
