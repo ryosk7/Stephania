@@ -7,6 +7,11 @@ use crate::{
     native_video::NativeVideoPipeline, pcm_framer::PcmFramer, reconnect, rtmps_tls,
 };
 
+// Limit raw video age to three frame periods (100 ms at 30 fps).
+fn video_max_age(fps: u32) -> Duration {
+    Duration::from_micros(3_000_000 / u64::from(fps.max(1)))
+}
+
 fn number(key: &str, default: u32) -> io::Result<u32> {
     env::var(key).ok().map(|s| s.parse().map_err(|_| invalid("invalid numeric setting")))
         .transpose().map(|v| v.unwrap_or(default))
@@ -54,9 +59,9 @@ impl Sources {
         }
         Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, AlsaAudioSource::open(s.capture.clone())?))
     }
-    fn video(&mut self) -> io::Result<Option<crate::media_core::VideoFrame>> {
+    fn video(&mut self, max_age: Duration) -> io::Result<Option<crate::media_core::VideoFrame>> {
         match self {
-            Self::Hardware(v, _) => v.try_next_frame(),
+            Self::Hardware(v, _) => v.try_latest_frame(max_age),
             #[cfg(feature = "ci-virtual")]
             Self::Virtual(v) => Ok(v.video()),
         }
@@ -140,7 +145,7 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
                 }
             }
         }
-        if let Some(mut frame) = stage(sources.video(), "video capture")? {
+        if let Some(mut frame) = stage(sources.video(video_max_age(s.fps)), "video capture")? {
             progress = true;
             if frame.timestamp_us >= origin {
                 last_video = Instant::now();
@@ -206,7 +211,7 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
                 // Keep draining capture queues during backoff; never replay stale media.
                 let until = Instant::now() + delay;
                 while !cancelled() && Instant::now() < until {
-                    let _ = sources.video();
+                    let _ = sources.video(video_max_age(s.fps));
                     let _ = sources.audio();
                     thread::sleep(Duration::from_millis(5));
                 }

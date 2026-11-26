@@ -58,16 +58,19 @@ struct VideoQueue {
     frames: VecDeque<VideoFrame>,
     error: Option<io::Error>,
     capacity: usize,
+    spare: Vec<Vec<u8>>,
 }
 impl VideoQueue {
     fn new(capacity: usize) -> Self {
-        Self { frames: VecDeque::with_capacity(capacity), error: None, capacity }
+        Self { frames: VecDeque::with_capacity(capacity), error: None, capacity, spare: Vec::with_capacity(capacity) }
     }
     fn push(&mut self, mut frame: VideoFrame, bytes: &[u8]) {
         if self.frames.len() == self.capacity {
             if let Some(old) = self.frames.pop_front() {
                 frame.bytes = old.bytes;
             }
+        } else if let Some(bytes) = self.spare.pop() {
+            frame.bytes = bytes;
         }
         frame.bytes.clear();
         frame.bytes.extend_from_slice(bytes);
@@ -77,8 +80,26 @@ impl VideoQueue {
         if let Some(error) = self.error.take() { return Err(error); }
         Ok(self.frames.pop_front())
     }
+    // Return only the newest uncompressed frame. Retain storage of discarded
+    // frames for capture, bounded by the configured queue capacity.
+    fn pop_latest(&mut self, now_us: u64, max_age_us: u64) -> io::Result<Option<VideoFrame>> {
+        if let Some(error) = self.error.take() { return Err(error); }
+        let newest = self.frames.pop_back();
+        while let Some(old) = self.frames.pop_front() {
+            if self.spare.len() < self.capacity { self.spare.push(old.bytes); }
+        }
+        match newest {
+            Some(frame) if now_us.saturating_sub(frame.timestamp_us) <= max_age_us => Ok(Some(frame)),
+            Some(frame) => {
+                if self.spare.len() < self.capacity { self.spare.push(frame.bytes); }
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
     fn fail(&mut self, error: io::Error) {
         self.frames.clear();
+        self.spare.clear();
         self.error = Some(error);
     }
 }
@@ -266,6 +287,13 @@ fn audio_error(error: alsa::Error) -> io::Error {
 
 
 impl V4lVideoSource {
+    /// Live path only: atomically discard older queued frames and reject stale input.
+    /// FIFO remains available for probe/diagnostic callers.
+    pub fn try_latest_frame(&self, max_age: Duration) -> io::Result<Option<VideoFrame>> {
+        let mut queue = self.queue.0.lock().map_err(|_| io::Error::other("video queue poisoned"))?;
+        queue.pop_latest(timestamp_us(), max_age.as_micros().min(u128::from(u64::MAX)) as u64)
+    }
+
     pub fn try_next_frame(&self) -> io::Result<Option<VideoFrame>> {
         self.queue.0.lock().map_err(|_| io::Error::other("video queue poisoned"))?.pop()
     }
@@ -308,6 +336,30 @@ mod tests {
         q.fail(io::Error::other("device lost"));
         assert!(q.pop().is_err());
         assert!(q.pop().unwrap().is_none());
+    }
+    #[test]
+    fn latest_frame_discards_backlog_and_rejects_expired_input() {
+        let mut q = VideoQueue::new(4);
+        let frame = |sequence| VideoFrame {
+            timestamp_us: sequence * 10_000, sequence, width: 2, height: 2,
+            row_stride_bytes: 4, format: PixelFormat::Yuyv422, bytes: Vec::new(),
+        };
+        for i in 1..=4 { q.push(frame(i), &[i as u8; 8]); }
+        let latest = q.pop_latest(50_000, 20_000).unwrap().unwrap();
+        assert_eq!(latest.sequence, 4);
+        assert_eq!(latest.bytes, [4; 8]);
+        assert!(q.frames.is_empty());
+        assert_eq!(q.spare.len(), 3);
+        q.push(frame(5), &[5; 8]);
+        assert!(q.pop_latest(70_001, 20_000).unwrap().is_none());
+        assert!(q.frames.is_empty());
+        q.push(frame(6), &[6; 8]);
+        assert_eq!(q.pop_latest(80_000, 20_000).unwrap().unwrap().sequence, 6);
+        q.push(frame(7), &[7; 8]);
+        q.fail(io::Error::other("device lost"));
+        assert!(q.pop_latest(70_000, 20_000).is_err());
+        assert!(q.pop_latest(70_000, 20_000).unwrap().is_none());
+        assert!(q.spare.len() <= q.capacity);
     }
     #[test]
     fn default_settings_have_bounded_buffers() {
