@@ -1,0 +1,11 @@
+{
+ "request": {
+  "version": 1,
+  "request_id": "",
+  "method": "engine.status"
+ },
+ "expect": {
+  "ok": false,
+  "code": "invalid_request"
+ }
+}

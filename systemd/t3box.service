@@ -1,5 +1,5 @@
 [Unit]
-Description=T3Box Raspberry Pi diagnostics controller
+Description=T3Box Raspberry Pi media engine
 After=network.target
 
 [Service]
@@ -7,6 +7,11 @@ Type=simple
 User=t3box
 Group=t3box
 ExecStart=/usr/local/bin/t3box
+Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
+# Control socket directory; only the t3box group (control service) may enter.
+RuntimeDirectory=t3box
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

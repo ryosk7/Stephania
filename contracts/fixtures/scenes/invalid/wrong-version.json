@@ -1,0 +1,33 @@
+{
+ "version": 2,
+ "name": "LT",
+ "layers": [
+  {
+   "id": "hdmi",
+   "source": "hdmi",
+   "x": 0,
+   "y": 0,
+   "width": 1440,
+   "height": 1080,
+   "visible": true
+  },
+  {
+   "id": "rear",
+   "source": "phone:rear",
+   "x": 1440,
+   "y": 0,
+   "width": 480,
+   "height": 540,
+   "visible": true
+  },
+  {
+   "id": "front",
+   "source": "phone:front",
+   "x": 1440,
+   "y": 540,
+   "width": 480,
+   "height": 540,
+   "visible": false
+  }
+ ]
+}

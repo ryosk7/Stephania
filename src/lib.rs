@@ -13,6 +13,8 @@ pub mod media_output;
 pub mod flv_input;
 pub mod flv_relay;
 pub mod media_core;
+pub mod scene;
+pub mod ipc;
 
 #[cfg(all(target_os = "linux", feature = "native-capture"))]
 pub mod native_capture;

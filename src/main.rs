@@ -11,6 +11,53 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use stream::{Config, Controller};
+use t3box::ipc::{EngineControl, EngineStatus};
+
+/// Default location of the versioned control socket (docs/IPC.md).
+const DEFAULT_ENGINE_SOCKET: &str = "/run/t3box/engine.sock";
+
+struct IpcEngine(Arc<Controller>);
+
+impl EngineControl for IpcEngine {
+    fn status(&self) -> EngineStatus {
+        let (desired, _process_running, restarts, last_error) = self.0.status();
+        EngineStatus {
+            streaming_requested: desired,
+            native_worker_running: self.0.native_running(),
+            restart_attempts: restarts,
+            last_error,
+        }
+    }
+    fn start(&self) -> Result<(), String> { self.0.start() }
+    fn stop(&self) { self.0.stop() }
+}
+
+/// Resolve the IPC socket path. `T3BOX_ENGINE_SOCKET=off` disables it.
+fn engine_socket_path() -> Option<std::path::PathBuf> {
+    match std::env::var("T3BOX_ENGINE_SOCKET") {
+        Ok(v) if v == "off" => None,
+        Ok(v) if !v.is_empty() => Some(v.into()),
+        _ => Some(DEFAULT_ENGINE_SOCKET.into()),
+    }
+}
+
+/// Start the control socket on its own thread. Failure to bind never stops
+/// the engine: the media plane must keep running if management is broken.
+fn start_engine_ipc(controller: &Arc<Controller>) {
+    let Some(path) = engine_socket_path() else { return };
+    match t3box::ipc::bind(&path) {
+        Ok(listener) => {
+            let engine: Arc<dyn EngineControl> = Arc::new(IpcEngine(Arc::clone(controller)));
+            let spawned = std::thread::Builder::new().name("t3box-ipc-accept".into())
+                .spawn(move || t3box::ipc::serve(listener, engine));
+            match spawned {
+                Ok(_) => println!("T3Box engine IPC: {}", path.display()),
+                Err(e) => eprintln!("T3Box engine IPC thread failed: {e}"),
+            }
+        }
+        Err(e) => eprintln!("T3Box engine IPC unavailable at {}: {e}", path.display()),
+    }
+}
 
 fn video_devices() -> Vec<String> {
     let Ok(entries) = fs::read_dir("/dev") else { return Vec::new() };
@@ -218,6 +265,7 @@ fn main() -> std::io::Result<()> {
     };
     // Loopback-only by design; the control API has no authentication yet.
     let controller = Arc::new(Controller::new(config));
+    start_engine_ipc(&controller);
     let listener = TcpListener::bind("127.0.0.1:8787")?;
     println!("T3Box local dashboard: http://127.0.0.1:8787");
     for connection in listener.incoming() {

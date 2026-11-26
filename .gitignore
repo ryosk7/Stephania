@@ -2,3 +2,5 @@
 *.swp
 *.swo
 .env
+services/control/vendor/
+services/control/.bundle/
