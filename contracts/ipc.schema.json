@@ -30,7 +30,9 @@
         "not_implemented",
         "engine_start_failed",
         "busy",
-        "forbidden"
+        "forbidden",
+        "program_inactive",
+        "program_timeout"
       ]
     },
     "request": {

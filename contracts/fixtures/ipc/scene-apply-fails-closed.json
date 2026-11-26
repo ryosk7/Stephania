@@ -18,7 +18,9 @@
       "visible": true
      }
     ]
-   }
+   },
+   "scene_id": "lt",
+   "revision": 1
   }
  },
  "expect": {

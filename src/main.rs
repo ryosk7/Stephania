@@ -31,6 +31,28 @@ impl EngineControl for IpcEngine {
     }
     fn start(&self) -> Result<(), String> { self.0.start() }
     fn stop(&self) { self.0.stop() }
+
+    fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value) -> Result<serde_json::Value, t3box::ipc::IpcError> {
+        use t3box::composition::{apply, ApplyError, APPLY_TIMEOUT};
+        use t3box::ipc::{code, IpcError};
+        if !t3box::composition::enabled() {
+            return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "T3BOX_COMPOSITOR is not enabled; Program unchanged".into() });
+        }
+        let program = t3box::compositor::Program::from_scene(scene_id, revision, scene)
+            .map_err(|e| IpcError { code: code::INVALID_SCENE, message: e.to_string() })?;
+        match apply(program, APPLY_TIMEOUT) {
+            Ok(ack) => Ok(serde_json::json!({
+                "applied": true, "scene_id": ack.scene_id, "revision": ack.revision,
+                "first_frame_index": ack.first_frame_index,
+            })),
+            Err(ApplyError::Inactive) => Err(IpcError { code: code::PROGRAM_INACTIVE, message: "no stream is running; Program unchanged".into() }),
+            Err(ApplyError::Timeout) => Err(IpcError { code: code::PROGRAM_TIMEOUT, message: "no frame boundary within timeout; Program unchanged".into() }),
+        }
+    }
+
+    fn program(&self) -> (String, u64) { t3box::composition::current_program() }
+
+    fn compositor_enabled(&self) -> bool { t3box::composition::enabled() }
 }
 
 /// Resolve the IPC socket path. `T3BOX_ENGINE_SOCKET=off` disables it.

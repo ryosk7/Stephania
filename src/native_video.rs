@@ -44,6 +44,15 @@ impl NativeVideoEncoder {
 
     /// The returned access unit owns all NAL bytes and may cross a thread boundary.
     pub fn encode(&mut self, frame: &VideoFrame) -> io::Result<Option<EncodedAccessUnit>> {
+        self.encode_with(frame, None)
+    }
+
+    /// Like [`encode`](Self::encode), but routes the converted frame through a
+    /// composition stage. When the applied Program is HDMI full screen the
+    /// stage returns nothing and the converted capture is encoded unchanged.
+    pub fn encode_with(
+        &mut self, frame: &VideoFrame, stage: Option<&mut crate::composition::CompositionStage>,
+    ) -> io::Result<Option<EncodedAccessUnit>> {
         let width = frame.width as usize;
         let height = frame.height as usize;
         match frame.format {
@@ -56,10 +65,15 @@ impl NativeVideoEncoder {
             )?,
             PixelFormat::Mjpeg => return Err(invalid("MJPEG capture decoding is not yet implemented")),
         };
+        let composed = match stage {
+            Some(stage) => stage.process(&self.i420, crate::composition::sources()),
+            None => None,
+        };
+        let output = composed.unwrap_or(&self.i420);
         if let Some(analyzer) = &mut self.content {
-            analyzer.observe(&self.i420.bytes, width, height);
+            analyzer.observe(&output.bytes, width, height);
         }
-        self.encoder.encode_i420(&self.i420)
+        self.encoder.encode_i420(output)
     }
 
     pub fn finish(mut self) -> io::Result<Vec<EncodedAccessUnit>> {
@@ -135,7 +149,13 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
     pub fn content_class(&self) -> crate::content_analysis::ContentClass { self.encoder.content_class() }
 
     pub fn push_frame(&mut self, frame: &VideoFrame) -> io::Result<()> {
-        if let Some(unit) = self.encoder.encode(frame)? {
+        self.push_frame_with(frame, None)
+    }
+
+    pub fn push_frame_with(
+        &mut self, frame: &VideoFrame, stage: Option<&mut crate::composition::CompositionStage>,
+    ) -> io::Result<()> {
+        if let Some(unit) = self.encoder.encode_with(frame, stage)? {
             self.sink.publish_unit(&unit)?;
         }
         Ok(())

@@ -52,6 +52,9 @@ pub mod code {
     pub const NOT_IMPLEMENTED: &str = "not_implemented";
     pub const ENGINE_START_FAILED: &str = "engine_start_failed";
     pub const BUSY: &str = "busy";
+    /// No composing media loop is running to acknowledge a Program.
+    pub const PROGRAM_INACTIVE: &str = "program_inactive";
+    pub const PROGRAM_TIMEOUT: &str = "program_timeout";
     pub const FORBIDDEN: &str = "forbidden";
 }
 
@@ -114,6 +117,14 @@ pub trait EngineControl: Send + Sync {
     fn status(&self) -> EngineStatus;
     fn start(&self) -> Result<(), String>;
     fn stop(&self);
+    /// Apply a validated scene to Program and return only after the media
+    /// thread acknowledged frame-boundary application. Default: fail closed.
+    fn apply_scene(&self, _scene_id: &str, _revision: u64, _scene: &Value) -> Result<Value, IpcError> {
+        Err(ipc_err(code::NOT_IMPLEMENTED, "compositor is not enabled; Program unchanged"))
+    }
+    /// Program on air (scene_id, revision); revision 0 = built-in HDMI only.
+    fn program(&self) -> (String, u64) { (String::new(), 0) }
+    fn compositor_enabled(&self) -> bool { false }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +205,11 @@ fn status_result(s: &EngineStatus, instance: &EngineInstance) -> Value {
     })
 }
 
+fn with_program(mut status: Value, program: (String, u64)) -> Value {
+    status["program"] = json!({"scene_id": program.0, "revision": program.1});
+    status
+}
+
 fn capabilities_result(instance: &EngineInstance) -> Value {
     json!({
         "ipc_version": IPC_VERSION,
@@ -234,8 +250,14 @@ fn scene_param(params: Option<&Value>) -> Result<&Value, IpcError> {
 /// exercised exhaustively in unit tests.
 pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>) -> Result<Value, IpcError> {
     match method {
-        "engine.status" => { no_params(params)?; Ok(status_result(&engine.status(), engine.instance())) }
-        "engine.capabilities" => { no_params(params)?; Ok(capabilities_result(engine.instance())) }
+        "engine.status" => { no_params(params)?; Ok(with_program(status_result(&engine.status(), engine.instance()), engine.program())) }
+        "engine.capabilities" => {
+            no_params(params)?;
+            let mut caps = capabilities_result(engine.instance());
+            caps["program_apply"] = json!(engine.compositor_enabled());
+            caps["compositor"] = json!(engine.compositor_enabled());
+            Ok(caps)
+        }
         "stream.start" => {
             no_params(params)?;
             engine.start().map_err(|e| ipc_err(code::ENGINE_START_FAILED, e))?;
@@ -254,11 +276,20 @@ pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>
             Ok(json!({"valid": true, "version": 1}))
         }
         "scene.apply" => {
-            let scene = scene_param(params)?;
+            let m = params_object(params)?.ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params required"))?;
+            if m.len() != 3 {
+                return Err(ipc_err(code::INVALID_PARAMS, "params must be {scene, scene_id, revision}"));
+            }
+            let scene = m.get("scene").ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.scene required"))?;
+            let scene_id = m.get("scene_id").and_then(Value::as_str)
+                .filter(|s| (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+                .ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.scene_id invalid"))?;
+            let revision = m.get("revision").and_then(Value::as_u64).filter(|r| *r >= 1)
+                .ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.revision must be >= 1"))?;
             crate::scene::validate_draft_v1(scene)
                 .map_err(|e| ipc_err(code::INVALID_SCENE, e.to_string()))?;
-            // Fail closed: never report a Program change that did not happen.
-            Err(ipc_err(code::NOT_IMPLEMENTED, "compositor is not implemented; Program unchanged"))
+            // Fail closed: success only after a frame-boundary acknowledgement.
+            engine.apply_scene(scene_id, revision, scene)
         }
         _ => Err(ipc_err(code::UNKNOWN_METHOD, "unknown method")),
     }
@@ -550,7 +581,7 @@ mod tests {
         let scene = json!({"version":1,"name":"LT","layers":[{"id":"h","source":"hdmi","x":0,"y":0,"width":1920,"height":1080,"visible":true}]});
         let v = call(&f, json!({"version":1,"request_id":"v","method":"scene.validate","params":{"scene":scene.clone()}}));
         assert_eq!(v["result"]["valid"], true);
-        let a = call(&f, json!({"version":1,"request_id":"p","method":"scene.apply","params":{"scene":scene}}));
+        let a = call(&f, json!({"version":1,"request_id":"p","method":"scene.apply","params":{"scene":scene,"scene_id":"lt","revision":1}}));
         assert_eq!(a["ok"], false);
         assert_eq!(a["error"]["code"], code::NOT_IMPLEMENTED);
         let bad = call(&f, json!({"version":1,"request_id":"q","method":"scene.validate","params":{"scene":{"version":1}}}));
