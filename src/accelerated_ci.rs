@@ -175,7 +175,7 @@ fn accelerated_three_hour_rtmp_roundtrip() {
     }
     assert_eq!(v, 324_000);
     assert_eq!(a, 506_250);
-    assert!(last >= 10_799_960 && last < 10_800_000);
+    assert!((10_799_960..10_800_000).contains(&last));
     println!("3h RTMP roundtrip: {v} video, {a} audio, {wire_bytes} wire bytes; {:.3}s", start.elapsed().as_secs_f64());
 }
 
