@@ -132,9 +132,13 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
     let mut next_sample = Instant::now();
     let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
     let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
+    let content_aware = adaptive && env::var("T3BOX_CONTENT_AWARE").as_deref() == Ok("1");
+    let mut network_rate = s.video_bitrate;
+    let mut applied_rate = s.video_bitrate;
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate)?;
     if adaptive { pipeline.reconfigure_rate(s.video_bitrate, 500)?; }
+    if content_aware { pipeline.enable_content_analysis(); }
     pipeline.configure_audio(&aac.configuration()?)?;
     let origin = timestamp_us();
     let mut clock = AudioClock::default();
@@ -159,8 +163,16 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, cancelled: &impl Fn()
                             not_sent_bytes: sample.not_sent_bytes, rtt_us: sample.rtt_us,
                             retrans_total: sample.retransmitted_segments,
                         }) {
-                            stage(pipeline.reconfigure_rate(kbps, 500), "adaptive rate")?;
-                            eprintln!("native adaptive video bitrate_kbps={kbps}");
+                            network_rate = kbps;
+                        }
+                        let class = pipeline.content_class();
+                        let desired = if content_aware {
+                            crate::content_analysis::content_rate(network_rate, class)
+                        } else { network_rate };
+                        if desired != applied_rate {
+                            stage(pipeline.reconfigure_rate(desired, 500), "adaptive rate")?;
+                            applied_rate = desired;
+                            eprintln!("native adaptive video bitrate_kbps={desired} network_budget_kbps={network_rate} content={class:?}");
                         }
                     }
                 } else { rate.missing_sample(); }
