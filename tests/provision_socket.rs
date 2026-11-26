@@ -16,6 +16,7 @@ impl Drop for Guard {
 
 fn start(dir: &std::path::Path) -> Guard {
     let child = Command::new(env!("CARGO_BIN_EXE_t3box-provision"))
+        .env("T3BOX_SETUP_FILE", dir.join("boot-t3box-setup.txt"))
         .env("T3BOX_PROVISION_SOCKET", dir.join("provisioning.sock"))
         .env("T3BOX_CREDENTIALS_DIR", dir)
         .env("T3BOX_NETWORK_BACKEND", "virtual")
@@ -103,4 +104,20 @@ fn ownership_survives_process_restart() {
     let mut phone = Phone { s: UnixStream::connect(dir.join("provisioning.sock")).unwrap(), n: 0 };
     assert_eq!(phone.read(C::PairingChallenge)["state"], "CLAIMED");
     assert_eq!(phone.read(C::DeviceInformation)["ownership"], "CLAIMED");
+}
+
+#[test]
+fn browser_generated_setup_file_is_imported_on_first_boot() {
+    use t3box::provisioning::setup_uri;
+    let dir = std::env::temp_dir().join(format!("t3box-provision-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let secret = *b"QR-from-browser!";
+    std::fs::write(dir.join("boot-t3box-setup.txt"), setup_uri(&secret)).unwrap();
+    let _guard = start(&dir);
+    assert!(!dir.join("boot-t3box-setup.txt").exists(), "setup file removed from boot partition");
+    let mut phone = Phone { s: UnixStream::connect(dir.join("provisioning.sock")).unwrap(), n: 0 };
+    let nonce = unhex::<32>(phone.read(C::PairingChallenge)["nonce"].as_str().unwrap()).unwrap();
+    let r = phone.write(C::PairingResponse, &json!({"owner_id":"qr-phone","proof":hex(&claim_proof(&secret, &nonce, "qr-phone"))}));
+    assert_eq!(response(&r)["state"], "CLAIMED");
 }

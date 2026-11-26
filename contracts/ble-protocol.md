@@ -1,12 +1,20 @@
 # T3Box BLE provisioning protocol — version 1 (draft)
 
-Status: **proof-of-concept contract.** Device core in `src/provisioning.rs`, characteristic semantics in `src/provisioning_gatt.rs`; BlueZ GATT adapter, NetworkManager adapter and the Expo client are not implemented. Initial secret delivery without monitor/keyboard is an open security PoC (risk R02). Do not describe this as production enrollment.
+Status: **proof-of-concept contract.** Device core in `src/provisioning.rs`, characteristic semantics in `src/provisioning_gatt.rs`; BlueZ GATT adapter, NetworkManager adapter and the Expo client are not implemented. Secret delivery (risk R02) has a chosen design (below) that still needs independent security review and physical testing. Do not describe this as production enrollment yet.
 
 ## Principles
 - BLE proximity is not authentication. Ownership is proven with a per-device 128-bit setup secret (generated on first boot, file mode 0600, never transmitted) via HMAC-SHA256 challenge-response.
 - No shared default credential. A claimed device cannot be re-claimed over BLE; factory reset requires physical confirmation.
 - Ownership (`UNCLAIMED / PAIRING / CLAIMED / RECOVERY_REQUIRED`) is independent of network state (`DISCONNECTED / SCANNING / CONNECTING / CONNECTED / FAILED`). Wi-Fi failure never changes ownership. A corrupt ownership file becomes `RECOVERY_REQUIRED`, never `UNCLAIMED`.
 - BLE link: LE Secure Connections required by the GATT adapter; application-layer proofs do not rely on it for authentication.
+
+## Setup secret delivery (R02 decision, 2026-11-27)
+No printed labels. The owner opens the static setup page (`tools/setup-page`, GitHub Pages or a local copy), which generates the 128-bit secret with `crypto.getRandomValues` in the browser, shows it as a QR code and downloads `t3box-setup.txt` containing the setup URI `t3box-setup:v1:<32 hex>:<8 hex SHA-256 check>`.
+1. The owner copies `t3box-setup.txt` to the boot (FAT32) partition next to the OS.
+2. On boot, `t3box-provision` imports it **only if the device is UNCLAIMED**, writes the secret to the 0600 credentials store, then overwrites and deletes the file. An owned or recovery-required device ignores and deletes it, so re-inserting a card can never re-key an owned device. Invalid files are deleted.
+3. The app scans the QR from the screen (`parseSetupUri` in packages/provisioning-client) and claims over BLE.
+
+Residual risks: anyone holding the microSD before first boot can read the secret; FAT32 deletion is not secure erasure (overwrite is best effort); page integrity depends on the hosting (mitigated by no external resources, CSP script hash and published SHA256SUMS; a compromised page could still exfiltrate via the user, e.g. by changing instructions); the QR is visible on the owner's screen until cleared. If no setup file is ever provided, the device keeps a self-generated secret that nobody knows and therefore cannot be claimed until a setup file is supplied.
 
 ## Service and characteristics
 Base UUID `7c3bXXXX-5d1e-4a6f-9b0e-3a1f2c4d5e60`; service `7c3b0001-…`.
@@ -49,4 +57,4 @@ Writes/notifications carry fragments `[message_id u8, index u8, count u8, chunk�
 `invalid_json, not_object, invalid_ssid, invalid_psk, invalid_security, not_claimable, no_pairing_in_progress, pairing_expired, locked_out, invalid_owner_id, bad_proof, not_owner, physical_confirmation_required` and framing errors `too_large, payload_too_small, malformed, inconsistent, duplicate`.
 
 ## Open items
-NetworkManager: the `nmcli` backend (`src/nm.rs`) activates with a transient 0600 passwd-file and does not persist the PSK; reboot reconnection needs the D-Bus AddConnection adapter. Secret delivery (label/QR), PAKE evaluation vs. HMAC over a high-entropy secret, owner credential rotation/revocation, multiple owners, BlueZ adapter with LE Secure Connections enforcement, NetworkManager D-Bus adapter, captive-portal detection, Expo client and Maestro tests, physical range/interference testing.
+NetworkManager: the `nmcli` backend (`src/nm.rs`) activates with a transient 0600 passwd-file and does not persist the PSK; reboot reconnection needs the D-Bus AddConnection adapter. Independent review of the setup-file design, PAKE evaluation vs. HMAC over a high-entropy secret, owner credential rotation/revocation, multiple owners, BlueZ adapter with LE Secure Connections enforcement, NetworkManager D-Bus adapter, captive-portal detection, Expo client and Maestro tests, physical range/interference testing.

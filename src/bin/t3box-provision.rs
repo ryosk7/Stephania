@@ -30,7 +30,7 @@ mod unix {
     use std::time::Instant;
     use t3box::ipc::{self, PeerPolicy};
     use t3box::nm::{NetworkManagerBackend, Nmcli};
-    use t3box::provisioning::{hex, load_or_create_setup_secret, OwnershipManager};
+    use t3box::provisioning::{hex, import_setup_file, load_or_create_setup_secret, OwnershipManager, SetupImport};
     use t3box::provisioning_gatt::{Characteristic, FileOwnershipStore, GattError, GattService, NetworkBackend, OwnershipStore, ScanResult};
 
     fn env_path(key: &str, default: &str) -> PathBuf {
@@ -54,9 +54,20 @@ mod unix {
         let socket = env_path("T3BOX_PROVISION_SOCKET", "/run/t3box/provisioning.sock");
         let credentials = env_path("T3BOX_CREDENTIALS_DIR", "/data/t3box/credentials");
         let policy = PeerPolicy::from_env()?;
-        let secret = load_or_create_setup_secret(&credentials.join("setup-secret")).map_err(|e| format!("setup secret: {e}"))?;
         let store = FileOwnershipStore { path: credentials.join("ownership.json") };
-        let ownership = OwnershipManager::new(secret, store.load());
+        let state = store.load();
+        // First boot: adopt the browser-generated secret copied to the boot
+        // partition (contracts/ble-protocol.md "Setup secret delivery").
+        let setup_file = env_path("T3BOX_SETUP_FILE", "/boot/firmware/t3box-setup.txt");
+        let secret_path = credentials.join("setup-secret");
+        match import_setup_file(&setup_file, &secret_path, &state).map_err(|e| format!("setup file import: {e}"))? {
+            SetupImport::Absent => {}
+            SetupImport::Imported => eprintln!("t3box-provision: setup secret imported from boot partition"),
+            SetupImport::IgnoredClaimed => eprintln!("t3box-provision: setup file ignored (device already owned) and removed"),
+            SetupImport::Invalid => eprintln!("t3box-provision: invalid setup file removed"),
+        }
+        let secret = load_or_create_setup_secret(&secret_path).map_err(|e| format!("setup secret: {e}"))?;
+        let ownership = OwnershipManager::new(secret, state);
         eprintln!("t3box-provision: ownership {}", ownership.reported_state());
         let backend = std::env::var("T3BOX_NETWORK_BACKEND").unwrap_or_else(|_| "nm".into());
         match backend.as_str() {

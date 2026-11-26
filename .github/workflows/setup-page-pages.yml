@@ -1,0 +1,39 @@
+name: Publish setup page (manual)
+# Publishing makes the page PUBLIC even though the repository is private.
+# Only run after the owner has explicitly approved publication and enabled
+# GitHub Pages (Settings > Pages > Source: GitHub Actions).
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "publish" to confirm the page will be public
+        required: true
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: setup-page-pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: inputs.confirm == 'publish'
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - working-directory: tools/setup-page
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          rm dist/script.js
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: tools/setup-page/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

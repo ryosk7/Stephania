@@ -395,6 +395,89 @@ pub fn load_or_create_setup_secret(path: &std::path::Path) -> std::io::Result<[u
     Ok(secret)
 }
 
+// ------------------------------------------------------------ setup file
+
+/// Setup URI carried by the QR code and by the boot-partition setup file:
+/// `t3box-setup:v1:<32 hex secret>:<first 8 hex of SHA-256(secret)>`.
+/// The secret is generated in the owner's browser by the static setup page
+/// (tools/setup-page); the device imports it on first boot.
+pub fn parse_setup_uri(text: &str) -> Option<[u8; SETUP_SECRET_BYTES]> {
+    let lower = text.trim().to_ascii_lowercase();
+    let rest = lower.strip_prefix("t3box-setup:v1:")?;
+    let (secret_hex, check) = rest.split_once(':')?;
+    let secret = unhex::<SETUP_SECRET_BYTES>(secret_hex)?;
+    if secret.iter().all(|&b| b == 0) || check.len() != 8 {
+        return None;
+    }
+    let digest = ring::digest::digest(&ring::digest::SHA256, &secret);
+    (hex(&digest.as_ref()[..4]) == check).then_some(secret)
+}
+
+pub fn setup_uri(secret: &[u8; SETUP_SECRET_BYTES]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, secret);
+    format!("t3box-setup:v1:{}:{}", hex(secret), hex(&digest.as_ref()[..4]))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupImport {
+    /// No setup file present.
+    Absent,
+    /// Secret replaced (device was UNCLAIMED).
+    Imported,
+    /// Device already has an owner; file discarded, secret unchanged.
+    IgnoredClaimed,
+    /// File unreadable or malformed; discarded.
+    Invalid,
+}
+
+/// Import the boot-partition setup file. Only an UNCLAIMED device accepts a
+/// new secret, so re-inserting an SD card can never re-key an owned device.
+/// The file is overwritten and removed in every case it exists (best effort:
+/// FAT32 provides no secure deletion; documented as residual risk).
+#[cfg(unix)]
+pub fn import_setup_file(setup_file: &std::path::Path, secret_path: &std::path::Path, ownership: &Ownership) -> std::io::Result<SetupImport> {
+    let text = match std::fs::read(setup_file) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SetupImport::Absent),
+        Err(_) => { discard(setup_file); return Ok(SetupImport::Invalid) }
+    };
+    let parsed = (text.len() <= 256).then(|| std::str::from_utf8(&text).ok()).flatten().and_then(parse_setup_uri);
+    let outcome = match parsed {
+        None => SetupImport::Invalid,
+        Some(_) if *ownership != Ownership::Unclaimed => SetupImport::IgnoredClaimed,
+        Some(secret) => { store_setup_secret(secret_path, &secret)?; SetupImport::Imported }
+    };
+    discard(setup_file);
+    Ok(outcome)
+}
+
+#[cfg(unix)]
+fn discard(path: &std::path::Path) {
+    use std::io::Write;
+    if let Ok(len) = std::fs::metadata(path).map(|m| m.len() as usize) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
+            let _ = f.write_all(&vec![0u8; len]);
+            let _ = f.sync_all();
+        }
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+/// Atomically replace the setup secret (0600, fsync, rename).
+#[cfg(unix)]
+pub fn store_setup_secret(path: &std::path::Path, secret: &[u8; SETUP_SECRET_BYTES]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("import");
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+    f.write_all(hex(secret).as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    if let Some(dir) = path.parent() { std::fs::File::open(dir)?.sync_all()?; }
+    Ok(())
+}
+
 // --------------------------------------------------------------- network
 
 /// Network state, deliberately independent of ownership: a failed join
@@ -658,6 +741,62 @@ mod tests {
         assert_eq!(unhex::<3>("00ff10"), Some([0, 255, 16]));
         assert_eq!(unhex::<3>("00ff1"), None);
         assert_eq!(unhex::<1>("é"), None);
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+
+    fn fixtures() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/fixtures/ble/setup-uris.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn shared_setup_uri_fixtures() {
+        let f = fixtures();
+        for v in f["valid"].as_array().unwrap() {
+            let secret = parse_setup_uri(v["uri"].as_str().unwrap()).unwrap_or_else(|| panic!("{v}"));
+            assert_eq!(hex(&secret), v["secret"]);
+            assert_eq!(parse_setup_uri(&setup_uri(&secret)), Some(secret));
+        }
+        for v in f["invalid"].as_array().unwrap() {
+            assert_eq!(parse_setup_uri(v.as_str().unwrap()), None, "{v}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_only_when_unclaimed_and_always_discards_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("t3box-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, secret_path) = (dir.join("t3box-setup.txt"), dir.join("setup-secret"));
+        let original = load_or_create_setup_secret(&secret_path).unwrap();
+        let new = *b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10";
+        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Absent);
+
+        let claimed = Ownership::Claimed { owner_id: "o".into(), owner_key: [1; 32] };
+        std::fs::write(&file, setup_uri(&new)).unwrap();
+        assert_eq!(import_setup_file(&file, &secret_path, &claimed).unwrap(), SetupImport::IgnoredClaimed);
+        assert!(!file.exists());
+        assert_eq!(load_or_create_setup_secret(&secret_path).unwrap(), original, "owned device is never re-keyed");
+
+        std::fs::write(&file, setup_uri(&new)).unwrap();
+        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::RecoveryRequired).unwrap(), SetupImport::IgnoredClaimed);
+
+        std::fs::write(&file, "t3box-setup:v1:garbage").unwrap();
+        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Invalid);
+        assert!(!file.exists());
+
+        std::fs::write(&file, format!("{}\n", setup_uri(&new))).unwrap();
+        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Imported);
+        assert!(!file.exists());
+        assert_eq!(load_or_create_setup_secret(&secret_path).unwrap(), new);
+        assert_eq!(std::fs::metadata(&secret_path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -13,6 +13,9 @@ Environment=T3BOX_CREDENTIALS_DIR=/var/lib/t3box/credentials
 Environment=T3BOX_PROVISION_SOCKET=/run/t3box-provision/provisioning.sock
 Environment=T3BOX_PROVISION_RUNTIME=/run/t3box-provision/secrets
 Environment=T3BOX_NETWORK_BACKEND=nm
+# First-boot setup file copied next to the OS (see tools/setup-page).
+Environment=T3BOX_SETUP_FILE=/boot/firmware/t3box-setup.txt
+ReadWritePaths=-/boot/firmware
 # The BlueZ GATT adapter (not implemented yet) runs as root via bluetoothd
 # integration or as an allowed uid listed here.
 Environment=T3BOX_IPC_ALLOWED_UIDS=
