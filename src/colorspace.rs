@@ -37,12 +37,22 @@ fn validate(width: usize, height: usize, stride: usize, minimum: usize, length: 
 pub fn yuyv422_to_i420(
     input: &[u8], width: usize, height: usize, stride: usize, timestamp_us: u64,
 ) -> io::Result<I420Frame> {
+    let mut frame = I420Frame { width, height, timestamp_us, bytes: Vec::new() };
+    yuyv422_to_i420_into(input, width, height, stride, timestamp_us, &mut frame)?;
+    Ok(frame)
+}
+
+/// Convert into reusable storage without changing the destination on invalid input.
+pub fn yuyv422_to_i420_into(
+    input: &[u8], width: usize, height: usize, stride: usize, timestamp_us: u64,
+    frame: &mut I420Frame,
+) -> io::Result<()> {
     let row_bytes=width.checked_mul(2).ok_or_else(|| io::Error::other("dimension overflow"))?;
     validate(width,height,stride,row_bytes,input.len())?;
     let y_len=width * height;
     let chroma_len=y_len/4;
-    let mut data=vec![0u8; y_len + 2*chroma_len];
-    let (y,chromas)=data.split_at_mut(y_len);
+    frame.bytes.resize(y_len + 2*chroma_len, 0);
+    let (y,chromas)=frame.bytes.split_at_mut(y_len);
     let (u,v)=chromas.split_at_mut(chroma_len);
 
     for pair_y in 0..height/2 {
@@ -64,7 +74,10 @@ pub fn yuyv422_to_i420(
             v[chroma_index]=(u16::from(input[i0+3])+u16::from(input[i1+3])).div_ceil(2) as u8;
         }
     }
-    Ok(I420Frame {width,height,timestamp_us,bytes:data})
+    frame.width = width;
+    frame.height = height;
+    frame.timestamp_us = timestamp_us;
+    Ok(())
 }
 
 /// Convert NV12 (full-size luma and interleaved UV 4:2:0) to planar I420.
@@ -74,6 +87,17 @@ pub fn nv12_to_i420(
     input: &[u8], width: usize, height: usize,
     y_stride: usize, uv_stride: usize, timestamp_us: u64,
 ) -> io::Result<I420Frame> {
+    let mut frame = I420Frame { width, height, timestamp_us, bytes: Vec::new() };
+    nv12_to_i420_into(input, width, height, (y_stride, uv_stride), timestamp_us, &mut frame)?;
+    Ok(frame)
+}
+
+/// Convert NV12 into reusable storage with independent luma and chroma strides.
+pub fn nv12_to_i420_into(
+    input: &[u8], width: usize, height: usize,
+    strides: (usize, usize), timestamp_us: u64, frame: &mut I420Frame,
+) -> io::Result<()> {
+    let (y_stride, uv_stride) = strides;
     let y_bytes=y_stride.checked_mul(height).ok_or_else(invalid)?;
     let uv_bytes=uv_stride.checked_mul(height/2).ok_or_else(invalid)?;
     let required=y_bytes.checked_add(uv_bytes).ok_or_else(invalid)?;
@@ -82,8 +106,8 @@ pub fn nv12_to_i420(
         return Err(invalid());
     }
     let y_len=width*height;
-    let mut data=vec![0u8; y_len+y_len/2];
-    let (y,uv)=data.split_at_mut(y_len);
+    frame.bytes.resize(y_len+y_len/2, 0);
+    let (y,uv)=frame.bytes.split_at_mut(y_len);
     let (u,v)=uv.split_at_mut(y_len/4);
     for row in 0..height {
         y[row*width..(row+1)*width].copy_from_slice(&input[row*y_stride..row*y_stride+width]);
@@ -96,7 +120,10 @@ pub fn nv12_to_i420(
             v[pos]=input[off+1];
         }
     }
-    Ok(I420Frame {width,height,timestamp_us,bytes:data})
+    frame.width = width;
+    frame.height = height;
+    frame.timestamp_us = timestamp_us;
+    Ok(())
 }
 
 fn invalid() -> io::Error { io::Error::new(io::ErrorKind::InvalidInput, "invalid NV12 dimensions or plane strides") }
@@ -130,6 +157,24 @@ mod tests {
         assert_eq!(out.u(),&[20]);
         assert_eq!(out.v(),&[30]);
         assert_eq!(out.timestamp_us,33);
+    }
+    #[test]
+    fn reusable_storage_preserves_conversion_and_rejects_invalid_input() {
+        let yuyv = [1, 10, 2, 20, 3, 30, 4, 40];
+        let nv12 = [5, 6, 7, 8, 90, 100];
+        let mut frame = yuyv422_to_i420(&yuyv, 2, 2, 4, 1).unwrap();
+        let ptr = frame.bytes.as_ptr();
+        nv12_to_i420_into(&nv12, 2, 2, (2, 2), 2, &mut frame).unwrap();
+        assert_eq!(frame.bytes, [5, 6, 7, 8, 90, 100]);
+        assert_eq!(frame.timestamp_us, 2);
+        assert_eq!(frame.bytes.as_ptr(), ptr);
+        yuyv422_to_i420_into(&yuyv, 2, 2, 4, 3, &mut frame).unwrap();
+        assert_eq!(frame.bytes, [1, 2, 3, 4, 20, 30]);
+        assert_eq!(frame.timestamp_us, 3);
+        assert_eq!(frame.bytes.as_ptr(), ptr);
+        let expected = frame.clone();
+        assert!(yuyv422_to_i420_into(&[], 2, 2, 4, 4, &mut frame).is_err());
+        assert_eq!(frame, expected);
     }
     #[test]
     fn rejects_truncated_or_odd_sized_frames() {
