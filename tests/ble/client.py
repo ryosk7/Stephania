@@ -97,7 +97,7 @@ class Rpc:
 
 async def connect(adapter, min_mtu):
     device = await BleakScanner.find_device_by_filter(
-        lambda d, adv: SERVICE in [u.lower() for u in adv.service_uuids], timeout=30, adapter=adapter)
+        lambda d, adv: SERVICE in [u.lower() for u in adv.service_uuids], timeout=60, adapter=adapter)
     if device is None:
         raise SystemExit("T3Box not found over BLE")
     print(f"found {device.name} {device.address}", flush=True)
