@@ -1,0 +1,24 @@
+name: QEMU kernel device integration
+on:
+  push:
+    branches: [test/virtual-lab]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guest:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/native-deps
+      - run: sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils openssh-client
+      - run: cargo build --release --locked --all-features --bin t3box
+      - run: bash tests/virtual-lab/qemu.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qemu-kernel-evidence
+          path: vm-evidence/
+          retention-days: 7

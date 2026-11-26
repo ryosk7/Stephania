@@ -25,7 +25,7 @@ peer=$!
 for i in $(seq 1 50); do [[ -f "$work/ready" ]] && break; sleep .1; done
 test -f "$work/ready"
 export T3BOX_CI_CA_DER="$work/ca.der" T3BOX_OUTPUT=rtmps://t3box-ci.test:19443/live/lab
-export T3BOX_WIDTH=1920 T3BOX_HEIGHT=1080 T3BOX_FPS=30 T3BOX_BITRATE_KBPS=6000
+export T3BOX_WIDTH="${LAB_WIDTH:-1920}" T3BOX_HEIGHT="${LAB_HEIGHT:-1080}" T3BOX_FPS=30 T3BOX_BITRATE_KBPS="${LAB_BITRATE:-6000}"
 export T3BOX_PARALLEL_MEDIA=1 T3BOX_ADAPTIVE_RATE=1 T3BOX_DEADLINE_TRANSPORT=1 T3BOX_CONTENT_AWARE=1
 if [[ "${LAB_INPUT:-virtual}" == physical ]]; then
   unset T3BOX_CI_VIRTUAL
@@ -37,12 +37,15 @@ elif [[ "${LAB_INPUT:-virtual}" == kernel ]]; then
   export T3BOX_VIDEO="$(v4l2-ctl --list-devices | awk '/vivid/{f=1;next} f && /\/dev\/video/{print $1;exit}')"
   test -n "$T3BOX_VIDEO"
   test -r "$T3BOX_VIDEO" && test -w "$T3BOX_VIDEO"
-  test -r /dev/snd/controlC0 || true
-  v4l2-ctl -d "$T3BOX_VIDEO" --set-fmt-video=width=1920,height=1080,pixelformat=YUYV --set-parm=30
+  arecord -l > "$out/audio-devices.txt"
+  v4l2-ctl --list-devices > "$out/video-devices.txt"
+  v4l2-ctl -d "$T3BOX_VIDEO" --set-fmt-video=width="$T3BOX_WIDTH",height="$T3BOX_HEIGHT",pixelformat=YUYV --set-parm=30
   v4l2-ctl -d "$T3BOX_VIDEO" --get-fmt-video --get-parm > "$out/video-format.txt"
   export T3BOX_AUDIO=hw:Loopback,1,0
   ffmpeg -nostdin -re -f lavfi -i 'sine=frequency=440:sample_rate=48000' -ac 2 -f alsa hw:Loopback,0,0 > "$out/audio-feed.log" 2>&1 &
   feeder=$!
+  sleep 1
+  kill -0 "$feeder"
 else
   export T3BOX_CI_VIRTUAL=1
   if [[ "${LAB_MEDIA:-synthetic}" != synthetic ]]; then

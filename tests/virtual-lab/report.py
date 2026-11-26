@@ -18,7 +18,7 @@ for f in sorted(p.glob('session-*.flv'),key=lambda x:int(x.stem.split('-')[1])):
     expected=round(c['video_media_span_ms']*30/1000)+1
     recovery=None if previous is None else c['first_video_arrival_s']-previous
     previous=c['last_video_arrival_s']
-    checks[n+'-decode']=int(v['nb_read_frames'])==c['video'] and int(a['nb_read_frames'])==c['audio'] and (v['width'],v['height'])==(1920,1080) and int(a['sample_rate'])==48000 and a['channels']==2
+    checks[n+'-decode']=int(v['nb_read_frames'])==c['video'] and int(a['nb_read_frames'])==c['audio'] and (v['width'],v['height'])==(int(os.environ.get('LAB_WIDTH','1920')),int(os.environ.get('LAB_HEIGHT','1080'))) and int(a['sample_rate'])==48000 and a['channels']==2
     tail=[x for x in arr if x[1]>=arr[-1][1]-3]
     rows.append(dict(session=n,video=c['video'],audio=c['audio'],fps=fps,missing=max(0,expected-c['video'])/expected,skew_ms=c['max_packet_timestamp_skew_ms'],relative_delay_growth_p95_ms=sorted(growth)[int(.95*(len(growth)-1))],recovery_s=recovery,tail_frames=len(tail),max_arrival_gap_s=max((b[1]-a[1] for a,b in zip(arr,arr[1:])),default=0)))
 checks['sessions']=bool(rows)
