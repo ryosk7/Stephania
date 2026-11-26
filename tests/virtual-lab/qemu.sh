@@ -24,8 +24,8 @@ mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 uname -a
-/bin/kmod modprobe vivid n_devs=1 multiplanar=1
-/bin/kmod modprobe snd-aloop
+/bin/modprobe vivid n_devs=1 multiplanar=1
+/bin/modprobe snd-aloop
 v4l2-ctl --list-devices
 v4l2-ctl -d /dev/video0 --set-fmt-video=width=320,height=240,pixelformat=YUYV --set-parm=30
 aplay -l

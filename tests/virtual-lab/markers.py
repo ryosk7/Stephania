@@ -61,13 +61,13 @@ for f in sorted(p.glob('session-*.flv')):
             scene_quality[scene].append(score)
             # fixed known text ROIs, compare to ground truth not OCR of input.
             if n%ref_count==30 and len(text_samples)<18:
-                for lang,roi,expected in [('eng',(60,100,650,55),'fnmain0123456789'),('jpn',(50,170,155,55),'技術発表'),('jpn',(250,170,230,55),'日本語の文字品質')]:
+                for lang,roi,expected in [('eng',(60,100,650,55),'fnmain0123456789'),('jpn',(40,160,180,70),'技術発表'),('jpn',(240,160,260,70),'日本語の文字品質')]:
                     x,y,w,h=roi
                     # Identical reference/decoded OCR pipeline, including scaling.
                     def ocr(img):
                         crop=img[y-16:y-16+h,x:x+w]
-                        enlarged=np.repeat(np.repeat(crop,3,axis=0),3,axis=1)
-                        pgm=f'P5\n{w*3} {h*3}\n255\n'.encode()+enlarged.tobytes()
+                        enlarged=np.repeat(np.repeat(crop,4,axis=0),4,axis=1)
+                        pgm=f'P5\n{w*4} {h*4}\n255\n'.encode()+enlarged.tobytes()
                         return subprocess.check_output(['tesseract','stdin','stdout','-l',lang,'--psm','7'],input=pgm,stderr=subprocess.DEVNULL).decode().strip()
                     import difflib
                     normal=lambda s: ''.join(c.lower() for c in s if c.isalnum())
