@@ -14,6 +14,7 @@ use std::io::{self, Read, Write};
 pub struct NativeVideoEncoder {
     encoder: X264Backend,
     i420: I420Frame,
+    content: Option<crate::content_analysis::ContentAnalyzer>,
 }
 
 impl NativeVideoEncoder {
@@ -21,11 +22,20 @@ impl NativeVideoEncoder {
         Ok(Self {
             encoder: X264Backend::new(width, height, fps, bitrate_kbps, true)?,
             i420: I420Frame { width, height, timestamp_us: 0, bytes: Vec::new() },
+            content: None,
         })
     }
 
     pub fn reconfigure_rate(&mut self, bitrate_kbps: u32, vbv_ms: u32) -> io::Result<()> {
         self.encoder.reconfigure_rate(bitrate_kbps, vbv_ms)
+    }
+
+    pub fn enable_content_analysis(&mut self) {
+        self.content = Some(crate::content_analysis::ContentAnalyzer::default());
+    }
+
+    pub fn content_class(&self) -> crate::content_analysis::ContentClass {
+        self.content.as_ref().map_or(crate::content_analysis::ContentClass::Unknown, |a| a.class())
     }
 
     pub fn configuration(&mut self) -> io::Result<(Vec<u8>, Vec<u8>)> {
@@ -46,6 +56,9 @@ impl NativeVideoEncoder {
             )?,
             PixelFormat::Mjpeg => return Err(invalid("MJPEG capture decoding is not yet implemented")),
         };
+        if let Some(analyzer) = &mut self.content {
+            analyzer.observe(&self.i420.bytes, width, height);
+        }
         self.encoder.encode_i420(&self.i420)
     }
 
@@ -116,6 +129,10 @@ impl<T: Read + Write> NativeVideoPipeline<T> {
     pub fn reconfigure_rate(&mut self, bitrate_kbps: u32, vbv_ms: u32) -> io::Result<()> {
         self.encoder.reconfigure_rate(bitrate_kbps, vbv_ms)
     }
+
+    pub fn enable_content_analysis(&mut self) { self.encoder.enable_content_analysis(); }
+
+    pub fn content_class(&self) -> crate::content_analysis::ContentClass { self.encoder.content_class() }
 
     pub fn push_frame(&mut self, frame: &VideoFrame) -> io::Result<()> {
         if let Some(unit) = self.encoder.encode(frame)? {
