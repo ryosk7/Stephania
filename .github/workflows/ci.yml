@@ -119,6 +119,8 @@ jobs:
           grep -q "accelerated_ci::accelerated_three_hour_clock_and_framing ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_venue_fault_scenarios ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_transition_matches_real_pcm_path ... ok" fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_three_hour_rtmp_roundtrip ... ok" fast-results/simulation.txt
+          grep -q "accelerated_ci::accelerated_three_hour_rate_recovery ... ok" fast-results/simulation.txt
           cat fast-results/timing.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

@@ -129,3 +129,80 @@ fn accelerated_venue_fault_scenarios() {
     println!("{} modeled video events; {outages} outages, {recovered} recoveries, {dropped} queue drops; {:.3}s",
         16*VIDEO_FRAMES, start.elapsed().as_secs_f64());
 }
+
+
+/// Every audio/video packet is serialized and parsed using production RTMP
+/// components. Payloads are synthetic, not encoded media; no TLS or real I/O.
+#[test]
+fn accelerated_three_hour_rtmp_roundtrip() {
+    use crate::{rtmp::RtmpChunkWriter, rtmp_read::ChunkReader};
+    let start = Instant::now();
+    let audio_packets = SECONDS * RATE / PERIOD;
+    let mut a = 0u64;
+    let mut v = 0u64;
+    let mut bytes = Vec::with_capacity(1024);
+    let mut reader = ChunkReader::new();
+    let mut last = 0u32;
+    let mut wire_bytes = 0u64;
+    while a < audio_packets || v < VIDEO_FRAMES {
+        let audio = a < audio_packets && (v == VIDEO_FRAMES || a * PERIOD * 30 <= v * RATE);
+        let (kind, csid, ts, seq, size) = if audio {
+            let seq = a;
+            a += 1;
+            (8, 4, (seq * PERIOD * 1000 / RATE) as u32, seq, 64usize)
+        } else {
+            let seq = v;
+            v += 1;
+            (9, 6, (seq * 1000 / 30) as u32, seq, if seq.is_multiple_of(60) { 513 } else { 129 })
+        };
+        let mut payload = [0x5au8; 513];
+        payload[..8].copy_from_slice(&seq.to_be_bytes());
+        assert!(ts >= last);
+        last = ts;
+        bytes.clear();
+        let mut writer = RtmpChunkWriter::new(&mut bytes, 128).unwrap();
+        writer.message(csid, kind, 1, ts, &payload[..size]).unwrap();
+        wire_bytes += bytes.len() as u64;
+        let mut input = bytes.as_slice();
+        let msg = reader.read_message(&mut input).unwrap();
+        assert_eq!((msg.type_id, msg.stream_id, msg.timestamp_ms), (kind, 1, ts));
+        assert_eq!(msg.payload.as_slice(), &payload[..size]);
+        assert!(input.is_empty());
+        // Exercise session resets with fresh reader state at 10-minute intervals.
+        if v > 0 && v.is_multiple_of(18_000) && !audio {
+            reader = ChunkReader::new();
+        }
+    }
+    assert_eq!(v, 324_000);
+    assert_eq!(a, 506_250);
+    assert!(last >= 10_799_960 && last < 10_800_000);
+    println!("3h RTMP roundtrip: {v} video, {a} audio, {wire_bytes} wire bytes; {:.3}s", start.elapsed().as_secs_f64());
+}
+
+/// Replay 3 hours of 1 Hz TCP observations with the actual rate controller.
+/// Each 180-second cycle has congestion, recovery, and a reconnect.
+#[test]
+fn accelerated_three_hour_rate_recovery() {
+    use crate::rate_control::{Observation, RateController};
+    let start = Instant::now();
+    let mut c = RateController::new(6000);
+    let mut retrans = 0;
+    for cycle in 0..60 {
+        assert_eq!(c.current(), 6000);
+        for tick in 0..180 {
+            if tick == 10 { c.reconnect(); }
+            if tick == 20 { c.missing_sample(); }
+            let congested = tick < 8;
+            if congested { retrans += 1; }
+            c.observe(Observation {
+                not_sent_bytes: if congested { 1_000_000 } else { 0 },
+                rtt_us: if congested { 200_000 } else { 40_000 },
+                retrans_total: retrans,
+            });
+            assert!((1500..=6000).contains(&c.current()), "cycle {cycle}, tick {tick}");
+            if tick == 7 { assert_eq!(c.current(), 1500); }
+        }
+        assert_eq!(c.current(), 6000);
+    }
+    println!("3h rate recovery: 10800 observations, 60 congestion/reconnect cycles; {:.3}s", start.elapsed().as_secs_f64());
+}
