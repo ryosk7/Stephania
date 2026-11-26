@@ -1,0 +1,39 @@
+name: Realtime media benchmark (independent)
+on:
+  push:
+    branches: [benchmark/realtime-media]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  realtime:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        media: [photo, people, animation, mixed]
+        rate: [6000, 8000]
+        network: [clean, venue]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/native-deps
+      - run: sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils fonts-noto-cjk iproute2 openssl curl
+      - run: cargo build --release --locked --all-features --example realtime_media
+      - name: Paced RTMPS evaluation
+        env:
+          MEDIA: ${{ matrix.media }}
+          RATE: ${{ matrix.rate }}
+          NETWORK: ${{ matrix.network }}
+        run: |
+          mkdir -p evidence
+          lscpu > evidence/cpu.txt
+          git rev-parse HEAD > evidence/commit.txt
+          python3 benchmarks/realtime/run.py "$MEDIA" "$RATE" "$NETWORK"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realtime-${{ matrix.media }}-${{ matrix.rate }}-${{ matrix.network }}
+          path: evidence/
+          retention-days: 3
