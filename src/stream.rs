@@ -1,11 +1,16 @@
 use std::env;
+#[cfg(any(test, feature = "ci-virtual"))]
 use std::io::Write;
+#[cfg(any(test, feature = "ci-virtual"))]
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(test, feature = "ci-virtual"))]
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(not(any(test, feature = "ci-virtual", all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))), allow(dead_code))]
 pub struct Config {
     pub video_device: String,
     pub audio_device: String,
@@ -40,6 +45,7 @@ impl Config {
         })
     }
 
+    #[cfg(any(test, feature = "ci-virtual"))]
     pub fn ffmpeg_args(&self) -> Vec<String> {
         let mut a = vec!["-hide_banner", "-stdin", "-loglevel", "error", "-y"]
             .into_iter().map(str::to_string).collect::<Vec<_>>();
@@ -86,6 +92,7 @@ struct NativeWorker {
 
 // Ask FFmpeg to finish its current packet and write the muxer trailer.
 // Bound the wait below the HTTP client's stop deadline; kill only if needed.
+#[cfg(any(test, feature = "ci-virtual"))]
 fn stop_child(child: &mut Child) -> Result<(), String> {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(b"q\n");
@@ -107,6 +114,7 @@ fn stop_child(child: &mut Child) -> Result<(), String> {
 struct State {
     #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
     native: Option<NativeWorker>,
+    #[cfg(feature = "ci-virtual")]
     child: Option<Child>,
     desired: bool,
     restarts: u64,
@@ -125,7 +133,9 @@ impl Controller {
             state: Arc::new(Mutex::new(State {
                 #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
                 native: None,
-                child: None, desired: false, restarts: 0, last_error: String::new()
+                #[cfg(feature = "ci-virtual")]
+                child: None,
+                desired: false, restarts: 0, last_error: String::new()
             })),
             config,
         };
@@ -133,6 +143,7 @@ impl Controller {
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(3));
             let mut s = worker.state.lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(feature = "ci-virtual")]
             if let Some(child) = s.child.as_mut() {
                 match child.try_wait() {
                     Ok(Some(exit)) => {
@@ -165,22 +176,42 @@ impl Controller {
     fn running(state: &State) -> bool {
         #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
         if state.native.is_some() { return true; }
-        state.child.is_some()
+        Self::fixture_running(state)
+    }
+
+    fn fixture_running(_state: &State) -> bool {
+        #[cfg(feature = "ci-virtual")]
+        { _state.child.is_some() }
+        #[cfg(not(feature = "ci-virtual"))]
+        { false }
     }
 
     fn spawn(&self, state: &mut State) -> Result<(), String> {
         if self.config.output.is_empty() { return Err("T3BOX_OUTPUT is not configured".into()); }
         if self.config.output == "file:" { return Err("file output path is empty".into()); }
-        // Explicit native mode initially; preserve the file/synthetic FFmpeg
-        // path and its existing CI contract until native file output exists.
-        if env::var("T3BOX_BACKEND").as_deref() == Ok("native") {
-            #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
-            { return self.spawn_native(state); }
-            #[cfg(not(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac")))]
-            { return Err("native backend is not compiled in".into()); }
+        // The unchanged CI smoke contract needs synthetic file output and its
+        // actual FFmpeg process status. Never use this fixture for RTMPS.
+        #[cfg(feature = "ci-virtual")]
+        if self.config.test_sources && self.config.output.starts_with("file:") {
+            return self.spawn_fixture(state);
         }
-        // Stream key in a command-line argument may be readable by local processes.
-        // Use a dedicated unprivileged account and restrict local login access.
+        if self.config.test_sources || !self.config.output.starts_with("rtmps://") {
+            return Err("production requires hardware input and RTMPS output".into());
+        }
+        if self.config.preset != "ultrafast" || !self.config.width.is_multiple_of(2) || !self.config.height.is_multiple_of(2) {
+            return Err("native requires ultrafast and even dimensions".into());
+        }
+        if env::var("T3BOX_BACKEND").is_ok_and(|v| v != "native") {
+            return Err("only native production backend is supported".into());
+        }
+        #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+        { self.spawn_native(state) }
+        #[cfg(not(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac")))]
+        { let _ = state; Err("native backend is not compiled in".into()) }
+    }
+
+    #[cfg(feature = "ci-virtual")]
+    fn spawn_fixture(&self, state: &mut State) -> Result<(), String> {
         let child = Command::new("ffmpeg")
             .args(self.config.ffmpeg_args())
             .stdin(Stdio::piped())
@@ -249,6 +280,7 @@ impl Controller {
         if let Some(worker) = &s.native {
             worker.cancel.store(true, std::sync::atomic::Ordering::Release);
         }
+        #[cfg(feature = "ci-virtual")]
         if let Some(mut child) = s.child.take() {
             if let Err(error) = stop_child(&mut child) { s.last_error = error; }
         }
@@ -266,7 +298,7 @@ impl Controller {
 
     pub fn status(&self) -> (bool, bool, u64, String) {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        (s.desired, s.child.is_some(), s.restarts, s.last_error.clone())
+        (s.desired, Self::fixture_running(&s), s.restarts, s.last_error.clone())
     }
 }
 

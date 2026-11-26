@@ -2,32 +2,25 @@
 
 Rust-based Raspberry Pi 5 LT event streaming box.
 
-## Current implementation (prototype, not event-ready)
+## Production architecture
 
-- Rust controller and HTTP API on `127.0.0.1:8787` (`/health`, `/status`, `/stream/start`, `/stream/stop`).
-- Device diagnostics (Linux video nodes, ALSA capture presence, Wi-Fi interface, CPU temperature).
-- Rust process supervisor launching FFmpeg with V4L2 HDMI capture, ALSA audio, libx264 video, AAC audio, FLV muxing and RTMPS output.
-- Synthetic A/V input option for ARM64 QEMU CI. Automatic FFmpeg process restart attempts.
-- An ARM64 Docker build and simulated-input test in GitHub Actions.
+Native is the only RTMPS backend. The controller runs V4L2/ALSA capture, NEON I420 conversion, libx264, AAC via libavcodec, and RTMPS via rustls in-process. No FFmpeg executable is required for production. The FFmpeg executable remains only as a synthetic local-file fixture when built with the explicit ci-virtual feature, to preserve the existing CI contract. It is not a streaming fallback.
 
-The media pipeline **currently uses FFmpeg**, which is open source but not a custom Rust codec. A custom encoder would need considerable work and comparative benchmarks; an unproven implementation cannot be called better quality. The subprocess being alive **does not prove YouTube ingested the stream**.
+## Raspberry Pi OS Lite (64-bit)
 
-## Setup on Raspberry Pi OS Lite (64-bit)
-
-Install Rust, FFmpeg with libx264, `v4l-utils` and `alsa-utils`. Confirm device paths with `v4l2-ctl --list-formats-ext` and `arecord -l`.
+Install Rust and native packages: libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config v4l-utils alsa-utils. Confirm device paths with v4l2-ctl and arecord.
 
 ```bash
-cargo test
-cargo build --release
+cargo build --release --locked --bin t3box
 export T3BOX_VIDEO=/dev/video0
 export T3BOX_AUDIO=plughw:1,0
 export T3BOX_WIDTH=1920 T3BOX_HEIGHT=1080 T3BOX_FPS=30
-export T3BOX_BITRATE_KBPS=8000 T3BOX_PRESET=ultrafast
+export T3BOX_BITRATE_KBPS=6000 T3BOX_PRESET=ultrafast
 export T3BOX_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'
 ./target/release/t3box
 ```
 
-In a separate terminal on the Pi:
+Optional experimental controls: T3BOX_PARALLEL_MEDIA=1, T3BOX_ADAPTIVE_RATE=1, T3BOX_DEADLINE_TRANSPORT=1, T3BOX_CONTENT_AWARE=1. They remain opt-in pending physical and composite-fault validation. Native supports YUYV/NV12 and ultrafast. Stop is cooperative. No automatic FFmpeg fallback.
 
 ```bash
 curl http://127.0.0.1:8787/status
@@ -35,39 +28,8 @@ curl -X POST http://127.0.0.1:8787/stream/start
 curl -X POST http://127.0.0.1:8787/stream/stop
 ```
 
-Test without HDMI/audio hardware using `T3BOX_TEST_SOURCES=1 T3BOX_WIDTH=640 T3BOX_HEIGHT=360 T3BOX_OUTPUT=file:/tmp/t3box-test.flv cargo run` and then the same start/stop commands.
+The local API is loopback-only; native_worker_running is worker activity, not confirmed YouTube ingest. Never commit stream keys.
 
-**Security:** Do not commit stream keys. The current prototype passes RTMPS URL in FFmpeg process arguments; other local users may be able to inspect it. The API is loopback-only until authentication is added. Do not deploy on untrusted networks without completing authentication and secret management.
+## Validation limits
 
-## Native controller (experimental, opt-in)
-
-On 64-bit Raspberry Pi OS, install the native development packages
-(`libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config`)
-and build:
-
-```bash
-cargo build --release --locked --features native-capture,native-x264,native-aac --bin t3box
-export T3BOX_BACKEND=native
-export T3BOX_PRESET=ultrafast
-./target/release/t3box
-```
-
-Use the same RTMPS output, hardware device and HTTP start/stop settings as above.
-The native controller runs capture, codecs and RTMPS in-process, without starting
-FFmpeg. File output and synthetic controller input remain on the legacy backend.
-The native path currently supports YUYV/NV12 and ultrafast only. Stop is cooperative:
-in-flight network/device operations may delay termination; starting again while
-the previous worker is still stopping is rejected. The status field
-`native_worker_running` indicates worker activity, not confirmed YouTube ingest.
-Physical testing and parity with legacy audio filtering and capture timing remain
-required before making native mode the default.
-
-## Hardware and CI limits
-
-Presenter HDMI → HDMI capture with hardware HDMI passthrough → projector. Capture USB → Raspberry Pi 5; venue mixer LINE/REC → USB audio ADC → Pi 5; venue Wi-Fi → YouTube.
-
-Docker/QEMU runs Linux ARM64 userspace, **not a full Raspberry Pi 5 VM**. Real HDMI capture, EDID/passthrough, GPIO, venue Wi-Fi, Anker power delivery, real-time 1080p30 and thermal behavior require Pi 5 hardware. See [CI acceptance checklist](ci/README.md).
-
-## Remaining features
-
-Wi-Fi setup portal, physical button/LED, audio levels and clip alarms, HDMI disconnection fallback slate, secure smartphone UI, secure RTMPS key storage, YouTube ingest confirmation, native Rust media pipeline, throughput/temperature benchmarking and power management are not implemented.
+ARM64 CI is not physical Raspberry Pi 5 hardware. Physical HDMI/ALSA, thermal behavior, power, long-run reliability and composite communication faults still need validation. See ci/README.md. Native file recording and legacy audio filtering parity are not implemented. Existing synthetic file smoke testing uses the explicit ci-virtual feature and FFmpeg fixture only. Builds without default features provide diagnostics but cannot publish RTMPS unless native features are enabled.
