@@ -70,8 +70,20 @@ final class SdpMungerTests: XCTestCase {
   func testRefusesAnOfferWithoutBaselineH264() {
     let vp8Only = Self.offer.replacingOccurrences(of: "profile-level-id=42e01f", with: "profile-level-id=4d001f")
     XCTAssertThrowsError(try SdpMunger.restrictToBaselineH264(vp8Only)) { e in
-      XCTAssertEqual(e as? SdpMunger.Failure, .noBaselineH264(mid: "0"))
+      guard case let .noBaselineH264(mid, offered)? = e as? SdpMunger.Failure else { return XCTFail("\(e)") }
+      XCTAssertEqual(mid, "0")
+      XCTAssertEqual(offered.count, 3)
     }
+  }
+
+  func testConstrainedBaselineAtAnyLevel() {
+    XCTAssertTrue(SdpMunger.isConstrainedBaseline("42e01f"))
+    XCTAssertTrue(SdpMunger.isConstrainedBaseline("42E034"))
+    XCTAssertTrue(SdpMunger.isConstrainedBaseline("42c01f"))   // constraint_set0+1
+    XCTAssertFalse(SdpMunger.isConstrainedBaseline("42001f"))  // plain baseline
+    XCTAssertFalse(SdpMunger.isConstrainedBaseline("640c1f"))
+    XCTAssertFalse(SdpMunger.isConstrainedBaseline("4d001f"))
+    XCTAssertFalse(SdpMunger.isConstrainedBaseline("42e0"))
   }
 
   func testLeavesNonVideoSectionsAlone() throws {

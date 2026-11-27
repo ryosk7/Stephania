@@ -23,7 +23,9 @@ final class LoopbackTests: XCTestCase {
     // Offer contract (src/camera/sdp.ts checks the same on the JS side).
     let videoLines = offer.components(separatedBy: "\r\n").filter { $0.hasPrefix("m=video") }
     XCTAssertEqual(videoLines.count, 2)
-    XCTAssertTrue(offer.contains("profile-level-id=42e01f"))
+    let fmtp = offer.components(separatedBy: "\r\n").filter { $0.hasPrefix("a=fmtp:") && $0.contains("profile-level-id") }
+    print("offer H.264:", fmtp)
+    XCTAssertFalse(fmtp.isEmpty)
     XCTAssertFalse(offer.contains("VP8/90000"))
     XCTAssertTrue(offer.contains("a=candidate:"), "non-trickle offer must carry candidates")
     for (id, _) in sender.trackMap { XCTAssertTrue(offer.contains(" \(id)\r\n"), "a=msid for \(id)") }

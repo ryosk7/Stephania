@@ -77,7 +77,8 @@ provides the same interface and reuses everything in `src/camera`.
 - **Encode / transport** (`ios/CameraSender`, SwiftPM, also the pod's
   sources): libwebrtc (`WebRTC-SDK` 150.7871.09), VideoToolbox H.264 via
   the default encoder factory. The local offer is restricted to H.264
-  constrained baseline `42e01f`, `packetization-mode=1` (+RTX) before
+  constrained baseline (`42e0xx`; t3box-phone matches profile and
+  packetization mode, not level), `packetization-mode=1` (+RTX) before
   `setLocalDescription`; one sendonly transceiver per camera, stream
   `t3box`, track ids `rear-…`/`front-…`; LAN only (no STUN/TURN), the
   offer is sent after ICE gathering completes (non-trickle). Plans change

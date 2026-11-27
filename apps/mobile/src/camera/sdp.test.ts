@@ -13,13 +13,18 @@ describe('checkOffer', () => {
     expect(baselinePayloads(SDP.split('\n'))).toEqual(['102', '102']);
   });
 
+  it('accepts constrained baseline at a higher level', () => {
+    expect(() => checkOffer({sdp: SDP.replaceAll('42e01f', '42e034'), tracks: TRACKS})).not.toThrow();
+  });
+
   it('accepts CRLF line endings', () => {
     expect(() => checkOffer({sdp: SDP.replace(/\n/g, '\r\n'), tracks: TRACKS})).not.toThrow();
   });
 
   const bad: [string, string, Record<string, 'rear' | 'front'>, RegExp][] = [
-    ['high profile only', SDP.replaceAll('profile-level-id=42e01f', 'profile-level-id=640c1f'), TRACKS, /42e01f/],
-    ['packetization-mode 0', SDP.replaceAll('packetization-mode=1', 'packetization-mode=0'), TRACKS, /42e01f/],
+    ['high profile only', SDP.replaceAll('profile-level-id=42e01f', 'profile-level-id=640c1f'), TRACKS, /42e0xx/],
+    ['plain baseline', SDP.replaceAll('profile-level-id=42e01f', 'profile-level-id=42001f'), TRACKS, /42e0xx/],
+    ['packetization-mode 0', SDP.replaceAll('packetization-mode=1', 'packetization-mode=0'), TRACKS, /42e0xx/],
     ['VP8 instead of H.264', SDP.replaceAll('H264/90000', 'VP8/90000'), TRACKS, /H.264/],
     ['not gathered', SDP.replace(/^a=candidate:.*\n/m, ''), TRACKS, /candidates/],
     ['sendrecv', SDP.replaceAll('a=sendonly', 'a=sendrecv'), TRACKS, /sendonly/],

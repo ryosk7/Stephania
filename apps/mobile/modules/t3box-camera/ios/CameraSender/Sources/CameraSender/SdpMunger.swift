@@ -1,7 +1,7 @@
 import Foundation
 
 /// Restricts a libwebrtc offer to what t3box-phone decodes (docs/PHONE.md):
-/// H.264 constrained baseline `profile-level-id=42e01f` with
+/// H.264 constrained baseline (`profile-level-id=42e0xx`, e.g. 42e01f) with
 /// `packetization-mode=1`, plus its RTX payload. Every other video payload
 /// (VP8, VP9, AV1, other H.264 profiles, RED/ULPFEC) is removed from each
 /// video m-line together with its rtpmap/fmtp/rtcp-fb attributes.
@@ -10,8 +10,25 @@ import Foundation
 /// accepts for codec removal; this does not depend on the per-version
 /// `setCodecPreferences` API surface.
 public enum SdpMunger {
-  public enum Failure: Error, Equatable {
-    case noBaselineH264(mid: String)
+  public enum Failure: Error, Equatable, CustomStringConvertible {
+    /// `offered`: the H.264 fmtp lines that were present, for diagnosis.
+    case noBaselineH264(mid: String, offered: [String])
+
+    public var description: String {
+      switch self {
+      case let .noBaselineH264(mid, offered):
+        return "video section \(mid) has no H.264 constrained baseline with packetization-mode=1 (H.264 offered: \(offered.isEmpty ? "none" : offered.joined(separator: " | ")))"
+      }
+    }
+  }
+
+  /// Constrained baseline at any level: profile_idc 0x42 with
+  /// constraint_set1 (0xe0 profile-iop). t3box-phone (webrtc-rs) matches
+  /// H.264 on profile and packetization mode, not level, and the Pi's
+  /// decoder accepts every level a phone sends.
+  public static func isConstrainedBaseline(_ profileLevelId: String) -> Bool {
+    let p = profileLevelId.lowercased()
+    return p.count == 6 && p.hasPrefix("42") && (UInt8(p.dropFirst(2).prefix(2), radix: 16).map { $0 & 0x40 != 0 } ?? false)
   }
 
   public static func restrictToBaselineH264(_ sdp: String) throws -> String {
@@ -46,7 +63,7 @@ public enum SdpMunger {
         let kv = p.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
         if kv.count == 2 { params[kv[0]] = kv[1] }
       }
-      if params["profile-level-id"]?.lowercased() == "42e01f", params["packetization-mode"] == "1" { ok.insert(pt) }
+      if let plid = params["profile-level-id"], isConstrainedBaseline(plid), params["packetization-mode"] == "1" { ok.insert(pt) }
     }
     let order = section[0].split(separator: " ").dropFirst(3).map(String.init)
     return order.filter { ok.contains($0) }
@@ -54,7 +71,10 @@ public enum SdpMunger {
 
   static func rewriteVideo(_ section: [String]) throws -> [String] {
     let mid = section.first { $0.hasPrefix("a=mid:") }.map { String($0.dropFirst(6)) } ?? "?"
-    guard let keep = baselinePayloads(section).first else { throw Failure.noBaselineH264(mid: mid) }
+    guard let keep = baselinePayloads(section).first else {
+      let h264 = Set(section.compactMap { l in attribute(l, "a=rtpmap:").flatMap { $0.1.uppercased() == "H264/90000" ? $0.0 : nil } })
+      throw Failure.noBaselineH264(mid: mid, offered: section.filter { l in attribute(l, "a=fmtp:").map { h264.contains($0.0) } ?? false })
+    }
     var allowed: Set<String> = [keep]
     for l in section {
       if let (pt, rest) = attribute(l, "a=fmtp:"), rest == "apt=\(keep)" { allowed.insert(pt) }
