@@ -41,7 +41,7 @@ for a in $(chroot "$tools" /bin/busybox --list); do [ -e "$ir/bin/$a" ] || ln -s
 copy_bin() { # path in tools root
   install -D -m 0755 "$tools$1" "$ir$1"
   chroot "$tools" ldd "$1" 2>/dev/null | grep -oE '/[^ ]+\.so[^ ]*' | while read -r lib; do
-    [ -e "$ir$lib" ] || install -D -m 0644 "$tools$(readlink -f "$tools$lib" | sed "s#^$tools##")" "$ir$lib"
+    [ -e "$ir$lib" ] || install -D -m 0755 "$tools$(readlink -f "$tools$lib" | sed "s#^$tools##")" "$ir$lib"
   done
 }
 for b in /usr/sbin/sfdisk /usr/sbin/mkfs.fat /usr/sbin/mke2fs /usr/bin/openssl /usr/bin/kmod; do copy_bin "$b"; done
@@ -52,6 +52,13 @@ ln -sf /usr/sbin/mke2fs "$ir/sbin/mkfs.ext4"
 ln -sf /usr/sbin/sfdisk "$ir/sbin/sfdisk"
 ln -sf /usr/bin/openssl "$ir/bin/openssl"
 for t in modprobe insmod depmod; do ln -sf /usr/bin/kmod "$ir/sbin/$t"; done
+# Self-check (same-architecture builds): every copied tool must run in
+# the initramfs root, so a missing library or loader fails the build.
+if [ "$(dpkg --print-architecture 2>/dev/null)" = "$arch" ]; then
+  for t in "/usr/bin/openssl version" "/usr/bin/kmod --version" "/usr/sbin/sfdisk --version" "/usr/sbin/mke2fs -V"; do
+    chroot "$ir" $t >/dev/null 2>&1 || { echo "initramfs tool does not run: $t" >&2; exit 1; }
+  done
+fi
 [ -d "$tools/usr/lib/ssl" ] && mkdir -p "$ir/usr/lib/ssl" && cp -a "$tools/usr/lib/ssl/openssl.cnf" "$ir/usr/lib/ssl/" 2>/dev/null || true
 
 # Kernel modules for SD/USB/virtio storage and the filesystems used.
