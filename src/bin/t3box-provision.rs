@@ -61,7 +61,7 @@ mod unix {
         let state = store.load();
         // First boot: adopt the browser-generated secret copied to the boot
         // partition (contracts/ble-protocol.md "Setup secret delivery").
-        let setup_file = env_path("T3BOX_SETUP_FILE", "/boot/firmware/t3box-setup.txt");
+        let setup_file = env_path("T3BOX_SETUP_FILE", "/boot/selector/t3box-setup.txt");
         let secret_path = credentials.join("setup-secret");
         match import_setup_file(&setup_file, &secret_path, &state).map_err(|e| format!("setup file import: {e}"))? {
             SetupImport::Absent => {}

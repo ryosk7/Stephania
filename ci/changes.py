@@ -62,7 +62,7 @@ RULES = [
     ("contracts/fixtures/*", ["rust", "control", "studio", "provisioning"]), ("contracts/*", ["control", "studio", "provisioning"]),
     # OS, updates, image
     ("os/*", ["os"]), ("systemd/*", ["control", "os"]), ("src/bootctl.rs", ["rust", "os"]), ("src/bin/t3box-bootctl.rs", ["rust", "os"]),
-    ("ci/update-e2e.sh", ["os"]), ("ci/fake_engine.py", ["os"]), ("ci/qemu-smoke.sh", ["os"]),
+    ("ci/update-e2e.sh", ["os"]), ("ci/installer-e2e.sh", ["os"]), ("ci/fake_engine.py", ["os"]), ("ci/qemu-smoke.sh", ["os"]),
     ("ci/check-qualification.py", ["rust"]), ("tools/qualification/*", ["rust"]),
     ("src/*", ["rust"]), ("src/bin/*", ["rust"]),
 ]

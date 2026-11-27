@@ -37,7 +37,16 @@ check "phone service answers through the control plane" sh -c "curl -fsS -H 'Aut
 check "engine ingest socket for phone media exists" test -S /run/t3box/media.sock
 check "engine health via t3box-bootctl" env T3BOX_HEALTH_ATTEMPTS=30 /usr/local/bin/t3box-bootctl health
 check "device PKI published an endpoint" test -s /var/lib/t3box/pki/endpoint.json
-code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /var/lib/t3box/pki/ca.pem --resolve t3box.local:9443:127.0.0.1 https://t3box.local:9443/api/v1/capabilities)
+check "device CA served at /ca.pem" sh -c "curl -fsS --cacert /var/lib/t3box/pki/ca.pem --resolve $(hostname).local:9443:127.0.0.1 https://$(hostname).local:9443/ca.pem | cmp -s - /var/lib/t3box/pki/ca.pem"
+host=$(hostname)
+check "per-device host name kept on data" sh -c "echo '$host' | grep -qE '^t3box-[0-9a-f]{4}$' && grep -qx '$host' /data/t3box/config/hostname"
+check "device certificate names the host" grep -q "\"host\":\"$host.local\"" /var/lib/t3box/pki/endpoint.json
+check "avahi-daemon active" systemctl is-active avahi-daemon
+# DNS-SD: the management service is browsable with its port.
+for i in $(seq 30); do avahi-browse -rpt _t3box._tcp 2>/dev/null | grep -q '^=.*;9443;' && break; sleep 1; done
+check "mDNS publishes _t3box._tcp on 9443" sh -c "avahi-browse -rpt _t3box._tcp | grep -q '^=.*;9443;'"
+check "mDNS resolves the host name" avahi-resolve -4 -n "$host.local"
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /var/lib/t3box/pki/ca.pem --resolve "$host.local:9443:127.0.0.1" "https://$host.local:9443/api/v1/capabilities")
 [ "$code" = 401 ] && ok "LAN TLS listener verifies against the device CA and requires an issued token" || bad "LAN TLS listener ($code)"
 info "rauc: $(rauc status 2>&1 | head -3 | tr '\n' ' ')"
 if [ "$fails" != 0 ]; then

@@ -20,8 +20,19 @@ it on arm64 and boots it in QEMU.
   is refused until the release pipeline provisions the release CA),
   watchdog drop-in, BlueZ config.
 
+## Host name and mDNS
+Each device picks `t3box-<4 hex>` once and keeps it on `/data`
+(`t3box-hostname.service`, before the network, Avahi and the PKI), so the
+device certificate names a stable host and two boxes never collide on
+`.local`. Avahi publishes the host name plus `_https._tcp` and
+`_t3box._tcp` on port 9443 (`os/avahi/t3box.service`, TXT `api=/api/v1`,
+`ca=/ca.pem`). The smoke test checks the persisted name, the certificate
+host, the DNS-SD record and name resolution.
+
 ## Layout and root filesystem
-GPT: selector (autoboot.txt), boot-a, boot-b, rootfs-a (SquashFS, zstd),
+Fixed slot sizes from `os/layout.env` (selector 64 MiB, boot 256 MiB,
+root 1 GiB, data ≥ 512 MiB), shared with the installer (docs/INSTALL.md).
+GPT: selector (autoboot.txt, `t3box-setup.txt`), boot-a, boot-b, rootfs-a (SquashFS, zstd),
 rootfs-b (empty until the first update), data (ext4). The root is never
 written: `init=/usr/local/sbin/t3box-overlay-init` mounts a tmpfs overlay
 over the read-only SquashFS before exec'ing systemd. Persistent state is on
@@ -44,6 +55,6 @@ refusing without an issued token. It powers off and the harness requires
   kernel and DTBs (Raspberry Pi OS archive, as §6 specifies for the
   reference) instead of the generic kernel. Binaries for it must then be
   built against that distribution's libraries.
-- Release signing of bundles and images; mDNS service publication.
+- Release signing of bundles and images.
 - Anything hardware: VideoCore, RP1, HDMI capture, radios, tryboot
   (docs/QUALIFICATION.md).
