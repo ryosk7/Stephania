@@ -50,7 +50,6 @@ jobs:
         working-directory: apps/mobile
         env:
           CI: '1'
-          CCACHE_DIR: ~/Library/Caches/ccache
           CCACHE_SLOPPINESS: clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
           CCACHE_FILECLONE: 'true'
           CCACHE_DEPEND: 'true'
@@ -63,5 +62,6 @@ jobs:
           ccache -z >/dev/null
           xcodebuild -workspace ios/StephaniaConnect.xcworkspace -scheme StephaniaConnect -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build | tail -30
-          ccache -s
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO CLANG_ENABLE_EXPLICIT_MODULES=NO \
+            build | tail -30
+          ccache -s -v
