@@ -298,12 +298,24 @@ components do not change, and both platforms look the same.
 
 ## 9. Studio (web) direction
 
-From the web references: three panes (left: sources and scenes with
+**Now in place:** the Studio uses the same semantic tokens as Connect in
+Tailwind CSS v4 (`apps/studio/src/styles.css`), the same light / dark /
+system appearance (a three-icon switch in the header, stored per browser,
+system by default), Lucide icons beside page names and on icon-only
+actions (with the word as the accessible name and tooltip), and TanStack
+Router for its pages (hash history, so `#/studio`, `#/audio`,
+`#/settings` keep working and the device serves one `index.html`).
+Shell components have colocated stories in a Storybook (`@storybook/react-vite`)
+that CI renders in both themes. No web fonts ship from the device
+(docs/LICENSING.md): the Studio uses the system UI font. The program
+canvas stays dark in both themes.
+
+**Next:** From the web references: three panes (left: sources and scenes with
 "Backstage / On air" grouping; centre: Preview and Program canvases with
 the scene strip below; right: inspector of collapsible sections), a
 labelled icon rail, the broadcast state (LIVE + elapsed, or "Backstage")
 centred in the top bar and "Go live" as the only accent button at its
-right. Same semantic colours as Connect, in a dark theme. The Studio adopts
+right. Same semantic colours as Connect, in both themes. The Studio adopts
 the same feature-based layout (`apps/studio/src/features/*`) when it is
 restyled; until then this section is the target, not a description of the
 current Studio.
