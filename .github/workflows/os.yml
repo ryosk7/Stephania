@@ -30,7 +30,21 @@ jobs:
             ~/.cargo/git
             target
           key: os-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq rauc rauc-service squashfs-tools dosfstools >/dev/null
+      # Ubuntu 24.04's RAUC 1.11 rejects verity bundles on the runner's newer
+      # kernel ("Unexpected dm-verity status 'V -'"), fixed upstream; build a
+      # pinned release. rauc-service from apt only supplies the D-Bus policy.
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rauc-service squashfs-tools dosfstools meson ninja-build pkg-config \
+            libglib2.0-dev libssl-dev libcurl4-openssl-dev libjson-glib-dev libnl-genl-3-dev libdbus-1-dev libfdisk-dev systemd-dev >/dev/null
+      - name: Build RAUC v1.15
+        run: |
+          git clone -q --depth 1 --branch v1.15 https://github.com/rauc/rauc /tmp/rauc
+          git -C /tmp/rauc log -1 --format='RAUC source %H'
+          meson setup /tmp/rauc/build /tmp/rauc --prefix=/usr/local >/tmp/rauc-meson.log || { cat /tmp/rauc-meson.log; exit 1; }
+          ninja -C /tmp/rauc/build >/dev/null
+          sudo install -m 0755 /tmp/rauc/build/rauc /usr/local/bin/rauc
+          /usr/local/bin/rauc --version
       - name: Boot-control unit tests
         run: cargo test --locked --no-default-features --lib bootctl
       - run: cargo build --locked --no-default-features --bin t3box-bootctl
