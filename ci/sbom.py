@@ -8,7 +8,7 @@ Collects what actually ships:
     phone app (apps/mobile);
   - Ruby gems of the control plane (Gemfile.lock, versions; licences from
     the installed gemspecs when `--gems-from-bundle` is given);
-  - optionally Debian/Ubuntu packages of an OS image (`--dpkg <file>` with
+  - optionally Debian / Raspberry Pi packages of an OS image (`--dpkg <file>` with
     `dpkg-query -W -f='${Package}\t${Version}\t${source:Package}\n'`).
 
 Writes <out>/sbom.spdx.json, <out>/THIRD_PARTY.md and <out>/LICENSES/...,
@@ -132,6 +132,11 @@ def gems(out, from_bundle):
     return comps
 
 
+def deb_vendor(version):
+    """Raspberry Pi archive builds carry +rpt / +rpi in the version; the rest is Debian."""
+    return "raspberrypi" if re.search(r"\+rp[it]", version) else "debian"
+
+
 def dpkg(path):
     comps = []
     for line in open(path):
@@ -139,7 +144,7 @@ def dpkg(path):
         if len(parts) >= 2 and parts[0]:
             src = parts[2] if len(parts) > 2 and parts[2] else parts[0]
             comps.append({"ecosystem": "deb", "name": parts[0], "version": parts[1], "license": "", "source_package": src,
-                          "purl": f"pkg:deb/ubuntu/{parts[0]}@{parts[1]}", "texts": []})
+                          "purl": f"pkg:deb/{deb_vendor(parts[1])}/{parts[0]}@{parts[1]}?distro=trixie", "texts": []})
     return comps
 
 
