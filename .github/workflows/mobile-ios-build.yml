@@ -2,8 +2,8 @@ name: Mobile iOS build
 # Full simulator build of Stephania Connect with its native modules
 # (pinned-fetch, camera). macOS runners are billed at a multiple of Linux
 # minutes on private repositories, so this runs only when the native iOS
-# side or its dependencies change, and on demand. arm64 simulator only, with
-# a ccache restored from earlier runs, to stay within a few minutes.
+# side or its dependencies change, and on demand. Pull requests compile the
+# app's own native modules; main and manual runs build the whole app.
 on:
   workflow_dispatch:
   pull_request:
@@ -12,7 +12,7 @@ on:
       - apps/mobile/app.json
       - apps/mobile/package-lock.json
       - .github/workflows/mobile-ios-build.yml
-  # main fills the compiler cache that pull requests restore.
+  # main builds the whole app.
   push:
     branches: [main]
     paths:
@@ -35,33 +35,27 @@ jobs:
         working-directory: packages/provisioning-client
       - run: npm ci --no-audit --no-fund
         working-directory: apps/mobile
-      # Compiler cache: the first build fills it, later builds reuse it
-      # (React Native's Podfile honours apple.ccacheEnabled).
-      - name: Install ccache
-        run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ccache >/dev/null && ccache --version | head -1
-      - uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/ccache
-          key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}-${{ github.run_id }}
-          restore-keys: |
-            ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}-
-            ios-ccache-
-      - name: Prebuild and build for the simulator (arm64 only)
+      # Pull requests compile the app's own native modules (Swift) with
+      # their dependencies, a few minutes at most; main and manual runs
+      # build and link the whole app. Most of the app is Swift (Expo
+      # modules), which a C compiler cache cannot speed up.
+      - name: Prebuild
         working-directory: apps/mobile
         env:
           CI: '1'
-          CCACHE_SLOPPINESS: clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
-          CCACHE_FILECLONE: 'true'
-          CCACHE_DEPEND: 'true'
-          CCACHE_INODECACHE: 'true'
+        run: npx expo prebuild --platform ios --clean
+      - name: Native modules (arm64 simulator)
+        if: github.event_name == 'pull_request'
+        working-directory: apps/mobile/ios
         run: |
-          export CCACHE_DIR="$HOME/Library/Caches/ccache" CCACHE_BINARY="$(command -v ccache)" USE_CCACHE=1
-          npx expo prebuild --platform ios --clean --no-install
-          node -e "const f='ios/Podfile.properties.json',p=require('./'+f);p['apple.ccacheEnabled']='true';require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
-          (cd ios && pod install >/dev/null)
-          ccache -z >/dev/null
+          args=()
+          for t in StephaniaAccessorySetup StephaniaCamera StephaniaPinnedFetch; do args+=(-target "$t"); done
+          xcodebuild -project Pods/Pods.xcodeproj "${args[@]}" -configuration Debug -sdk iphonesimulator \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build | tail -30
+      - name: Whole app (arm64 simulator)
+        if: github.event_name != 'pull_request'
+        working-directory: apps/mobile
+        run: |
           xcodebuild -workspace ios/StephaniaConnect.xcworkspace -scheme StephaniaConnect -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO CLANG_ENABLE_EXPLICIT_MODULES=NO \
-            build | tail -30
-          ccache -s -v
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build | tail -30
