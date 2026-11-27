@@ -4,7 +4,8 @@
 # Usage (root): ci/update-e2e.sh <t3box-bootctl>
 set -euo pipefail
 bootctl=$(readlink -f "$1")
-# CI uses verity bundles (needs device-mapper). UPDATE_E2E_FORMAT=plain is
+# CI uses verity bundles (needs device-mapper; RAUC v1.15 rejects the
+# dm-verity status format of kernels >= 6.19, so CI runs on a 6.8 kernel). UPDATE_E2E_FORMAT=plain is
 # only for local runs in containers without /dev/mapper.
 format=${UPDATE_E2E_FORMAT:-verity}
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,7 +33,16 @@ declare -A dev=([boot-a]=${loops[0]} [boot-b]=${loops[1]} [rootfs-a]=${loops[2]}
 # Emulated firmware: picks [all] or (once) [tryboot] from autoboot.txt and
 # exposes the result like /proc/device-tree/chosen/bootloader.
 printf '[all]\ntryboot_a_b=1\nboot_partition=2\n[tryboot]\nboot_partition=3\n' >"$w/selector/autoboot.txt"
+# A reboot also clears what a killed RAUC left behind (bundle mounts,
+# dm-verity device, bundle loop device), as on real hardware.
+reboot_cleanup() {
+  [ -n "$svc" ] && { kill "$svc" 2>/dev/null || true; wait "$svc" 2>/dev/null || true; svc=""; }
+  awk -v m="$w/mnt" 'index($2, m) == 1 {print $2}' /proc/mounts | sort -r | xargs -r umount -l 2>/dev/null || true
+  dmsetup ls 2>/dev/null | awk '$1 ~ /^rauc/ {print $1}' | xargs -r -n1 dmsetup remove --force 2>/dev/null || true
+  losetup -a | awk -F: '/\.raucb/ {print $1}' | xargs -r -n1 losetup -d 2>/dev/null || true
+}
 firmware_boot() { # $1 = normal|tryboot
+  reboot_cleanup
   local sect=all; [ "$1" = tryboot ] && sect=tryboot
   local p; p=$(awk -v s="[$sect]" '/^\[/{cur=$0} cur==s && /^boot_partition=/{split($0,a,"=");print a[2]}' "$w/selector/autoboot.txt")
   python3 -c 'import struct,sys;open(sys.argv[1],"wb").write(struct.pack(">I",int(sys.argv[2])));open(sys.argv[3],"wb").write(struct.pack(">I",int(sys.argv[4])))' \

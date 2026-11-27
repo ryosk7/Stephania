@@ -42,7 +42,7 @@ but a confirmed trial can change the permanent selection. State
 file is replaced atomically (write, fsync, rename, fsync dir).
 
 ## Verified in CI (`.github/workflows/os.yml`, `ci/update-e2e.sh`)
-Real RAUC (v1.15 built from source; Ubuntu's 1.11 fails verity on current kernels) with verity bundles on loop devices, test-only
+Real RAUC v1.15 (built from source) on a 6.8 kernel. Found while setting this up: on kernels whose dm-verity status carries an FEC field (`V -`), RAUC v1.15 refuses to mount verity bundles; the image must pin a kernel/RAUC pair that agree (risk register) with verity bundles on loop devices, test-only
 signing PKI generated per run, emulated tryboot firmware:
 untrusted signer refused; incompatible bundle refused; install refused
 while streaming; RAUC killed mid-write leaves A committed and bootable;
