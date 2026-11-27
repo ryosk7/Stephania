@@ -9,4 +9,4 @@ Single-file static page (`dist/index.html`) that generates the device setup secr
 
 - Design: the tokens and components of DESIGN.md §4–5 (same values as Connect), light and dark following the system with a three-way switch stored in the browser, Lucide icons inlined. No fonts or images are loaded, so the system UI font is used.
 
-Publishing: `.github/workflows/setup-page-pages.yml` (manual, type `publish`) deploys `dist/` to https://ryosk7.github.io/Stephania/. Users can instead open the built `index.html` locally.
+Publishing: `.github/workflows/setup-page-pages.yml` deploys every change on main (or a manual run) from `dist/` to https://ryosk7.github.io/Stephania/. Users can instead open the built `index.html` locally.
