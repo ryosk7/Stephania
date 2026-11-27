@@ -95,9 +95,20 @@ class Rpc:
         return bytes.fromhex((await self.send({"op": op}))["nonce"])
 
 
+def is_t3box(d, adv):
+    # Service UUID from the advertisement, or the advertised name (the UUID
+    # list can be missing from BlueZ's merged device properties right after a
+    # daemon restart).
+    return SERVICE in [u.lower() for u in adv.service_uuids] or (adv.local_name or d.name or "").startswith("T3Box-")
+
+
 async def connect(adapter, min_mtu):
-    device = await BleakScanner.find_device_by_filter(
-        lambda d, adv: SERVICE in [u.lower() for u in adv.service_uuids], timeout=30, adapter=adapter)
+    device = None
+    for attempt in range(3):
+        device = await BleakScanner.find_device_by_filter(is_t3box, timeout=30, adapter=adapter, service_uuids=None)
+        if device is not None:
+            break
+        print(f"scan attempt {attempt + 1}: not found, retrying", flush=True)
     if device is None:
         raise SystemExit("T3Box not found over BLE")
     print(f"found {device.name} {device.address}", flush=True)

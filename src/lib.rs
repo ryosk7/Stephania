@@ -20,6 +20,8 @@ pub mod provisioning;
 pub mod provisioning_gatt;
 #[cfg(unix)]
 pub mod nm;
+#[cfg(all(unix, feature = "networkmanager"))]
+pub mod nm_dbus;
 
 #[cfg(all(target_os = "linux", feature = "native-capture"))]
 pub mod native_capture;

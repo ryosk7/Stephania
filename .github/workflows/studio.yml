@@ -1,10 +1,10 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
 concurrency:
@@ -185,7 +185,16 @@ jobs:
         run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/t3box-export"
   ble-e2e:
     # Real BlueZ stack with two virtual LE controllers (hci_vhci + btvirt).
-    runs-on: ubuntu-24.04
+    # One fresh VM per variant: btvirt sessions leave BlueZ/kernel state
+    # behind that a second session on the same host can trip over.
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ['', '--min-mtu']
+    name: ble-e2e ${{ matrix.mode || 'negotiated-mtu' }}
+    # ARM64 hosted runners: the x64 pool mixes kernel flavours, some of which
+    # ship no hci_vhci module at all.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -204,7 +213,30 @@ jobs:
           cargo build --locked -p t3box-ble
           cargo test --locked -p t3box-ble
           cargo clippy --locked -p t3box-ble -- -D warnings
-      - name: BLE end-to-end v2 (negotiated MTU, bluetoothd restart self-heal)
-        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug
-      - name: BLE end-to-end v2 (20-byte request fragments)
-        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug --min-mtu
+      - name: Kernel support for virtual Bluetooth controllers
+        run: |
+          uname -r
+          sudo modprobe hci_vhci || sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)"
+          sudo modprobe hci_vhci && ls -l /dev/vhci
+      - name: BLE end-to-end v2 (claim/scan/join, bluetoothd restart self-heal)
+        run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug ${{ matrix.mode }}
+  wifi-nm-e2e:
+    # Real NetworkManager over D-Bus on virtual radios (mac80211_hwsim):
+    # hostapd WPA2 AP + dnsmasq on wlan1, NetworkManager on wlan0 only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq network-manager hostapd dnsmasq-base iw >/dev/null
+      - run: sudo pip3 install --break-system-packages -q cryptography
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: nm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build provisioning service with the NetworkManager backend
+        run: cargo build --locked --no-default-features --features networkmanager --bin t3box-provision
+      - name: Wi-Fi join, PSK persistence and auto-reconnect via NetworkManager
+        run: NM_E2E_LOGS=$RUNNER_TEMP tests/wifi/run-nm-e2e.sh target/debug

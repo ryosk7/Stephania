@@ -73,7 +73,15 @@ mod unix {
         eprintln!("t3box-provision: ownership {}", ownership.reported_state());
         let backend = std::env::var("T3BOX_NETWORK_BACKEND").unwrap_or_else(|_| "nm".into());
         match backend.as_str() {
+            // Default: NetworkManager over D-Bus (stores the PSK for reboot
+            // reconnection). `nmcli` remains as a fallback backend.
+            #[cfg(feature = "networkmanager")]
             "nm" => {
+                let iface = std::env::var("T3BOX_WIFI_INTERFACE").unwrap_or_else(|_| "wlan0".into());
+                let backend = t3box::nm_dbus::NetworkManagerDbus::new(&iface)?;
+                serve(&socket, &policy, RpcService::new(ownership, backend, store))
+            }
+            "nmcli" => {
                 let secrets_dir = env_path("T3BOX_PROVISION_RUNTIME", "/run/t3box/provision");
                 std::fs::create_dir_all(&secrets_dir).map_err(|e| format!("runtime dir: {e}"))?;
                 use std::os::unix::fs::PermissionsExt;

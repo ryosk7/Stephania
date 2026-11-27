@@ -16,10 +16,12 @@
 //! - One active central at a time; other centrals get `InProgress` until the
 //!   active one disconnects or idles out. Partial transfers are dropped on
 //!   disconnect.
-//! - Self-healing: if bluetoothd restarts, the adapter disappears or is
-//!   powered off, the process exits non-zero so systemd restarts it and
-//!   re-registers the application and advertisement. Advertising is checked
-//!   periodically and re-registered if BlueZ dropped it.
+//! - Self-healing: if bluetoothd restarts or the adapter disappears, the
+//!   process exits non-zero so systemd restarts it and re-registers the
+//!   application and advertisement. A powered-off adapter is powered back
+//!   on. The advertisement is re-registered when the controller reports
+//!   Powered, when BlueZ drops it, and every 30 s while no central is
+//!   connected (guards against "registered but not advertising").
 //! - Adapter selection prefers a USB controller (external dongle) over the
 //!   on-board UART controller when `T3BOX_BLE_ADAPTER=auto`.
 
@@ -28,7 +30,7 @@ use bluer::gatt::local::{
     Application, Characteristic, CharacteristicNotifier, CharacteristicNotify, CharacteristicNotifyMethod,
     CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, ReqError, Service,
 };
-use bluer::{Adapter, Address, DeviceEvent, DeviceProperty, SessionEvent};
+use bluer::{Adapter, AdapterEvent, AdapterProperty, Address, DeviceEvent, DeviceProperty, SessionEvent};
 use futures::{FutureExt, StreamExt};
 use serde_json::{json, Value};
 use std::os::unix::net::UnixStream;
@@ -42,6 +44,10 @@ use t3box::provisioning_gatt::{INFO_UUID, INFO_VALUE, RPC_UUID, SERVICE_UUID};
 /// An idle central stops blocking others after this long.
 const PEER_IDLE: Duration = Duration::from_secs(30);
 const WATCHDOG_PERIOD: Duration = Duration::from_secs(10);
+/// While no central is connected, re-register the advertisement this often:
+/// BlueZ can report an advertisement as registered while the controller is
+/// not actually advertising (e.g. registered around a power transition).
+const ADVERTISING_REFRESH: Duration = Duration::from_secs(30);
 
 /// Socket client to t3box-provision; one long-lived connection, reconnected
 /// once on failure (provision restarts are expected under systemd).
@@ -309,6 +315,8 @@ async fn run() -> bluer::Result<()> {
 
     let adapter_name = adapter.name().to_owned();
     let mut session_events = Box::pin(session.events().await?);
+    let mut adapter_events = Box::pin(adapter.events().await?);
+    let mut advertised_at = Instant::now();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut tick = tokio::time::interval(WATCHDOG_PERIOD);
     loop {
@@ -320,16 +328,31 @@ async fn run() -> bluer::Result<()> {
                 None => return Err(fatal(bluer::ErrorKind::Failed, "bluetoothd connection lost")),
                 _ => {}
             },
+            ev = adapter_events.next() => {
+                if let Some(AdapterEvent::PropertyChanged(AdapterProperty::Powered(true))) = ev {
+                    // Controller (re)powered: an advertisement registered
+                    // before this may never have started.
+                    eprintln!("t3box-ble: adapter powered; re-registering advertisement");
+                    drop(adv);
+                    adv = advertise(&adapter, &name).await?;
+                    advertised_at = Instant::now();
+                }
+            }
             _ = tick.tick() => {
                 // Errors here mean bluetoothd restarted or the adapter vanished.
                 if !adapter.is_powered().await? {
-                    return Err(fatal(bluer::ErrorKind::NotReady, "adapter powered off"));
+                    eprintln!("t3box-ble: adapter powered off; powering on");
+                    adapter.set_powered(true).await?;
+                    continue;
                 }
                 let idle = shared.gate.lock().unwrap_or_else(|e| e.into_inner()).active().is_none();
-                if idle && adapter.active_advertising_instances().await? == 0 {
-                    eprintln!("t3box-ble: advertising was dropped by BlueZ; re-registering");
+                if !idle { continue; }
+                let dropped = adapter.active_advertising_instances().await? == 0;
+                if dropped || advertised_at.elapsed() >= ADVERTISING_REFRESH {
+                    if dropped { eprintln!("t3box-ble: advertising was dropped by BlueZ; re-registering"); }
                     drop(adv);
                     adv = advertise(&adapter, &name).await?;
+                    advertised_at = Instant::now();
                 }
             }
         }

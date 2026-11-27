@@ -13,13 +13,16 @@ target=${1:?target dir with t3box-provision and t3box-ble}
 mode=${2:-}
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
-logs=${BLE_E2E_LOGS:-$work}
+# Per-run log directory: runs must not see each other's log lines.
+logs=${BLE_E2E_LOGS:-$work}/run-$(basename "$work")
+mkdir -p "$logs"
 pids=()
 cleanup() {
   touch "$work/stop"
   for p in "${pids[@]}"; do sudo kill "$p" 2>/dev/null || true; done
   sudo pkill -x t3box-ble 2>/dev/null || true
   sudo pkill -x bluetoothd 2>/dev/null || true
+  sudo pkill -x btvirt 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -37,9 +40,21 @@ start_bluetoothd() {
 }
 
 sudo systemctl stop bluetooth 2>/dev/null || true
+sudo pkill -x t3box-ble 2>/dev/null || true
 sudo pkill -x bluetoothd 2>/dev/null || true
+sudo pkill -x btvirt 2>/dev/null || true
+for _ in $(seq 50); do pgrep -x 'bluetoothd|btvirt|t3box-ble' >/dev/null || break; sleep 0.1; done
+sudo pkill -9 -x btvirt 2>/dev/null || true
+# Controllers of a previous run must be gone, or the new ones get other
+# indexes and hci0/hci1 would point at stale devices.
+for _ in $(seq 100); do ls /sys/class/bluetooth 2>/dev/null | grep -q '^hci' || break; sleep 0.1; done
+if ls /sys/class/bluetooth 2>/dev/null | grep -q '^hci'; then echo "stale controllers: $(ls /sys/class/bluetooth)"; exit 1; fi
+# btvirt reuses controller addresses between runs; drop BlueZ's persisted
+# remote GATT caches and keys so the client side cannot use stale handles
+# from a previous run (disposable test host only).
+sudo rm -rf /var/lib/bluetooth/*
 sudo btvirt -L -l2 >"$logs/btvirt.log" 2>&1 & pids+=($!)
-for _ in $(seq 50); do [ -e /sys/class/bluetooth/hci1 ] && break; sleep 0.1; done
+for _ in $(seq 50); do [ -e /sys/class/bluetooth/hci0 ] && [ -e /sys/class/bluetooth/hci1 ] && break; sleep 0.1; done
 test -e /sys/class/bluetooth/hci1 || { echo "virtual controllers missing"; cat "$logs/btvirt.log"; exit 1; }
 sudo btmon -w "$logs/btmon.snoop" >/dev/null 2>&1 & pids+=($!)
 start_bluetoothd
@@ -77,7 +92,12 @@ dump() {
   echo "---- ATT (btmon)"; sudo btmon -r "$logs/btmon.snoop" 2>/dev/null | grep -E "ATT: |Data(\[|:)" | tail -80
 }
 run_client() {
-  sudo timeout 180 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode} || { dump; exit 1; }
+  if ! sudo timeout 200 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode}; then
+    echo "---- client retry with bleak debug logging"
+    sudo btmgmt --index 1 info || true
+    sudo BLEAK_LOGGING=1 timeout 120 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode} 2>&1 | tail -80 || true
+    dump; exit 1
+  fi
 }
 
 run_client claim
