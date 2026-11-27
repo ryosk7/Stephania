@@ -15,7 +15,7 @@ export class DeviceError extends Error {
   }
 }
 
-export type Status = {state: string; streaming_requested: boolean; last_error: string; program: {scene_id: string; revision: number} | null; engine_restarted?: boolean};
+export type Status = {state: string; streaming_requested: boolean; last_error: string; program: {scene_id: string; revision: number} | null; engine_restarted?: boolean; /** Unix ms the running native worker started (engine.status), null while none runs. */ native_worker_started_unix_ms?: number | null};
 /** Layer of a stored scene (docs/SCENE.md); v1 layers have no `type` (video). */
 export type SceneLayer = {
   id: string; type?: 'video' | 'image' | 'color' | 'text' | 'template'; source?: string;

@@ -1,7 +1,7 @@
 import {ActivityIndicator} from 'react-native';
 import {router} from 'expo-router';
 import type {ReactNode} from 'react';
-import {PrimaryButton, Screen, StatusView, color, TopBar} from '@/shared/ui';
+import {PrimaryButton, Screen, StatusView, TopBar, useColor} from '@/shared/ui';
 import type {DeviceHandle} from './use-device-client';
 
 /**
@@ -10,10 +10,11 @@ import type {DeviceHandle} from './use-device-client';
  * missing client.
  */
 export function DeviceGate({handle, children}: {handle: DeviceHandle; children: ReactNode}) {
-  if (handle.state === 'loading') return <Screen header={<TopBar onBack={() => router.back()} />}><StatusView icon={'broadcast'} title="Opening…"><ActivityIndicator color={color.textSecondary} /></StatusView></Screen>;
+  const spinner = useColor('secondary');
+  if (handle.state === 'loading') return <Screen header={<TopBar onBack={() => router.back()} />}><StatusView icon={'broadcast'} title="Opening…"><ActivityIndicator color={spinner} /></StatusView></Screen>;
   if (handle.state === 'missing') {
     return <Screen header={<TopBar onBack={() => router.back()} />}><StatusView icon={'warning'} tone="warning" title="No access to this T3Box" body="Set it up again over Bluetooth to give this phone access.">
-      <PrimaryButton title="Find nearby T3Box" onPress={() => router.replace('/setup/nearby')} />
+      <PrimaryButton title="Nearby" icon="bluetooth" accessibilityLabel="Find the T3Box nearby" onPress={() => router.replace('/setup/nearby')} />
     </StatusView></Screen>;
   }
   return <>{children}</>;

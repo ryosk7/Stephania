@@ -5,4 +5,5 @@ export * from './enrollment';
 export * from './errors';
 export {useDeviceClient, type DeviceHandle} from './use-device-client';
 export {DeviceGate} from './device-gate';
-export {broadcastState} from './status';
+export {broadcastState, elapsedSince} from './status';
+export {useOnAirTime} from './use-on-air-time';

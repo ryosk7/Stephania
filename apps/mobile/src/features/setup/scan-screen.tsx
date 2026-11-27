@@ -6,7 +6,7 @@ import {router} from 'expo-router';
 import {useRef, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
 import {parseSetupUri} from '@t3box/provisioning-client';
-import {Body, Notice, PrimaryButton, Screen, StatusView, TextButton, color, radius, space, TopBar} from '@/shared/ui';
+import {Body, Icon, Notice, PrimaryButton, Screen, SecondaryButton, StatusView, TopBar} from '@/shared/ui';
 import {setPendingSecret} from './state';
 
 export function ScanScreen() {
@@ -17,14 +17,14 @@ export function ScanScreen() {
   if (!permission) return <Screen header={<TopBar onBack={() => router.back()} title="Set up" />}><StatusView icon={'qr'} title="Preparing the camera…" /></Screen>;
   if (!permission.granted) {
     return (
-      <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<PrimaryButton title="Allow camera" onPress={() => void requestPermission()} />}>
-        <StatusView icon={'qr'} title="Scan the setup code" body="The camera reads the QR code shown by the T3Box setup page on your PC." />
+      <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<PrimaryButton title="Allow camera" icon="camera" onPress={() => void requestPermission()} />}>
+        <StatusView icon={'qr'} title="Scan the code on your PC" body="The camera reads the QR code on the T3Box setup page." />
       </Screen>
     );
   }
   return (
-    <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<TextButton title="Find it nearby instead" onPress={() => router.replace('/setup/nearby')} />}>
-      <View style={st.finder}>
+    <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<SecondaryButton title="Nearby" icon="bluetooth" accessibilityLabel="Find it nearby instead" onPress={() => router.replace('/setup/nearby')} />}>
+      <View className="mt-6 aspect-square overflow-hidden rounded-[32px] bg-video">
         <CameraView style={StyleSheet.absoluteFill} facing="back" barcodeScannerSettings={{barcodeTypes: ['qr']}}
           onBarcodeScanned={({data}) => {
             if (handled.current) return;
@@ -37,26 +37,26 @@ export function ScanScreen() {
           }} />
         <Brackets />
       </View>
-      <Body style={{textAlign: 'center'}}>Scan the QR code on the T3Box setup page</Body>
+      <View className="flex-row items-center justify-center gap-3.5" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        <Icon name="desktop" size={28} color="secondary" />
+        <Icon name="arrow" size={20} color="tertiary" />
+        <Icon name="qr" size={28} />
+      </View>
+      <Body className="text-center font-inter-medium">Scan the code on your PC</Body>
       {error !== '' && <Notice tone="warning">{error}</Notice>}
     </Screen>
   );
 }
 
-/** Corner brackets over the viewfinder. */
+/** Corner brackets over the viewfinder (white: the viewfinder is video, dark in both themes). */
 function Brackets() {
-  const corner = (pos: object) => <View style={[st.corner, pos]} />;
+  const c = 'absolute h-11 w-11 border-white';
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      {corner({top: space.xl, left: space.xl, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: radius.tile})}
-      {corner({top: space.xl, right: space.xl, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: radius.tile})}
-      {corner({bottom: space.xl, left: space.xl, borderBottomWidth: 4, borderLeftWidth: 4, borderBottomLeftRadius: radius.tile})}
-      {corner({bottom: space.xl, right: space.xl, borderBottomWidth: 4, borderRightWidth: 4, borderBottomRightRadius: radius.tile})}
+      <View className={`${c} left-6 top-6 rounded-tl-tile border-l-4 border-t-4`} />
+      <View className={`${c} right-6 top-6 rounded-tr-tile border-r-4 border-t-4`} />
+      <View className={`${c} bottom-6 left-6 rounded-bl-tile border-b-4 border-l-4`} />
+      <View className={`${c} bottom-6 right-6 rounded-br-tile border-b-4 border-r-4`} />
     </View>
   );
 }
-
-const st = StyleSheet.create({
-  finder: {aspectRatio: 1, borderRadius: radius.card * 2, overflow: 'hidden', backgroundColor: color.surface, marginTop: space.xl},
-  corner: {position: 'absolute', width: 44, height: 44, borderColor: color.text},
-});

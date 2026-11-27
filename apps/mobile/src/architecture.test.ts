@@ -27,7 +27,7 @@ function imports(file: string): {spec: string; target: string}[] {
 
 const layer = (p: string) => p.split('/')[0];
 const feature = (p: string) => (p.startsWith('features/') ? p.split('/')[1] : undefined);
-const all = files(SRC).filter(f => !f.endsWith('architecture.test.ts')).map(f => ({file: relative(SRC, f), imports: imports(f)}));
+const all = files(SRC).filter(f => !f.endsWith('architecture.test.ts') && !f.endsWith('.d.ts')).map(f => ({file: relative(SRC, f), imports: imports(f)}));
 
 describe('architecture (DESIGN.md §7)', () => {
   it('has the three layers only', () => {
@@ -51,8 +51,14 @@ describe('architecture (DESIGN.md §7)', () => {
     const deep = routes.flatMap(f => f.imports.filter(i => layer(i.target) === 'features' && i.target.split('/').length > 2).map(i => `${f.file} → ${i.spec}`));
     expect(deep).toEqual([]);
     // Every file in src/app is a route: a default export, no tests or helpers.
-    const notRoutes = routes.filter(f => !/export default/.test(readFileSync(join(SRC, f.file), 'utf8')));
+    const notRoutes = routes.filter(f => !/export (default\b|\{\s*default\b)/.test(readFileSync(join(SRC, f.file), 'utf8')));
     expect(notRoutes.map(f => f.file)).toEqual([]);
+  });
+
+  it('stories are colocated with the component they show', () => {
+    const orphans = all.filter(f => /\.stories\.tsx$/.test(f.file))
+      .filter(f => !all.some(o => o.file === f.file.replace(/\.stories\.tsx$/, '.tsx')));
+    expect(orphans.map(f => f.file)).toEqual([]);
   });
 
   it('tests are colocated with the file they test', () => {
