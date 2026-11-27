@@ -126,6 +126,7 @@ jobs:
       - name: Control-plane load within the section 9 cgroup (YJIT off and on)
         shell: bash
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
           ci/control-load.sh ci-bins/t3box "$RUNNER_TEMP/control-load"
           cat "$RUNNER_TEMP/control-load/control-load.md" >> "$GITHUB_STEP_SUMMARY"
       - if: always()
