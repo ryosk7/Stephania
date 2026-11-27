@@ -62,7 +62,7 @@ jobs:
         working-directory: apps/studio
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
-          sudo apt-get update -qq
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
           sudo apt-get install -y -qq gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
           docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
           echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
