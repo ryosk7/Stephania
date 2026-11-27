@@ -1,0 +1,122 @@
+/*
+ * T3Box Connect design tokens (DESIGN.md §4), compiled by Uniwind from
+ * Tailwind CSS v4. One palette per theme; the app follows the system theme
+ * unless the user picks Light or Dark in Settings (shared/ui/theme.ts).
+ * Components use the semantic names only (bg-surface, text-secondary, …),
+ * never a raw colour, so both themes stay in step.
+ */
+@import 'tailwindcss';
+@import 'uniwind';
+
+@theme static {
+  /* Tailwind's default palette and weights are dropped: colour means state here. */
+  --color-*: initial;
+  --font-*: initial;
+  --font-weight-*: initial;
+
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  /* Light values; the dark ones are in the @variant dark block below. */
+  --color-bg: #f6f6f7;
+  --color-surface: #ffffff;
+  --color-pressed: rgba(9, 9, 11, 0.04);
+  --color-fill: rgba(9, 9, 11, 0.05);
+  --color-border: rgba(9, 9, 11, 0.09);
+  --color-text: #18181b;
+  --color-secondary: #52525b;
+  --color-tertiary: #a1a1aa;
+  --color-on-primary: #ffffff;
+  --color-live: #e5372b;
+  --color-warning: #b86e00;
+  --color-on-warning: #ffffff;
+  --color-success: #15803d;
+  --color-info: #2563eb;
+  --color-track-off: rgba(9, 9, 11, 0.14);
+  --color-scrim: rgba(9, 9, 11, 0.32);
+  --color-mini-slides: #e4e4e7;
+  --color-mini-camera: #d4d4d8;
+  --color-mini-mark: #71717a;
+  /* Camera viewfinders and previews are video: dark in both themes. */
+  --color-video: #1a1a1d;
+
+  /* Bundled fonts carry their weight in the family name (shared/ui/fonts.ts). */
+  --font-inter: Inter_400Regular;
+  --font-inter-medium: Inter_500Medium;
+  --font-inter-semibold: Inter_600SemiBold;
+  --font-inter-bold: Inter_700Bold;
+  --font-mono: JetBrainsMono_500Medium;
+
+  --text-display: 32px;
+  --text-display--line-height: 38px;
+  --text-display--letter-spacing: -0.6px;
+  --text-title: 22px;
+  --text-title--line-height: 28px;
+  --text-title--letter-spacing: -0.3px;
+  --text-headline: 16px;
+  --text-headline--line-height: 22px;
+  --text-headline--letter-spacing: -0.1px;
+  --text-body: 16px;
+  --text-body--line-height: 22px;
+  --text-label: 14px;
+  --text-label--line-height: 20px;
+  --text-footnote: 13px;
+  --text-footnote--line-height: 18px;
+  --text-overline: 11px;
+  --text-overline--line-height: 14px;
+  --text-overline--letter-spacing: 0.8px;
+
+  --radius-card: 16px;
+  --radius-button: 14px;
+  --radius-control: 12px;
+  --radius-tile: 12px;
+  --radius-sheet: 24px;
+}
+
+@layer theme {
+  :root {
+    @variant light {
+      --color-bg: #f6f6f7;
+      --color-surface: #ffffff;
+      --color-pressed: rgba(9, 9, 11, 0.04);
+      --color-fill: rgba(9, 9, 11, 0.05);
+      --color-border: rgba(9, 9, 11, 0.09);
+      --color-text: #18181b;
+      --color-secondary: #52525b;
+      --color-tertiary: #a1a1aa;
+      --color-on-primary: #ffffff;
+      --color-live: #e5372b;
+      --color-warning: #b86e00;
+      --color-on-warning: #ffffff;
+      --color-success: #15803d;
+      --color-info: #2563eb;
+      --color-track-off: rgba(9, 9, 11, 0.14);
+      --color-scrim: rgba(9, 9, 11, 0.32);
+      --color-mini-slides: #e4e4e7;
+      --color-mini-camera: #d4d4d8;
+      --color-mini-mark: #71717a;
+    }
+
+    @variant dark {
+      --color-bg: #0b0b0c;
+      --color-surface: #161618;
+      --color-pressed: rgba(255, 255, 255, 0.04);
+      --color-fill: rgba(255, 255, 255, 0.08);
+      --color-border: rgba(255, 255, 255, 0.08);
+      --color-text: #f4f4f5;
+      --color-secondary: #a1a1aa;
+      --color-tertiary: #71717a;
+      --color-on-primary: #0b0b0c;
+      --color-live: #f04438;
+      --color-warning: #f5b300;
+      --color-on-warning: #18181b;
+      --color-success: #22c55e;
+      --color-info: #3b82f6;
+      --color-track-off: rgba(255, 255, 255, 0.12);
+      --color-scrim: rgba(0, 0, 0, 0.55);
+      --color-mini-slides: #2a2a2f;
+      --color-mini-camera: #3a3a40;
+      --color-mini-mark: #a1a1aa;
+    }
+  }
+}

@@ -2,28 +2,28 @@
 // `size`/`bold` flags. All Inter, so iOS and Android render alike.
 import type {ReactNode} from 'react';
 import {Text, type TextProps} from 'react-native';
-import {color, toneColor, type, type Tone} from './tokens';
 
-type Props = TextProps & {children: ReactNode; tone?: Tone | 'primary' | 'secondary' | 'tertiary'};
+type TextTone = 'primary' | 'secondary' | 'tertiary' | 'live' | 'warning' | 'success' | 'info';
+type Props = TextProps & {children: ReactNode; tone?: TextTone; className?: string};
 
-const tint = (tone: Props['tone']) =>
-  tone === undefined || tone === 'primary' ? color.text
-    : tone === 'secondary' ? color.textSecondary
-      : tone === 'tertiary' ? color.textTertiary
-        : toneColor[tone];
+const toneClass: Record<TextTone, string> = {
+  primary: 'text-text', secondary: 'text-secondary', tertiary: 'text-tertiary',
+  live: 'text-live', warning: 'text-warning', success: 'text-success', info: 'text-info',
+};
 
-function make(style: (typeof type)[keyof typeof type], defaultTone: Props['tone'], header = false) {
-  return function StyledText({tone = defaultTone, style: extra, ...rest}: Props) {
-    return <Text accessibilityRole={header ? 'header' : undefined} {...rest} style={[style, {color: tint(tone)}, extra]} />;
+function make(variant: string, defaultTone: TextTone, header = false) {
+  return function StyledText({tone = defaultTone, className = '', ...rest}: Props) {
+    return <Text accessibilityRole={header ? 'header' : undefined} {...rest} className={`${variant} ${toneClass[tone]} ${className}`} />;
   };
 }
 
-export const Display = make(type.display, 'primary', true);
-export const Title = make(type.title, 'primary', true);
-export const Headline = make(type.headline, 'primary');
-export const Body = make(type.body, 'primary');
-export const Label = make(type.label, 'primary');
-export const Footnote = make(type.footnote, 'secondary');
-/** Small uppercase section label. */
-export const Overline = make(type.overline, 'secondary', true);
-export const Mono = make(type.mono, 'primary');
+export const Display = make('font-inter-bold text-display', 'primary', true);
+export const Title = make('font-inter-semibold text-title', 'primary', true);
+export const Headline = make('font-inter-semibold text-headline', 'primary');
+export const Body = make('font-inter text-body', 'primary');
+export const Label = make('font-inter-medium text-label', 'primary');
+export const Footnote = make('font-inter text-footnote', 'secondary');
+/** Small uppercase label (tags, captions); section headings use SectionHeading's icon. */
+export const Overline = make('font-inter-semibold text-overline uppercase', 'secondary', true);
+/** Addresses, fingerprints, numbers that must line up. */
+export const Mono = make('font-mono text-footnote', 'primary');

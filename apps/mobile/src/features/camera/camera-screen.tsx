@@ -7,27 +7,32 @@ import {useEffect, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
 import {CameraPreview, type CameraMode, type CameraRole} from '@modules/t3box-camera';
 import {DeviceGate, useDeviceClient, type DeviceClient} from '@/shared/device';
-import {ButtonRow, Overline, DestructiveButton, Footnote, IconButton, Screen, LiveBadge, Notice, PrimaryButton, SecondaryButton, Segmented, StatusPill, color, radius, space, type Tone} from '@/shared/ui';
+import {ButtonRow, DestructiveButton, Footnote, Icon, IconButton, LiveBadge, Mono, Notice, PrimaryButton, Screen, SecondaryButton, Segmented, StatusChip, type IconName, type Tone} from '@/shared/ui';
 import {bestDual} from './plan';
 import type {Snapshot} from './session';
 import {useCameraSession, useElapsed} from './use-camera-session';
 
-const STATUS: Record<Snapshot['state'], {label: string; tone: Tone}> = {
-  idle: {label: 'Ready', tone: 'neutral'},
-  starting: {label: 'Opening camera…', tone: 'info'},
-  connecting: {label: 'Connecting…', tone: 'info'},
-  live: {label: 'Live', tone: 'live'},
-  reconnecting: {label: 'Reconnecting…', tone: 'warning'},
-  busy: {label: 'Another phone is connected', tone: 'warning'},
-  paused: {label: 'Paused', tone: 'neutral'},
-  error: {label: 'Stopped', tone: 'neutral'},
+const STATUS: Record<Snapshot['state'], {label: string; tone: Tone; icon: IconName}> = {
+  idle: {label: 'Ready', tone: 'neutral', icon: 'camera'},
+  starting: {label: 'Opening camera', tone: 'info', icon: 'camera'},
+  connecting: {label: 'Connecting', tone: 'info', icon: 'refresh'},
+  live: {label: 'Live', tone: 'live', icon: 'broadcast'},
+  reconnecting: {label: 'Reconnecting', tone: 'warning', icon: 'refresh'},
+  busy: {label: 'Another phone is connected', tone: 'warning', icon: 'warning'},
+  paused: {label: 'Paused', tone: 'neutral', icon: 'stop'},
+  error: {label: 'Stopped', tone: 'neutral', icon: 'stop'},
 };
 
 const THERMAL: Record<Snapshot['thermal'], string | null> = {
   nominal: null,
-  fair: 'Phone is warm: quality slightly reduced.',
-  serious: 'Phone is hot: quality reduced.',
-  critical: 'Phone is very hot: quality at minimum.',
+  fair: 'Warm · quality slightly reduced',
+  serious: 'Hot · quality reduced',
+  critical: 'Very hot · quality at minimum',
+};
+
+const ROLE: Record<CameraRole, {label: string; icon: IconName}> = {
+  rear: {label: 'Rear camera', icon: 'camera'},
+  front: {label: 'Front camera', icon: 'selfie'},
 };
 
 export function CameraScreen({deviceId}: {deviceId: string}) {
@@ -65,37 +70,39 @@ function Camera({client}: {client: DeviceClient}) {
     <Screen footer={<Footer state={state} sending={sending} onStart={() => void session?.start(mode)} onStop={() => void session?.stop()}
       onTakeOver={() => { void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); void session?.takeOver(); }}
       onCancel={() => void session?.stop()} ready={!!session} />}>
-      <View style={st.top}>
+      <View className="min-h-11 flex-row items-center justify-between">
         <IconButton icon={'close'} label="Close" onPress={() => router.back()} />
-        {state === 'live' ? <LiveBadge elapsed={elapsed} /> : <StatusPill tone={status.tone} label={state === 'reconnecting' && snap ? `${status.label} (${snap.attempt})` : status.label} />}
+        {state === 'live' ? <LiveBadge elapsed={elapsed} />
+          : <StatusChip tone={status.tone} icon={status.icon} label={status.label} value={state === 'reconnecting' && snap ? `${snap.attempt}` : undefined} />}
+        <View className="w-11" />
       </View>
       {thermal && <Notice tone="warning" icon={'thermometer'}>{thermal}</Notice>}
 
-      <View style={st.previews}>
+      <View className="flex-1 justify-center gap-3">
         {roles.map((role, i) => (
-          <View key={role} style={[st.frame, roles.length === 2 && i === 1 && st.frameSecondary]}>
+          <View key={role} className={`aspect-video items-center justify-center overflow-hidden rounded-card bg-video ${roles.length === 2 && i === 1 ? 'w-[62%] self-end' : 'w-full'}`}>
             {caps?.roles.includes(role)
               ? <CameraPreview camera={role} mirrored={role === 'front'} style={StyleSheet.absoluteFill} />
-              : <Footnote>No {role} camera</Footnote>}
-            <View style={st.label}>
-              <Overline tone="primary">{role === 'rear' ? 'Presenter · rear' : 'Audience · front'}</Overline>
-              {sending && snap?.degraded && role === 'front' && <Overline tone="warning"> · paused</Overline>}
+              : <Icon name={ROLE[role].icon} size={36} color="tertiary" />}
+            <View className="absolute bottom-2.5 left-2.5 h-[30px] flex-row items-center gap-1.5 rounded-[9px] bg-black/60 px-[7px]"
+              accessible accessibilityLabel={`${ROLE[role].label}${sending && snap?.degraded && role === 'front' ? ', paused' : ''}`}>
+              <Icon name={ROLE[role].icon} size={17} color="white" />
+              {sending && snap?.degraded && role === 'front' && <Icon name="stop" size={13} color="warning" />}
             </View>
           </View>
         ))}
       </View>
 
-      <View style={{gap: space.s}}>
+      <View className="gap-2">
         <Segmented label="Cameras" value={shownMode} onChange={setMode} locked={sending}>
-          <Segmented.Item value="rear" label="Rear" unavailable={caps ? !caps.roles.includes('rear') : true} />
-          <Segmented.Item value="front" label="Front" unavailable={caps ? !caps.roles.includes('front') : true} />
-          <Segmented.Item value="dual" label="Both" unavailable={!dual} />
+          <Segmented.Item value="rear" label="Rear camera" icon="camera" unavailable={caps ? !caps.roles.includes('rear') : true} />
+          <Segmented.Item value="front" label="Front camera" icon="selfie" unavailable={caps ? !caps.roles.includes('front') : true} />
+          <Segmented.Item value="dual" label="Both cameras" icon="bothCameras" unavailable={!dual} />
         </Segmented>
-        <Footnote style={{textAlign: 'center'}}>
-          {caps && !dual ? 'This phone cannot use both cameras at once.' : dual ? `Both cameras up to ${dual.replace('+', ' + ')}` : ' '}
-        </Footnote>
+        {caps && !dual
+          ? <Footnote className="text-center">One camera at a time on this phone</Footnote>
+          : <Mono tone="secondary" className="text-center" accessibilityLabel={dual ? `Both cameras up to ${dual}` : undefined}>{dual ? dual.replace('+', ' + ') : ' '}</Mono>}
         {message !== '' && <Notice tone={state === 'error' ? 'warning' : 'neutral'}>{message}</Notice>}
-        {!sending && message === '' && <Footnote style={{textAlign: 'center'}}>Hold the phone sideways: the T3Box receives a landscape picture.</Footnote>}
       </View>
     </Screen>
   );
@@ -108,25 +115,16 @@ function Footer({state, sending, ready, onStart, onStop, onTakeOver, onCancel}: 
 }) {
   if (state === 'busy') {
     return (
-      <View style={st.sheet}>
-        <Notice tone="warning">Another phone is sending to this T3Box. Taking over disconnects it.</Notice>
+      <View className="gap-3 rounded-card bg-surface p-4">
+        <Notice tone="warning">Another phone is sending. Taking over disconnects it.</Notice>
         <ButtonRow>
           <SecondaryButton title="Cancel" onPress={onCancel} />
-          <PrimaryButton title="Take over" onPress={onTakeOver} />
+          <PrimaryButton title="Take over" icon="camera" onPress={onTakeOver} />
         </ButtonRow>
       </View>
     );
   }
   return sending
-    ? <DestructiveButton title="Stop sending" onPress={onStop} />
+    ? <DestructiveButton title="Stop" icon="stop" accessibilityLabel="Stop sending" onPress={onStop} />
     : <PrimaryButton title="Go live" icon={'broadcast'} disabled={!ready} onPress={onStart} />;
 }
-
-const st = StyleSheet.create({
-  top: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 44},
-  previews: {flex: 1, gap: space.m, justifyContent: 'center'},
-  frame: {width: '100%', aspectRatio: 16 / 9, borderRadius: radius.card, overflow: 'hidden', backgroundColor: color.surface, alignItems: 'center', justifyContent: 'center'},
-  frameSecondary: {width: '62%', alignSelf: 'flex-end'},
-  label: {position: 'absolute', left: space.s + 2, bottom: space.s, flexDirection: 'row', backgroundColor: color.scrim, borderRadius: 6, paddingHorizontal: space.s, paddingVertical: 3},
-  sheet: {backgroundColor: color.surface, borderRadius: radius.card, padding: space.l, gap: space.m},
-});

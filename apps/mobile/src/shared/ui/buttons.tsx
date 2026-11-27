@@ -1,74 +1,88 @@
-// Button variants as separate components (DESIGN.md §5): explicit variants
-// instead of a `kind` flag. Rounded rectangles (radius 14), 52 high; every
-// hit area ≥ 44.
-import type {ReactNode} from 'react';
-import {ActivityIndicator, Pressable, StyleSheet, Text, View} from 'react-native';
+// Buttons as separate components (DESIGN.md §5): explicit variants instead
+// of a `kind` flag. 52 high, radius 14; every hit area ≥ 44. Text buttons
+// carry an icon plus one word; icon-only buttons require a spoken label.
+import * as Haptics from 'expo-haptics';
+import {useEffect, useState, type ReactNode} from 'react';
+import {ActivityIndicator, Pressable, Text, View} from 'react-native';
 import {Icon, type IconName} from './icon';
-import {color, radius, size, space, type} from './tokens';
+import {useColor, type ColorToken} from './theme';
 
-type Base = {title: string; onPress: () => void; disabled?: boolean; busy?: boolean; icon?: IconName; accessibilityHint?: string};
+type Base = {title: string; onPress: () => void; disabled?: boolean; busy?: boolean; icon?: IconName; accessibilityLabel?: string; accessibilityHint?: string};
 
-function Filled({title, onPress, disabled, busy, icon, accessibilityHint, bg, fg, border}: Base & {bg: string; fg: string; border?: string}) {
+function Filled({title, onPress, disabled, busy, icon, accessibilityLabel, accessibilityHint, box, fg}: Base & {box: string; fg: ColorToken}) {
   const inactive = disabled || busy;
+  const spinner = useColor(fg);
+  // A forward arrow follows the word ("Join →"); every other icon leads.
+  const trailing = icon === 'arrow';
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityHint={accessibilityHint}
+    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title} accessibilityHint={accessibilityHint}
       accessibilityState={{disabled: inactive, busy}} disabled={inactive} onPress={onPress}
-      style={({pressed}) => [st.filled, {backgroundColor: bg, borderColor: border ?? bg, opacity: inactive ? 0.4 : pressed ? 0.82 : 1, transform: [{scale: pressed ? 0.98 : 1}]}]}>
-      {busy ? <ActivityIndicator color={fg} /> : (
-        <View style={st.row}>
-          {icon && <Icon name={icon} size={18} tint={fg} />}
-          <Text style={[type.headline, {color: fg}]}>{title}</Text>
-        </View>
+      className={`min-h-[52px] grow flex-row items-center justify-center gap-2 rounded-button border px-6 active:opacity-80 ${box} ${inactive ? 'opacity-40' : ''}`}>
+      {busy ? <ActivityIndicator color={spinner} /> : (
+        <>
+          {icon && !trailing && <Icon name={icon} size={18} color={fg} />}
+          <Text className={`font-inter-semibold text-headline ${fg === 'white' ? 'text-white' : fg === 'on-primary' ? 'text-on-primary' : 'text-text'}`}>{title}</Text>
+          {icon && trailing && <Icon name={icon} size={18} color={fg} />}
+        </>
       )}
     </Pressable>
   );
 }
 
 /** The screen's one main action. */
-export const PrimaryButton = (p: Base) => <Filled {...p} bg={color.text} fg={color.onPrimary} />;
+export const PrimaryButton = (p: Base) => <Filled {...p} box="bg-text border-text" fg="on-primary" />;
 /** Stop / end actions: red, never next to a primary of the same size. */
-export const DestructiveButton = (p: Base) => <Filled {...p} bg={color.live} fg="#FFFFFF" />;
+export const DestructiveButton = (p: Base) => <Filled {...p} box="bg-live border-live" fg="white" />;
 /** Alternatives to the primary action. */
-export const SecondaryButton = (p: Base) => <Filled {...p} bg={color.fill} fg={color.text} border={color.border} />;
+export const SecondaryButton = (p: Base) => <Filled {...p} box="bg-fill border-border" fg="text" />;
 
-/** Quiet way out ("Find it nearby instead"). */
+/** Quiet way out, in words (used where an icon would be ambiguous). */
 export function TextButton({title, onPress, disabled}: Pick<Base, 'title' | 'onPress' | 'disabled'>) {
   return (
     <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} hitSlop={8}
-      style={({pressed}) => [st.text, {opacity: disabled ? 0.4 : pressed ? 0.6 : 1}]}>
-      <Text style={[type.label, {color: color.text, textDecorationLine: 'underline', textDecorationColor: color.textTertiary}]}>{title}</Text>
+      className={`min-h-11 items-center justify-center px-2 active:opacity-60 ${disabled ? 'opacity-40' : ''}`}>
+      <Text className="font-inter-medium text-label text-text underline">{title}</Text>
     </Pressable>
   );
 }
 
-/** Round icon-only control (close, back); requires a spoken label. */
-export function IconButton({icon, label, onPress, disabled}: {icon: IconName; label: string; onPress: () => void; disabled?: boolean}) {
+const iconBox = {
+  round: 'h-11 w-11 rounded-full',
+  inline: 'h-9 w-9 rounded-full',
+  square: 'h-[52px] w-[52px] rounded-button',
+};
+
+/**
+ * Icon-only control. The label is spoken by screen readers and shown on
+ * long press, so the meaning is never only in the picture (DESIGN.md §3.7).
+ * round: 44 (back, close, toolbar); inline: 36 beside a title (44 hit area);
+ * square: 52, next to a text button of the same height.
+ */
+export function IconButton({icon, label, onPress, disabled, shape = 'round'}: {
+  icon: IconName; label: string; onPress: () => void; disabled?: boolean; shape?: keyof typeof iconBox;
+}) {
+  const [hint, setHint] = useState(false);
+  useEffect(() => {
+    if (!hint) return;
+    const t = setTimeout(() => setHint(false), 1600);
+    return () => clearTimeout(t);
+  }, [hint]);
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} hitSlop={4}
-      style={({pressed}) => [st.icon, {opacity: disabled ? 0.4 : pressed ? 0.7 : 1}]}>
-      <Icon name={icon} size={20} />
-    </Pressable>
+    <View>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress}
+        onLongPress={() => { void Haptics.selectionAsync(); setHint(true); }} hitSlop={shape === 'inline' ? 6 : 4}
+        className={`items-center justify-center border border-border bg-fill active:opacity-70 ${iconBox[shape]} ${disabled ? 'opacity-40' : ''}`}>
+        <Icon name={icon} size={shape === 'inline' ? 16 : shape === 'square' ? 22 : 20} />
+      </Pressable>
+      {hint && (
+        <View pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden
+          className="absolute top-full z-10 mt-1.5 self-center rounded-lg bg-text px-2.5 py-1">
+          <Text numberOfLines={1} className="font-inter-medium text-footnote text-on-primary">{label}</Text>
+        </View>
+      )}
+    </View>
   );
 }
 
-/** Smaller round control beside a title (rename): 36 drawn, 44 hit area. */
-export function InlineIconButton({icon, label, onPress}: {icon: IconName; label: string; onPress: () => void}) {
-  return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} hitSlop={6}
-      style={({pressed}) => [st.inlineIcon, {opacity: pressed ? 0.7 : 1}]}>
-      <Icon name={icon} size={16} />
-    </Pressable>
-  );
-}
-
-/** Two buttons side by side. */
-export const ButtonRow = ({children}: {children: ReactNode}) => <View style={st.buttonRow}>{children}</View>;
-
-const st = StyleSheet.create({
-  filled: {minHeight: size.button, borderRadius: radius.button, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.xl, flexGrow: 1},
-  row: {flexDirection: 'row', alignItems: 'center', gap: space.s},
-  text: {minHeight: size.hit, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.s},
-  icon: {width: size.hit, height: size.hit, borderRadius: size.hit / 2, backgroundColor: color.fill, borderWidth: 1, borderColor: color.border, alignItems: 'center', justifyContent: 'center'},
-  inlineIcon: {width: 36, height: 36, borderRadius: 18, backgroundColor: color.fill, borderWidth: 1, borderColor: color.border, alignItems: 'center', justifyContent: 'center'},
-  buttonRow: {flexDirection: 'row', gap: space.m},
-});
+/** Buttons side by side. */
+export const ButtonRow = ({children}: {children: ReactNode}) => <View className="flex-row gap-3">{children}</View>;

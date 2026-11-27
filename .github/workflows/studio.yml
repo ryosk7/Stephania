@@ -314,6 +314,24 @@ jobs:
         working-directory: apps/mobile
       - run: npm run typecheck
         working-directory: apps/mobile
+      - name: Generated files are current (Uniwind types, licence notices)
+        working-directory: apps/mobile
+        run: |
+          git diff --exit-code -- src/uniwind-types.d.ts
+          npm run check:notices
+      - name: Storybook (web) builds and every story renders in light and dark
+        working-directory: apps/mobile
+        env:
+          STORYBOOK_DISABLE_TELEMETRY: '1'
+        run: |
+          npm run build-storybook
+          npm run check:stories
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connect-storybook-shots
+          path: apps/mobile/storybook-shots
+          retention-days: 14
       - name: BLE transport against Rust device core (must not skip)
         working-directory: apps/mobile
         shell: bash

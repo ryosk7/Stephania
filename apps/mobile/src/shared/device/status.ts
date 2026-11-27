@@ -1,4 +1,4 @@
-import type {Tone} from '@/shared/ui';
+import type {IconName, Tone} from '@/shared/ui';
 import type {Status} from './client';
 
 /**
@@ -6,12 +6,24 @@ import type {Status} from './client';
  * `native_worker_active` means the encoder/transport worker runs, not that
  * YouTube confirmed ingest, so it reads "Streaming", never "Live on YouTube".
  */
-export function broadcastState(s: Status | undefined): {tone: Tone; label: string; pulse: boolean} {
-  if (!s) return {tone: 'neutral', label: 'Unknown', pulse: false};
+export function broadcastState(s: Status | undefined): {tone: Tone; icon: IconName; label: string; pulse: boolean} {
+  if (!s) return {tone: 'neutral', icon: 'broadcast', label: 'Unknown', pulse: false};
   switch (s.state) {
-    case 'native_worker_active': return {tone: 'live', label: 'Streaming', pulse: true};
-    case 'starting_or_retrying': return {tone: 'info', label: s.last_error ? 'Retrying' : 'Starting', pulse: false};
-    case 'stopping': return {tone: 'info', label: 'Stopping', pulse: false};
-    default: return s.last_error ? {tone: 'warning', label: 'Stopped with an error', pulse: false} : {tone: 'neutral', label: 'Off air', pulse: false};
+    case 'native_worker_active': return {tone: 'live', icon: 'broadcast', label: 'Streaming', pulse: true};
+    case 'starting_or_retrying': return {tone: 'info', icon: 'refresh', label: s.last_error ? 'Retrying' : 'Starting', pulse: false};
+    case 'stopping': return {tone: 'info', icon: 'stop', label: 'Stopping', pulse: false};
+    default: return s.last_error
+      ? {tone: 'warning', icon: 'warning', label: 'Stopped with an error', pulse: false}
+      : {tone: 'neutral', icon: 'stop', label: 'Off air', pulse: false};
   }
+}
+
+/** Minutes and seconds since `since` (ISO time), for the on-air chip: "12:04", "1:02:09". */
+export function elapsedSince(since: string | undefined, now = Date.now()): string | undefined {
+  const t = since ? Date.parse(since) : NaN;
+  if (Number.isNaN(t) || now < t) return undefined;
+  const s = Math.floor((now - t) / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }

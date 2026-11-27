@@ -15,7 +15,7 @@ export class DeviceError extends Error {
   }
 }
 
-export type Status = {state: string; streaming_requested: boolean; last_error: string; program: {scene_id: string; revision: number} | null; engine_restarted?: boolean};
+export type Status = {state: string; streaming_requested: boolean; last_error: string; program: {scene_id: string; revision: number} | null; engine_restarted?: boolean; /** ISO time the stream went on air, when the T3Box reports it. */ streaming_since?: string};
 /** Layer of a stored scene (docs/SCENE.md); v1 layers have no `type` (video). */
 export type SceneLayer = {
   id: string; type?: 'video' | 'image' | 'color' | 'text' | 'template'; source?: string;

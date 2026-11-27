@@ -78,7 +78,9 @@ T3Box Connect bundles two fonts so iPhone and Android look the same
 (DESIGN.md §3.6): Inter and JetBrains Mono, both under the SIL Open Font
 License 1.1 (via `@expo-google-fonts/*`, packaging MIT). OFL allows
 embedding in an application; the fonts are not sold on their own and the
-licence text ships in the app's third-party notices (`ci/sbom.py`).
+licence text ships in the app: Settings → Licences lists every package
+in the app with the licence text it carries (`apps/mobile/scripts/notices.mjs`,
+checked in CI so the list matches the dependencies).
 
 H.264/AAC patents: encoding H.264 and AAC may require patent licences in
 some jurisdictions depending on volume and use; this is independent of the

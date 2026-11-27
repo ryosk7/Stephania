@@ -53,9 +53,12 @@ Guidelines: Apple HIG — hit targets at least 44×44 pt
 2. **One primary action, at the bottom, full width.** Destructive actions
    (Stop stream, Stop sending) are red and never sit next to a primary
    action of the same size.
-3. **Dark broadcast surface.** All of Connect is dark: it is used in dark
-   rooms, camera previews read better on black, and every reference above
-   that controls hardware or video is dark.
+3. **Light and dark, following the system.** Connect has a light and a
+   dark theme with the same structure and state colours, and follows the
+   phone's setting by default; Settings → Appearance can fix it to Light
+   or Dark (remembered on the phone). Dark suits dark rooms, light suits
+   daylight setup. Camera viewfinders and previews stay dark in both: they
+   are video.
 4. **Colour means state, not decoration.** Red = on air or stop, amber =
    degraded / needs attention, green = healthy / done, blue = in progress.
    Neutral greys for everything else. No brand accent competes with red.
@@ -71,27 +74,42 @@ Guidelines: Apple HIG — hit targets at least 44×44 pt
    exist), not platform styling. What stays native is what only the system
    can do: keyboard, permission prompts, the share sheet, haptics, the
    status bar.
+7. **Icons first, words where they matter.** Recurring controls are icons
+   (toolbar actions, section headings, camera choice, audio on/off, state
+   chips), so the screens scan without reading. Every icon-only control
+   has a spoken label (`accessibilityLabel`) that is also shown on long
+   press. Words stay on the one primary action and on anything that cannot
+   be undone (icon plus one word: "Control", "Stop", "Join"), on names
+   and addresses, and on errors. Explanations shrink to a short line or a
+   picture (PC → QR) rather than a paragraph.
 
-## 4. Tokens (`apps/mobile/src/shared/ui/tokens.ts`)
+## 4. Tokens (`apps/mobile/src/global.css`)
 
 T3Box's own palette — neutral greys and four state colours — identical on
-both platforms.
+both platforms, defined once as Tailwind CSS v4 theme variables with a
+light and a dark value. Components use the semantic names only
+(`bg-surface`, `text-secondary`, `border-live`), so a theme switch
+changes every screen together.
 
-| Token | Value | Use |
-|---|---|---|
-| `bg` | `#0B0B0C` | screen background, camera letterbox |
-| `surface` | `#161618` | cards, lists, sheets |
-| `surfaceRaised` | `#1F1F23` | pressed rows |
-| `fill` | `rgba(255,255,255,0.08)` | secondary and icon buttons, pills, toggle track (off) |
-| `border` / `separator` | `rgba(255,255,255,0.08)` | 1 px card borders and row separators |
-| `text` | `#F4F4F5` | primary text, primary button, toggle track (on), selected segment |
-| `textSecondary` | `#A1A1AA` | secondary text |
-| `textTertiary` | `#71717A` | disabled, placeholders |
-| `live` | `#F04438` | LIVE badge, stop, on-air ring |
-| `warning` | `#F5B300` | degraded, take-over |
-| `success` | `#22C55E` | done, connected |
-| `info` | `#3B82F6` | in progress |
-| `onPrimary` | `#0B0B0C` | text on the primary button |
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `bg` | `#F6F6F7` | `#0B0B0C` | screen background |
+| `surface` | `#FFFFFF` | `#161618` | cards, lists, sheets, fields |
+| `pressed` | black 4 % | white 4 % | pressed rows |
+| `fill` | black 5 % | white 8 % | secondary and icon buttons, chips |
+| `border` | black 9 % | white 8 % | 1 px card borders and row separators |
+| `text` | `#18181B` | `#F4F4F5` | primary text, primary button, toggle on, selected segment |
+| `secondary` | `#52525B` | `#A1A1AA` | secondary text, section icons |
+| `tertiary` | `#A1A1AA` | `#71717A` | disabled, placeholders, chevrons |
+| `on-primary` | `#FFFFFF` | `#0B0B0C` | text and icons on the primary button |
+| `live` | `#E5372B` | `#F04438` | LIVE badge, stop, on-air ring |
+| `warning` | `#B86E00` | `#F5B300` | degraded, unreachable, take-over |
+| `success` | `#15803D` | `#22C55E` | done, connected |
+| `info` | `#2563EB` | `#3B82F6` | in progress |
+| `track-off`, `scrim`, `mini-*`, `video` | | | toggle off, sheet backdrop, layout miniatures, viewfinders (dark in both) |
+
+The light state colours are darker than the dark ones so they keep their
+contrast on white.
 
 Type (Inter, bundled; weights are separate font files so Android does not
 synthesise them): `display` 32/38 bold −0.6 · `title` 22/28 semibold ·
@@ -100,12 +118,15 @@ synthesise them): `display` 32/38 bold −0.6 · `title` 22/28 semibold ·
 labels) · `mono` 13/18 JetBrains Mono (URLs, fingerprints). Text scales
 with the system font size setting.
 
-Spacing on a 4-pt grid: `xs 4 · s 8 · m 12 · l 16 · xl 24 · xxl 32`.
-Screen padding 16. Radius: `card 16`, `button 14`, `control 12`,
-`tile 12`, `sheet 24`, `pill 999` (pills and badges only). Buttons are
+Spacing on Tailwind's 4-pt scale (`gap-2` = 8, `p-4` = 16).
+Screen padding 16. Radius: `rounded-card` 16, `rounded-button` 14,
+`rounded-control` 12, `rounded-tile` 12, `rounded-sheet` 24,
+`rounded-full` (chips and badges only). Buttons are
 rounded rectangles 52 high; minimum hit target 44.
 
-Icons: Lucide, 2 px stroke on a 24 grid, 16–20 in controls.
+Icons: Lucide, 2 px stroke on a 24 grid, 16–22 in controls; `stop` is
+drawn solid. The names and their meaning are in `shared/ui/icon.tsx` and
+the Icons story.
 
 Motion: state changes cross-fade 150 ms; the toggle knob slides 150 ms;
 nothing animates while live except the on-air dot. Haptics (both
@@ -119,59 +140,74 @@ instead of boolean modes.
 
 | Component | API | Notes |
 |---|---|---|
-| `Screen` | `<Screen header={<TopBar …/>} scroll? footer={…}>` | dark background, safe areas; `footer` holds the bottom actions |
-| `TopBar` | `<TopBar onBack? backIcon? title? trailing?>` | app-drawn top bar with a round back/close button; native navigation headers are off |
-| Text | `<Display>`, `<Title>`, `<Headline>`, `<Body>`, `<Label>`, `<Footnote>`, `<Overline>`, `<Mono>` | one component per text style, `tone="secondary"\|"live"\|…` |
-| Buttons | `<PrimaryButton>`, `<SecondaryButton>`, `<DestructiveButton>`, `<TextButton>`, `<IconButton icon>`, `<InlineIconButton icon>` | variants are separate components; 52 high, radius 14; icon buttons round on `fill` with a 1 px border; the inline one (beside a title) is drawn 36 with a 44 hit area |
-| `List` | `<List.Section title footer>` `<List.Row title value? detail? leading? onPress? accessory?>`, `<ListIcon icon>` | rows (≥ 56) in a bordered card, full-width 1 px separators, leading icons on a neutral 32 rounded square, selection as a check |
-| `Toggle` | `<Toggle value onChange label>` | drawn by T3Box (not the system switch): 48×28, light track and dark knob when on |
-| `Segmented` | `<Segmented value onChange locked?><Segmented.Item value label unavailable?/></Segmented>` | compound; bordered track, selected item filled with `text` |
-| `StatusPill` | `<StatusPill tone label pulse?>` | coloured dot + label on `fill`, 28 high |
+| `Screen` | `<Screen header={<TopBar …/>} scroll? footer={…}>` | theme background, safe areas; `footer` holds the bottom actions |
+| `TopBar` | `<TopBar onBack? backIcon? title? trailing?>` | app-drawn top bar: round back/close on the left, icon buttons on the right; native navigation headers are off |
+| Text | `<Display>`, `<Title>`, `<Headline>`, `<Body>`, `<Label>`, `<Footnote>`, `<Overline>`, `<Mono>` | one component per text style, `tone="secondary"\|"live"\|…`, `className` for layout |
+| Buttons | `<PrimaryButton>`, `<SecondaryButton>`, `<DestructiveButton>`, `<TextButton>` | variants are separate components; 52 high, radius 14; icon plus one word, `accessibilityLabel` for the full phrase; a forward arrow follows the word |
+| `IconButton` | `<IconButton icon label shape="round"\|"inline"\|"square">` | icon-only control on `fill` with a 1 px border: round 44 (toolbars), inline 36 beside a title (44 hit area), square 52 beside a text button; `label` is spoken and shown on long press |
+| `SectionHeading` | `<SectionHeading icon label aside?>` | section heading as an icon (the word is its accessible name); `aside` holds the section's control (the fade switch) |
+| `List` | `<List.Section heading? footer>` `<List.Row title value? detail? leading? onPress? accessory?>`, `<ListIcon icon color?>` | rows (≥ 56) in a bordered card, full-width separators, leading icons on a neutral 36 rounded square, selection as a check |
+| `Toggle` | `<Toggle value onChange label>` | drawn by T3Box (not the system switch): 48×28, track in the text colour when on |
+| `Segmented` | `<Segmented value onChange locked?><Segmented.Item value label icon? unavailable?/></Segmented>` | compound; with `icon` an item shows only the icon and `label` is spoken |
+| `StatusChip` | `<StatusChip tone icon label value? pulse?>` | state as an icon on the state colour plus a value (on-air time); the word is spoken and shown on long press |
 | `LiveBadge` | `<LiveBadge elapsed?>` | red "LIVE" tag + tabular time |
 | `StatusView` | `<StatusView icon title body tone>{actions}</StatusView>` | centred state: icon in a 64 ring, title, sentence, actions |
 | `Card` | `<Card outlined?>`, `<Card.Header title>`, `<Card.Body>` | surface, radius 16, 1 px border |
-| `Sheet` | `<Sheet visible title onClose>{…}</Sheet>` | app-drawn bottom sheet: rename, stop confirmation (no system alerts) |
-| `Notice` | `<Notice tone icon?>` | sentence with an icon in a tinted, bordered box |
-| `Field` | `<Field label secure? …TextInput props>` | bordered input, label above |
-| `Icon` | `<Icon name size tone? tint?>` | Lucide icons by name (`icons` in `icon.tsx`) |
+| `Sheet` | `<Sheet visible title icon? onClose>{…}</Sheet>` | app-drawn bottom sheet: rename, stop confirmation (no system alerts) |
+| `Notice` | `<Notice tone icon?>` | short line with an icon in a tinted, bordered box |
+| `Field` | `<Field label icon? secure? …TextInput props>` | with `icon` the icon replaces the visible label (the label is spoken) |
+| `Icon` | `<Icon name size tone? color?>` | Lucide icons by name; `tone` for state, `color` for any other token |
+
+Every component has a story next to it (`buttons.stories.tsx`), shown in
+both themes (§7).
 
 ## 6. Screens (Connect)
 
-- **Home** — large title "T3Box"; one `Card` per enrolled device (name,
-  status pill, "Control" and "Camera" actions); empty state = SmartThings
-  pattern: card "Set up a T3Box · Scan the setup QR code" with one button;
-  footer `TextButton` "Connect to a registered T3Box".
+- **Home** — large title "T3Box" with three toolbar icons: Bluetooth
+  (a registered T3Box nearby), plus (set up a T3Box), gear (Settings). One
+  `Card` per enrolled device: name, `StatusChip` (broadcast icon + on-air
+  time; Wi-Fi-off in amber when unreachable, with "Same Wi-Fi as this
+  T3Box?"), a square camera button and `PrimaryButton` "Control". Empty
+  state: card "Set up a T3Box" with the PC → QR picture and "Scan".
+- **Settings** (`settings`) — Appearance: three preview tiles (system,
+  light, dark, each a miniature screen in that theme) with the theme's
+  icon under it; default is the system. About: Licences (every package that
+  ships in the app with its licence text, `scripts/notices.mjs`) and the
+  version.
 - **Setup** (stack, Alexa sequence; routes `setup/scan`, `setup/nearby`,
   `setup/wifi`): *Scan* — dark viewfinder with corner
-  brackets, instruction under it, `TextButton` "Find it nearby instead";
-  *Nearby* — Muse-style searching card, then a `List` of devices with
-  signal strength; *Wi-Fi* — large title, `List` of networks with lock
-  symbols, `Field` for the password, `PrimaryButton` "Join", then progress
-  states (joining, issuing access); *Done* — `StatusView` with a check,
-  `PrimaryButton` "Open controls".
+  brackets, the PC → QR picture and one line, `SecondaryButton`
+  "Nearby"; *Nearby* — `List` of devices with signal bars, rescan and
+  scan-code icons in the top bar; *Wi-Fi* — `List` of networks with lock
+  and signal icons, rescan in the top bar, password `Field` with a lock
+  icon, `PrimaryButton` "Join →", then progress states (joining, issuing
+  access); *Done* — `StatusView` with a check, `PrimaryButton` "Control".
 - **Control** (`device/[id]`) — Tesla header: device name as large title
   with a rename button (the name lives on this phone only: host name,
   certificate and mDNS name stay, so nothing is set up again; rename is a
   bottom sheet, not `Alert.prompt`, which Android lacks), the host name
-  below it, then the status pill. **Layouts** (Studio scenes, named for
+  below it, then the `StatusChip`; camera and PC icons in the top bar.
+  **Layouts** (section icon: grid) (Studio scenes, named for
   what they are to an operator: "what viewers see"): a 2-column grid of
   16:9 miniatures drawn from each scene's own layers (slides, cameras,
   overlays), name under the tile; the on-air tile is outlined red with an
-  ON AIR tag, which is why there is no separate "on air" card. Tiles are
+  broadcast mark, which is why there is no separate "on air" card. Tiles are
   always half a row, whatever the count (1 and 3 leave the last cell
   empty rather than stretching); more than fit scroll with the screen
-  while the footer stays pinned; none = a card saying HDMI goes on air as
-  it is and layouts are made in the Studio. Revision numbers are not shown
-  (an editing detail, kept in the Studio). The fade switch sits on the
-  section header. Audio as a `List` with switches; footer:
-  `PrimaryButton` "Start stream" or `DestructiveButton` "Stop stream"
-  (confirmed in a `Sheet`, since stopping is public).
+  while the footer stays pinned; none = a card "Make layouts in the
+  Studio". Revision numbers are not shown (an editing detail, kept in the
+  Studio). The fade switch (blend icon) sits on the section heading.
+  Audio (section icon: speaker): HDMI and Mic rows whose icon shows on or
+  muted, with switches; footer: `PrimaryButton` "Go live" or
+  `DestructiveButton` "Stop" (confirmed in a `Sheet`, since stopping is
+  public).
 - **Camera** (`device/[id]/camera`, full-screen modal) — GoPro/live-app pattern: previews on black;
-  top: close, `StatusPill` (Ready / Connecting / Live / Reconnecting (n) /
-  Paused) and thermal `Notice`; previews labelled "Presenter · rear" /
-  "Audience · front"; bottom panel: `Segmented` Rear / Front / Both
-  (Both disabled with a reason when no dual profile), footer
-  `PrimaryButton` "Go live" or `DestructiveButton` "Stop sending";
+  top: close, `StatusChip` (Ready / Connecting / Live / Reconnecting n /
+  Paused) and a short thermal `Notice` ("Warm · quality reduced");
+  previews marked with the rear-camera or selfie icon; bottom panel:
+  icon `Segmented` (rear, front, both; both disabled with a reason when
+  there is no dual profile) over the resolution in mono, footer
+  `PrimaryButton` "Go live" or `DestructiveButton` "Stop";
   when another phone holds the session the bottom panel turns into a
   sheet-like card: `Notice tone="warning"` with Cancel / Take over.
 - **Open on PC** (`device/[id]/pc`) — `Mono` URL and fingerprint in a `Card`, steps as a
@@ -196,8 +232,9 @@ src/
     control/           program, scenes, audio
     camera/            camera screen + session/plan/sdp (platform-neutral policy)
     pc-access/         open on a PC
+    settings/          appearance, licences
   shared/
-    ui/                tokens and the components of §5
+    ui/                theme, appearance and the components of §5 (+ stories)
     device/            DeviceClient, enrollment storage, error text, broadcast state, DeviceGate
 ```
 
@@ -220,6 +257,30 @@ components, hooks, styles, tests and fixtures live in its folder, tests
 next to the file they test (`session.ts` + `session.test.ts`). Code moves
 to `shared` only when a second feature needs it.
 
+**Styling: Tailwind CSS v4 through Uniwind.** Components are styled with
+`className` (Tailwind utilities on React Native components), compiled at
+build time by [Uniwind](https://docs.uniwind.dev/) from `src/global.css`.
+Uniwind was chosen over NativeWind because NativeWind's Tailwind v4
+release (v5) is still a release candidate whose authors do not intend it
+for production, while Uniwind 1.x is stable on Tailwind v4 and has
+light / dark / system themes built in (`Uniwind.setTheme('system')`).
+`shared/ui/theme.ts` applies and stores the user's choice; `useColor()`
+gives the resolved value for props that need a colour (icons, spinners,
+animated colours). Class strings are static so Tailwind sees them; tone
+maps live in `tone.ts`.
+
+**Storybook.** Every component in `shared/ui` (and feature components
+worth seeing on their own) has a colocated story (`name.stories.tsx`),
+checked by the architecture test. The same stories run in two
+Storybooks: on the phone (`npm run storybook`, then the `/storybook`
+route, compiled out of release builds) and on the web through
+react-native-web (`npm run storybook:web`). CI builds the web one and
+renders every story in both themes (`npm run check:stories`), uploading
+the screenshots.
+
+**Navigation.** Expo Router (file routes in `src/app`). The Studio, a
+plain web app, uses TanStack Router (§9).
+
 **Android.** Features talk to native code only through platform contracts
 (`modules/t3box-camera/src/T3BoxCamera.types.ts`, the pinned fetch), and
 every visible component is drawn by `shared/ui` with bundled fonts and
@@ -229,7 +290,8 @@ components do not change, and both platforms look the same.
 ## 8. Accessibility and copy
 
 - Every control is drawn ≥ 44 and has a hit area ≥ 48 (`hitSlop` where drawn smaller), which covers Apple's 44 pt and Android's 48 dp guidance; icon-only buttons have `accessibilityLabel`; app-drawn controls set `accessibilityRole` (`switch`, `radio`, `button`) and their state.
-- State is never colour-only: pills and badges always carry a word.
+- State is never colour-only: chips carry an icon of their own and a
+  spoken word; icon-only controls have a spoken label, shown on long press.
 - Text respects Dynamic Type; layouts wrap instead of truncating labels.
 - Copy: English, sentence case, verbs on buttons ("Go live", "Join"),
   numbers with units, no exclamation marks; errors say what to do next.

@@ -6,7 +6,8 @@ import {useEffect, useState} from 'react';
 import {Share} from 'react-native';
 import type {ManagementEnrollment} from '@t3box/provisioning-client';
 import {formatFingerprint, loadEnrollment} from '@/shared/device';
-import {Overline, Card, List, Mono, PrimaryButton, Screen, StatusView, Title, TopBar} from '@/shared/ui';
+import {Card, Icon, List, ListIcon, Mono, Overline, PrimaryButton, Screen, SectionHeading, StatusView, Title, TopBar} from '@/shared/ui';
+import {View} from 'react-native';
 
 export function PcAccessScreen({deviceId}: {deviceId: string}) {
   const [e, setE] = useState<ManagementEnrollment | null>();
@@ -16,21 +17,21 @@ export function PcAccessScreen({deviceId}: {deviceId: string}) {
   const url = e.urls[0]!;
   const fingerprint = formatFingerprint(e.caSha256);
   return (
-    <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />} scroll footer={<PrimaryButton title="Share address and fingerprint" icon={'share'}
+    <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />} scroll footer={<PrimaryButton title="Share" icon={'share'} accessibilityLabel="Share address and fingerprint"
       onPress={() => void Share.share({message: `${url}\nSHA-256: ${fingerprint}`})} />}>
       <Title>Open the Studio on a PC</Title>
       <Card>
-        <Overline>ADDRESS</Overline>
+        <View className="flex-row items-center gap-2"><Icon name="desktop" size={16} color="secondary" /><Overline>Address</Overline></View>
         <Mono selectable>{url}</Mono>
-        <Overline>CERTIFICATE SHA-256</Overline>
+        <View className="mt-1 flex-row items-center gap-2"><Icon name="lock" size={16} color="secondary" /><Overline>Certificate SHA-256</Overline></View>
         <Mono selectable>{fingerprint}</Mono>
       </Card>
-      <List.Section title="Steps" footer="If the fingerprints differ, do not install the certificate and check the network.">
-        <List.Row title="1. Join the same Wi-Fi on the PC" />
-        <List.Row title={`2. Download ${url}ca.pem`} />
-        <List.Row title="3. Check that its fingerprint matches the one above" />
-        <List.Row title="4. Install it as a trusted root certificate" />
-        <List.Row title="5. Open the address and sign in with a Studio account" />
+      <List.Section heading={<SectionHeading icon="info" label="Steps" />} footer="If the fingerprints differ, do not install the certificate and check the network.">
+        <List.Row title="Join the same Wi-Fi on the PC" leading={<ListIcon icon="wifi" />} />
+        <List.Row title={`Download ${url}ca.pem`} leading={<ListIcon icon="desktop" />} />
+        <List.Row title="Check the fingerprint matches" leading={<ListIcon icon="check" />} />
+        <List.Row title="Install it as a trusted root" leading={<ListIcon icon="lock" />} />
+        <List.Row title="Open the address and sign in" leading={<ListIcon icon="arrow" />} />
       </List.Section>
     </Screen>
   );
