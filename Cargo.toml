@@ -1,3 +1,9 @@
+[workspace]
+# The BLE adapter needs libdbus; keep it out of default root builds so the
+# existing --all-features media CI does not require it.
+members = [".", "services/ble"]
+default-members = ["."]
+
 [package]
 name = "t3box"
 default-run = "t3box"

@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 // ---------------------------------------------------------------- framing
 
 pub const MAX_MESSAGE_BYTES: usize = 4096;
-pub const MAX_FRAGMENTS: usize = 64;
+/// The header's count byte allows 255; 255 × 17 bytes (minimum ATT payload)
+/// covers a full 4096-byte message even at the minimum MTU.
+pub const MAX_FRAGMENTS: usize = 255;
 pub const FRAGMENT_HEADER_BYTES: usize = 3;
 pub const REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Smallest ATT MTU (23) leaves 20 bytes of characteristic payload.
@@ -131,6 +133,7 @@ pub const MAX_OWNER_ID_BYTES: usize = 64;
 const CLAIM_CONTEXT: &[u8] = b"t3box-claim-v1";
 const OWNER_KEY_CONTEXT: &[u8] = b"t3box-owner-key-v1";
 const OPERATION_CONTEXT: &[u8] = b"t3box-operation-v1";
+const SEAL_CONTEXT: &[u8] = b"t3box-seal-v1";
 
 /// Persisted ownership. Pairing is deliberately transient: a reboot during
 /// pairing returns to the persisted state.
@@ -264,6 +267,11 @@ impl OwnershipManager {
         &self.state
     }
 
+    /// Owner key of a claimed device (for unsealing operation payloads).
+    pub fn owner_key(&self) -> Option<&[u8; 32]> {
+        match &self.state { Ownership::Claimed { owner_key, .. } => Some(owner_key), _ => None }
+    }
+
     pub fn is_pairing(&self) -> bool {
         self.pairing.is_some()
     }
@@ -311,6 +319,9 @@ impl OwnershipManager {
     /// the caller must write durably before acknowledging over BLE.
     pub fn complete_pairing(&mut self, owner_id: &str, proof: &[u8], now: Instant) -> Result<&Ownership, ClaimError> {
         self.check_lockout(now)?;
+        if self.state != Ownership::Unclaimed {
+            return Err(ClaimError::NotClaimable);
+        }
         let Some(pairing) = self.pairing.as_ref() else { return Err(ClaimError::NoPairingInProgress) };
         if now.duration_since(pairing.issued) >= PAIRING_TIMEOUT {
             self.pairing = None;
@@ -342,7 +353,8 @@ impl OwnershipManager {
 
     /// Verify an owner-authenticated operation. The nonce is consumed whether
     /// or not verification succeeds, so proofs cannot be replayed.
-    pub fn authorize(&mut self, operation: &str, payload: &[u8], proof: &[u8], now: Instant) -> Result<(), ClaimError> {
+    /// Returns the consumed operation nonce on success (used to unseal).
+    pub fn authorize(&mut self, operation: &str, payload: &[u8], proof: &[u8], now: Instant) -> Result<[u8; NONCE_BYTES], ClaimError> {
         self.check_lockout(now)?;
         let Ownership::Claimed { owner_key, .. } = &self.state else { return Err(ClaimError::NotOwner) };
         let Some((nonce, issued)) = self.operation_nonce.take() else { return Err(ClaimError::NoPairingInProgress) };
@@ -351,7 +363,7 @@ impl OwnershipManager {
         }
         if verify(owner_key, &[OPERATION_CONTEXT, &nonce, operation.as_bytes(), payload], proof) {
             self.failures = 0;
-            Ok(())
+            Ok(nonce)
         } else {
             self.record_failure(now);
             Err(ClaimError::BadProof)
@@ -371,6 +383,29 @@ impl OwnershipManager {
         self.locked_until = None;
         Ok(&self.state)
     }
+}
+
+/// Application-layer confidentiality for operation payloads (Wi-Fi PSKs),
+/// so no BLE pairing/bonding is needed. ChaCha20-Poly1305 with
+/// `key = MAC(owner_key, "t3box-seal-v1")`, nonce = first 12 bytes of the
+/// single-use operation nonce, AAD = operation name.
+pub fn seal(owner_key: &[u8], op_nonce: &[u8; NONCE_BYTES], operation: &str, plaintext: &[u8]) -> Vec<u8> {
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
+    let key = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &mac(owner_key, &[SEAL_CONTEXT])).expect("32-byte key"));
+    let nonce = Nonce::try_assume_unique_for_key(&op_nonce[..12]).expect("12-byte nonce");
+    let mut buf = plaintext.to_vec();
+    key.seal_in_place_append_tag(nonce, Aad::from(operation.as_bytes()), &mut buf).expect("seal");
+    buf
+}
+
+/// Inverse of [`seal`]; `None` if tampered or sealed for another nonce/operation.
+pub fn open(owner_key: &[u8], op_nonce: &[u8; NONCE_BYTES], operation: &str, sealed: &[u8]) -> Option<Vec<u8>> {
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
+    let key = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &mac(owner_key, &[SEAL_CONTEXT])).ok()?);
+    let nonce = Nonce::try_assume_unique_for_key(&op_nonce[..12]).ok()?;
+    let mut buf = sealed.to_vec();
+    let plain = key.open_in_place(nonce, Aad::from(operation.as_bytes()), &mut buf).ok()?;
+    Some(plain.to_vec())
 }
 
 /// Create the per-device setup secret on first boot (0600, never
@@ -625,7 +660,7 @@ mod tests {
         let payload = br#"{"ssid":"LT","security":"open"}"#;
         let nonce = m.operation_challenge(now).unwrap();
         let proof = operation_proof(&key, &nonce, "wifi.configure", payload);
-        assert_eq!(m.authorize("wifi.configure", payload, &proof, now), Ok(()));
+        assert_eq!(m.authorize("wifi.configure", payload, &proof, now), Ok(nonce));
         // Replay fails: nonce is single-use.
         assert_eq!(m.authorize("wifi.configure", payload, &proof, now), Err(ClaimError::NoPairingInProgress));
         // Proof is bound to operation and payload.
@@ -736,6 +771,20 @@ mod tests {
     }
 
     #[test]
+    fn seal_round_trip_and_binding() {
+        let key = [9u8; 32];
+        let nonce = [3u8; 32];
+        let sealed = seal(&key, &nonce, "wifi.configure", b"secret");
+        assert_eq!(sealed.len(), 6 + 16);
+        assert_eq!(open(&key, &nonce, "wifi.configure", &sealed).as_deref(), Some(&b"secret"[..]));
+        assert_eq!(open(&key, &nonce, "wifi.scan", &sealed), None, "bound to operation");
+        assert_eq!(open(&key, &[4u8; 32], "wifi.configure", &sealed), None, "bound to nonce");
+        let mut tampered = sealed.clone();
+        tampered[0] ^= 1;
+        assert_eq!(open(&key, &nonce, "wifi.configure", &tampered), None);
+    }
+
+    #[test]
     fn hex_helpers() {
         assert_eq!(hex(&[0, 255, 16]), "00ff10");
         assert_eq!(unhex::<3>("00ff10"), Some([0, 255, 16]));
@@ -807,6 +856,20 @@ mod interop {
     fn bytes(v: &serde_json::Value) -> Vec<u8> {
         let s = v.as_str().unwrap();
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    /// ChaCha20-Poly1305 seal vectors computed with Python `cryptography`.
+    #[test]
+    fn seal_vectors_match_independent_implementation() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/fixtures/ble/seal-vectors.json");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for v in doc["vectors"].as_array().unwrap() {
+            let key = bytes(&v["owner_key"]);
+            let nonce: [u8; 32] = bytes(&v["operation_nonce"]).try_into().unwrap();
+            let op = v["operation"].as_str().unwrap();
+            assert_eq!(hex(&seal(&key, &nonce, op, &bytes(&v["plaintext_hex"]))), v["sealed_hex"]);
+            assert_eq!(open(&key, &nonce, op, &bytes(&v["sealed_hex"])), Some(bytes(&v["plaintext_hex"])));
+        }
     }
 
     /// Vectors computed by an independent implementation (Python hmac).

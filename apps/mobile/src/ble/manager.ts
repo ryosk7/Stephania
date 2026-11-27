@@ -36,13 +36,26 @@ export function scanDevices(onDevice: (d: Device) => void, onError: (e: Error) =
   return () => { void ble().stopDeviceScan(); };
 }
 
-export async function connectTransport(deviceId: string): Promise<BlePlxTransport> {
-  await ble().stopDeviceScan();
-  let device = await ble().connectToDevice(deviceId);
+async function link(deviceId: string): Promise<number> {
+  let device = await ble().connectToDevice(deviceId, {timeout: 15_000});
   if (Platform.OS === 'android') device = await ble().requestMTUForDevice(deviceId, 247);
   device = await ble().discoverAllServicesAndCharacteristicsForDevice(deviceId);
-  // iOS negotiates MTU itself; ble-plx reports it on the device.
-  return new BlePlxTransport(ble(), deviceId, Math.max(20, (device.mtu ?? 23) - 3));
+  // iOS negotiates the MTU itself; ble-plx reports it on the device.
+  return Math.max(20, Math.min(device.mtu ?? 23, 512) - 3);
+}
+
+/**
+ * Connect and return a v2 transport. No BLE pairing/bonding is requested:
+ * the protocol authenticates and seals at the application layer, which
+ * avoids the most common BlueZ/phone interoperability failures.
+ */
+export async function connectTransport(deviceId: string): Promise<BlePlxTransport> {
+  await ble().stopDeviceScan();
+  const att = await link(deviceId);
+  return new BlePlxTransport(ble(), deviceId, att, async () => {
+    try { await ble().cancelDeviceConnection(deviceId); } catch { /* already gone */ }
+    await link(deviceId);
+  });
 }
 
 export async function disconnect(deviceId: string) {

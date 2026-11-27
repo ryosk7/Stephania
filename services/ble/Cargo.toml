@@ -1,0 +1,14 @@
+[package]
+name = "t3box-ble"
+version = "0.1.0"
+edition = "2021"
+description = "BlueZ GATT adapter for T3Box provisioning (forwards to t3box-provision)"
+license = "MIT"
+
+[dependencies]
+t3box = { path = "../..", default-features = false }
+bluer = { version = "0.17", features = ["bluetoothd"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+futures = "0.3"
+serde_json = "1"
+uuid = "1"

@@ -1,62 +1,121 @@
-# T3Box BLE provisioning protocol — version 1 (draft)
+# T3Box BLE provisioning protocol — version 2
 
-Status: **proof-of-concept contract.** Device core in `src/provisioning.rs`, characteristic semantics in `src/provisioning_gatt.rs`; BlueZ GATT adapter, NetworkManager adapter and the Expo client are not implemented. Secret delivery (risk R02) has a chosen design (below) that still needs independent security review and physical testing. Do not describe this as production enrollment yet.
+Implementations:
+- **Device core:** `src/provisioning.rs`, `src/provisioning_gatt.rs`, `src/bin/t3box-provision.rs`
+- **BlueZ adapter:** `services/ble`
+- **Phone:** `packages/provisioning-client`, `apps/mobile`
+- **Independent test client:** `tests/ble/client.py`
+
+Status: proof-of-concept contract. The setup-secret delivery (R02) design is chosen but still needs independent security review and physical testing. Do not call this production enrollment yet.
+
+Version 2 replaced the earlier multi-characteristic design (v1, never released). The goal was to remove common BlueZ and Linux BLE failure modes by design; see [BlueZ robustness](#bluez-robustness).
 
 ## Principles
-- BLE proximity is not authentication. Ownership is proven with a per-device 128-bit setup secret (generated on first boot, file mode 0600, never transmitted) via HMAC-SHA256 challenge-response.
-- No shared default credential. A claimed device cannot be re-claimed over BLE; factory reset requires physical confirmation.
-- Ownership (`UNCLAIMED / PAIRING / CLAIMED / RECOVERY_REQUIRED`) is independent of network state (`DISCONNECTED / SCANNING / CONNECTING / CONNECTED / FAILED`). Wi-Fi failure never changes ownership. A corrupt ownership file becomes `RECOVERY_REQUIRED`, never `UNCLAIMED`.
-- BLE link: LE Secure Connections required by the GATT adapter; application-layer proofs do not rely on it for authentication.
+- **Authentication:** BLE proximity is not authentication. Ownership is proven with a per-device 128-bit setup secret via HMAC-SHA256 challenge-response. The secret is never transmitted.
+- **No pairing or bonding:** the protocol never requires BLE pairing or bonding. Authentication (HMAC) and confidentiality (ChaCha20-Poly1305 sealing of Wi-Fi credentials) are at the application layer. BLE link encryption is off by default (`T3BOX_BLE_REQUIRE_ENCRYPTION=1` enables it).
+- **Ownership is safe by default:** there are no shared default credentials. A claimed device cannot be re-claimed over BLE; factory reset requires physical confirmation. A corrupt ownership file becomes `RECOVERY_REQUIRED`, never `UNCLAIMED`.
+- **Two independent state machines:** ownership (`UNCLAIMED / PAIRING / CLAIMED / RECOVERY_REQUIRED`) and network (`DISCONNECTED / SCANNING / CONNECTING / CONNECTED / FAILED`). A Wi-Fi failure never changes ownership.
 
 ## Setup secret delivery (R02 decision, 2026-11-27)
-No printed labels. The owner opens the static setup page (`tools/setup-page`, GitHub Pages or a local copy), which generates the 128-bit secret with `crypto.getRandomValues` in the browser, shows it as a QR code and downloads `t3box-setup.txt` containing the setup URI `t3box-setup:v1:<32 hex>:<8 hex SHA-256 check>`.
-1. The owner copies `t3box-setup.txt` to the boot (FAT32) partition next to the OS.
-2. On boot, `t3box-provision` imports it **only if the device is UNCLAIMED**, writes the secret to the 0600 credentials store, then overwrites and deletes the file. An owned or recovery-required device ignores and deletes it, so re-inserting a card can never re-key an owned device. Invalid files are deleted.
-3. The app scans the QR from the screen (`parseSetupUri` in packages/provisioning-client) and claims over BLE.
+No printed labels. The owner opens the static setup page (`tools/setup-page`: GitHub Pages `gh-pages` branch, or a local copy). The page generates the secret with `crypto.getRandomValues` in the browser, shows it as a QR code, and downloads `t3box-setup.txt` containing `t3box-setup:v1:<32 hex>:<8 hex SHA-256 check>`.
+1. The owner copies the file to the boot (FAT32) partition next to the OS.
+2. On boot, `t3box-provision` imports it **only while UNCLAIMED**, stores the secret 0600, then overwrites and deletes the file. An owned or recovery-required device deletes the file without importing it; invalid files are deleted too.
+3. The app scans the QR from the screen and claims over BLE.
 
-Residual risks: anyone holding the microSD before first boot can read the secret; FAT32 deletion is not secure erasure (overwrite is best effort); page integrity depends on the hosting (mitigated by no external resources, CSP script hash and published SHA256SUMS; a compromised page could still exfiltrate via the user, e.g. by changing instructions); the QR is visible on the owner's screen until cleared. If no setup file is ever provided, the device keeps a self-generated secret that nobody knows and therefore cannot be claimed until a setup file is supplied.
+**Residual risks:**
+- Anyone holding the microSD before first boot can read the secret.
+- FAT32 deletion is not secure erasure.
+- Page integrity depends on the hosting. This is mitigated by having no external resources, a CSP script hash and a published SHA256SUMS.
+- The QR stays visible on the owner's screen until it is cleared.
 
-## Service and characteristics
-Base UUID `7c3bXXXX-5d1e-4a6f-9b0e-3a1f2c4d5e60`; service `7c3b0001-…`.
+## GATT layout (fixed for v2)
+Service `7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60`. Its UUID changes with every protocol major version, so a phone never applies a cached layout from another version.
 
-| UUID suffix | Name | Props | Payload (UTF-8 JSON unless noted) |
+| UUID | Name | Properties | Content |
 |---|---|---|---|
-| 0002 | ProtocolVersion | read | `{"version":1}` |
-| 0003 | DeviceInformation | read | `{"model","firmware","ownership","network"}` (no secrets) |
-| 0004 | PairingChallenge | read, notify | `{"state","nonce"?}` — nonce hex(32 B) while PAIRING |
-| 0005 | PairingResponse | write, notify | `{"owner_id","proof"}` |
-| 0006 | WiFiScanRequest | write, notify | `{}` (owner-authenticated, see below) |
-| 0007 | WiFiScanResults | read, notify | `{"page","pages","networks":[{"ssid","rssi","security"}]}` ≤ 5 per page, ≤ 60 total, strongest per SSID; each read returns the next page (wraps); owner only |
-| 0008 | WiFiConfiguration | write, notify | authenticated envelope around `{"ssid","security":"open"|"wpa-psk","psk"?}` |
-| 0009 | NetworkStatus | read, notify | `{"state","error"?}` |
-| 000a | ManagementEndpoint | read | `{"urls":[…],"certificate_sha256"}` once trusted TLS exists; empty until then |
-| 000b | DevicePublicKey | read | reserved for the TLS/identity PoC |
-| 000c | OperationChallenge | read | `{"nonce"}` single-use, 120 s |
+| `7c3b0101-…` | Info | read | Static `{"v":2,"p":"t3box"}` (19 bytes). It fits a minimum-MTU read, so no long read is ever needed. |
+| `7c3b0102-…` | Rpc | write (with response), indicate | Request fragments in; response fragments out. |
+
+The advertisement carries the 128-bit service UUID and the name `T3Box-XXXX` (scan response if needed). It uses legacy advertising only.
 
 ## Framing
-**Responses to writes:** GATT writes carry no response data. The client subscribes to notifications on the written characteristic *before* sending; after the final fragment the device notifies the JSON response on that characteristic, fragmented with the same framing and the **request's message_id**. Errors are delivered the same way as `{"error":"<code>"}`.
-**Reads** return the whole value with ATT long reads and are capped at 512 bytes (the attribute limit); the device rejects larger values (`value_too_large`), which is why scan pages hold 5 networks.
-Writes/notifications carry fragments `[message_id u8, index u8, count u8, chunk…]`, each ≤ ATT payload (MTU − 3, min 20). Message ≤ 4096 bytes, ≤ 64 fragments, ≤ 4 messages in flight, 10 s reassembly timeout. Out-of-order fragments are accepted; duplicates, inconsistent counts and oversize messages discard that message. A 4 KiB message needs an ATT payload ≥ 67 bytes; at the minimum MTU messages are limited to 64 × 17 bytes.
+A fragment is `[message_id u8, index u8, count u8, chunk…]` and is at most the ATT payload (MTU − 3, minimum 20).
+- **Limits:**
+  - **Message size:** at most 4096 bytes, in at most 255 fragments. That is enough for 4 KiB even at the minimum MTU.
+  - **Concurrency:** at most 4 messages in flight per peer.
+  - **Reassembly:** times out after 10 s.
+- **Receiver rules:**
+  - Fragments may arrive out of order.
+  - Identical duplicates are ignored.
+  - Conflicting duplicates, inconsistent counts and oversize messages discard that message.
+  - A device that receives a framing violation answers `{"error":"malformed"}` (or the matching code) instead of staying silent.
+
+**Exchange:**
+1. The client subscribes to indications on Rpc **before** writing.
+2. The client writes every fragment of a request with write-with-response.
+3. The device indicates the response, fragmented under the **request's message id**. Each indication is confirmed by the client's ATT stack before the next one is sent.
+
+The client ignores indications for message ids it is not waiting for.
+
+## Requests and responses
+A request is a UTF-8 JSON object with `op`; unknown keys are rejected. A failed request answers `{"error":"<code>"}`. The `error` key is reserved for failures; status values use `last_error` / `scan_error`.
+
+| op | Fields | Response | Replayed |
+|---|---|---|---|
+| `device.info` | — | `model, firmware, protocol:2, ownership, network` | no |
+| `pairing.challenge` | — | `{state:"PAIRING", nonce}` while unclaimed, else `{state}` | yes |
+| `pairing.claim` | `owner_id, proof` | `{state:"CLAIMED"}` (persisted before the response) | yes |
+| `operation.challenge` | — | `{nonce}` (single use, 120 s) | yes |
+| `wifi.scan` | `proof` (payload `""`) | `{networks:[{ssid,rssi,security}]}`: up to 40, strongest per SSID, `scan_error` on failure | yes |
+| `wifi.configure` | `sealed, proof` (payload = `sealed`) | `{state:"CONNECTED"\|"FAILED"}` | yes |
+| `network.status` | — | `{state, last_error?}` | no |
+| `management.endpoint` | — | `{urls:[], certificate_sha256:null}` until trusted TLS exists | no |
+
+**Replay:** for operations marked "yes", the device caches the response for 60 s (8 entries), keyed by SHA-256 of `message_id ‖ request bytes`. An identical retry, even from a new BLE address after reconnecting, returns the original response without re-running the operation. Clients **must** retry with the same message id and identical bytes after a transport failure. A new id is a new request.
 
 ## Cryptography
-`MAC(key, f1, f2, …) = HMAC-SHA256(key, u32be(len f1) ‖ f1 ‖ u32be(len f2) ‖ f2 ‖ …)`
+`MAC(key, f1, f2, …) = HMAC-SHA256(key, u32be(len f1) ‖ f1 ‖ …)`
 
 | Value | Definition |
 |---|---|
 | claim proof | `MAC(setup_secret, "t3box-claim-v1", nonce, owner_id)` |
-| owner key | `MAC(setup_secret, "t3box-owner-key-v1", nonce, owner_id)` — derived on both sides, never sent |
+| owner key | `MAC(setup_secret, "t3box-owner-key-v1", nonce, owner_id)`: derived on both sides, never sent |
 | operation proof | `MAC(owner_key, "t3box-operation-v1", op_nonce, operation, payload)` |
+| sealed | `ChaCha20-Poly1305(key = MAC(owner_key, "t3box-seal-v1"), nonce = op_nonce[0..12], aad = operation).encrypt(plaintext)` |
 
-`owner_id`: 1–64 of `[A-Za-z0-9._-]`. Interop vectors: `contracts/fixtures/ble/hmac-vectors.json` (computed independently with Python `hmac`; verified by the Rust suite). The Expo client must pass them too.
+The Wi-Fi plaintext is `{"ssid", "security":"open"|"wpa-psk", "psk"?}`, with SSID 1–32 bytes and PSK 8–63 printable characters or 64 hex. The operation nonce is single-use, so every seal uses a unique nonce. `owner_id` is 1–64 characters of `[A-Za-z0-9._-]`. After 5 failed proofs the device locks out for 300 s.
 
-## Flows
-1. **Claim:** read PairingChallenge (device enters PAIRING, 120 s) → write PairingResponse → device persists CLAIMED durably, then notifies `CLAIMED`. 5 failed proofs → 300 s lockout.
-2. **Authenticated operation:** read OperationChallenge → write `{"operation","payload_hex","proof"}` to the operation's characteristic. Nonce is consumed on every attempt; proof binds operation and payload.
-3. **Wi-Fi:** authenticated `wifi.configure` → NetworkStatus CONNECTING → CONNECTED/FAILED. Credentials are validated (SSID 1–32 bytes, PSK 8–63 printable or 64 hex) before NetworkManager is touched and never logged.
-4. **Reset:** only with physical confirmation (button held at boot); returns to UNCLAIMED and clears pairing state.
+Vectors are computed independently in Python: `fixtures/ble/hmac-vectors.json` and `fixtures/ble/seal-vectors.json` (verified by Rust and TypeScript), and `fixtures/ble/setup-uris.json`.
 
-## Errors
-`invalid_json, not_object, invalid_ssid, invalid_psk, invalid_security, not_claimable, no_pairing_in_progress, pairing_expired, locked_out, invalid_owner_id, bad_proof, not_owner, physical_confirmation_required` and framing errors `too_large, payload_too_small, malformed, inconsistent, duplicate`.
+## BlueZ robustness
+| Common failure | Design response |
+|---|---|
+| Pairing/bonding failures: AuthenticationTimeout, stale bonds after phone reset, iOS "Peer removed pairing information", Just Works repair bugs | No pairing or bonding is ever required. Credentials are sealed and requests authenticated at the application layer. `JustWorksRepairing=always` in case a phone pairs anyway. |
+| Long-read (Read Blob) quirks, offset handling, read side effects | No dynamic reads. Info is static and fits one minimum-MTU read; everything else goes through write + indicate. |
+| Lost, coalesced or duplicated notifications | Indications, confirmed per fragment. The message id plus count, and identical-duplicate tolerance, make reassembly robust. |
+| Disconnect after a mutation but before the response | Replay cache. The client reconnects and resends identically, and the operation runs once. |
+| Phones caching an old GATT database (Service Changed not honoured) | Minimal fixed layout. A new service UUID per major version. Static identity address (`Privacy=off`). |
+| MTU misreporting or mismatch (bleak/BlueZ report 23, negotiated 517) | Sender fragments to the MTU it observes. Receivers accept any fragment size up to their own ATT payload. Everything works at 23. |
+| Several centrals connecting or interleaving writes | Per-peer reassembly. `t3box-ble` serves one active central (others get `InProgress` until it disconnects or idles 30 s). Partial transfers are dropped on disconnect. |
+| bluetoothd restart, adapter reset or removal, advertising silently dropped | `t3box-ble` exits on daemon or adapter loss. systemd `Restart=always` + `BindsTo=bluetooth.service` re-registers. A 10 s watchdog re-advertises when idle. Verified in CI by restarting bluetoothd mid-test. |
+| On-board CYW43455 limits: BT 5.0 mandatory features only; reported drops and packet loss | No optional BT5 feature is used: legacy advertising, 1M PHY, no DLE requirement. `T3BOX_BLE_ADAPTER=auto` prefers an external USB controller (e.g. an nRF52840 dongle running a Zephyr HCI controller) with no code change. |
+| BlueZ version differences and experimental APIs | Only stable `GattManager1` / `LEAdvertisingManager1`. The OS image pins BlueZ. CI runs Ubuntu 24.04's BlueZ (5.72). |
+| Running BLE code as root | `t3box-ble` runs as an unprivileged user with a scoped D-Bus policy. It holds no secrets; the device core is a separate process. |
+
+If BlueZ itself proves unsuitable on hardware, the adapter process can be replaced without touching the device core or the app. The options are a different host stack over HCI, or a BLE MCU over UART. Only `services/ble` changes.
+
+## Verification (CI)
+- **Core rules:** Rust unit tests cover replay, interleaved peers, sealing, worst-case sizes and persistence ordering.
+- **Device core over its socket:** `tests/provision_socket.rs` runs the real binary, including reconnect replay.
+- **TypeScript client and app transport:** both are tested against the real binary. The tests lose and duplicate responses on purpose and require recovery.
+- **`ble-e2e`, real BlueZ:** runs on two virtual LE controllers (`btvirt`).
+  - **Flow:** the Python client claims, replays, scans, fails and then succeeds a join, and has an unauthenticated operation rejected.
+  - **Self-heal:** bluetoothd is then restarted, and the supervised adapter must self-heal and serve the same owned device.
+  - **Variants:** runs at the negotiated MTU and with 20-byte fragments.
+
+Not verified: real radios, phones, range and interference, and the on-board CYW43455.
 
 ## Open items
-NetworkManager: the `nmcli` backend (`src/nm.rs`) activates with a transient 0600 passwd-file and does not persist the PSK; reboot reconnection needs the D-Bus AddConnection adapter. Independent review of the setup-file design, PAKE evaluation vs. HMAC over a high-entropy secret, owner credential rotation/revocation, multiple owners, BlueZ adapter with LE Secure Connections enforcement, NetworkManager D-Bus adapter, captive-portal detection, Expo client and Maestro tests, physical range/interference testing.
+- **Security:** independent security review; PAKE evaluation; owner credential rotation and revocation; multiple owners.
+- **Networking:** NetworkManager D-Bus adapter with PSK persistence; captive-portal detection.
+- **Phone and hardware:** phone-side behaviour on real iOS/Android; physical range tests.

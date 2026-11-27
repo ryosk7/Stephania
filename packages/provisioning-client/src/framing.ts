@@ -1,6 +1,6 @@
 // GATT fragmentation, identical bounds to src/provisioning.rs.
 export const MAX_MESSAGE_BYTES = 4096;
-export const MAX_FRAGMENTS = 64;
+export const MAX_FRAGMENTS = 255;
 export const HEADER_BYTES = 3;
 export const MIN_ATT_PAYLOAD = 20;
 
@@ -36,8 +36,13 @@ export class Reassembler {
     if (count === 0 || count > MAX_FRAGMENTS || index >= count) throw new Error('malformed');
     if (this.count === 0) { this.count = count; this.parts = Array.from({length: count}, () => undefined); }
     if (count !== this.count) throw new Error('inconsistent');
-    if (this.parts[index]) throw new Error('duplicate');
     const body = fragment.subarray(HEADER_BYTES);
+    const existing = this.parts[index];
+    if (existing) {
+      // Identical duplicates (re-sent indications) are harmless; conflicting ones are not.
+      if (existing.length === body.length && existing.every((b, i) => b === body[i])) return null;
+      throw new Error('duplicate');
+    }
     this.bytes += body.length;
     if (this.bytes > MAX_MESSAGE_BYTES) throw new Error('too_large');
     this.parts[index] = body;
