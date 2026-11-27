@@ -1,9 +1,9 @@
-# T3Box — Master Architecture, Engineering Specification, and Implementation Handover
+# Stephania — Master Architecture, Engineering Specification, and Implementation Handover
 
 Version 1.0 | Raspberry Pi 5 ARM64 | Private development
 Repository: https://github.com/ryosk7/T3Box
 Branch: feature/studio-appliance | Draft PR: https://github.com/ryosk7/T3Box/pull/47
-Status: agreed architecture, partially implemented. This repository edition consolidates the 40-section handover from the design conversation; it is not a verbatim transcript. Requirements and qualification targets are not claims of completed features.
+Status: agreed architecture, partially implemented. The project is now named Stephania (formerly T3Box); legacy executable, service, environment-variable and artifact identifiers in this specification remain in use pending a coordinated technical migration. This repository edition consolidates the 40-section handover from the design conversation; it is not a verbatim transcript. Requirements and qualification targets are not claims of completed features.
 
 ## 1. Project mission
 A self-hosted live streaming appliance for lightning talks, technical conferences and small events. Combine consumer-appliance installation simplicity with OBS-style flexibility. Download prebuilt OS, copy to SD, boot, activate using BLE, configure Wi-Fi, capture HDMI slides and both cameras of one phone, edit scenes via browser, stream to YouTube Live. No mandatory cloud, terminal, or development tools. Prioritize broadcast quality, continuity, installation simplicity and maintainability.
