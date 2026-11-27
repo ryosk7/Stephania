@@ -184,6 +184,16 @@ jobs:
       - name: Installer end-to-end
         if: startsWith(matrix.check, 'installer-')
         run: sudo ci/installer-e2e.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "${{ matrix.check }}"
+      # The SBOM lists Studio's npm packages from its installed tree.
+      - uses: actions/setup-node@v4
+        if: matrix.check == 'release'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - if: matrix.check == 'release'
+        working-directory: apps/studio
+        run: npm ci --no-audit --no-fund --ignore-scripts
       - name: Assemble and verify release artifacts (ephemeral keys)
         if: matrix.check == 'release'
         run: |
