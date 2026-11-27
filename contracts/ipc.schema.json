@@ -144,7 +144,8 @@
         "native_worker_running",
         "youtube_ingest_confirmed",
         "restart_attempts",
-        "last_error"
+        "last_error",
+        "program"
       ],
       "properties": {
         "instance_id": {
@@ -180,6 +181,32 @@
         },
         "last_error": {
           "type": "string"
+        },
+        "program": {
+          "description": "Stored scene on air, or null when none was applied in this engine process (HDMI passthrough default).",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "scene_id",
+                "revision"
+              ],
+              "properties": {
+                "scene_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
         }
       }
     }

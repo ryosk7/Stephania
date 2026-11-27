@@ -43,6 +43,12 @@ jobs:
         run: |
           bundle exec ruby test/control_test.rb
           bundle exec ruby test/storage_test.rb
+          bundle exec ruby test/events_test.rb
+      - name: Server-Sent Events through real Puma
+        working-directory: services/control
+        env:
+          T3BOX_REQUIRE_PUMA: '1'
+        run: bundle exec ruby test/events_puma_test.rb --verbose
       - name: Puma production boot smoke test
         working-directory: services/control
         shell: bash
@@ -96,6 +102,51 @@ jobs:
       - name: Unit and shared-fixture tests
         run: npm test
       - run: npm run build
+  # Browser end-to-end: real Rust engine (IPC) + Puma control plane serving
+  # the built Studio, driven by Playwright Chromium with two browser contexts.
+  studio-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: control-engine-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build engine for IPC
+        run: cargo build --locked --no-default-features --bin t3box
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - working-directory: apps/studio
+        run: npm ci --no-audit --no-fund
+      - working-directory: apps/studio
+        run: npm run build
+      - working-directory: apps/studio
+        run: npx playwright install --with-deps chromium
+      - name: Playwright Studio tests
+        working-directory: apps/studio
+        env:
+          T3BOX_ENGINE_BIN: ${{ github.workspace }}/target/debug/t3box
+        run: npx playwright test
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-e2e-report
+          path: |
+            apps/studio/playwright-report
+            apps/studio/test-results
+          retention-days: 7
   provisioning-client:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
