@@ -27,21 +27,13 @@ defaults:
     shell: bash
 jobs:
   ios:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # Expo SDK 58's Swift packages need Swift 6.2 (Xcode 26); Xcode 26.3's
-      # compiler rejects expo-modules-jsi (data-race check), so prefer 26.2.
-      - name: Select Xcode 26
-        run: |
-          ls -d /Applications/Xcode_26*.app
-          for v in 26.2 26.1 26.0 26.3; do
-            x=$(ls -d /Applications/Xcode_$v*.app 2>/dev/null | sort -V | tail -1)
-            [ -n "$x" ] && break
-          done
-          sudo xcode-select -s "$x/Contents/Developer"
-          xcodebuild -version
+      # Expo SDK 58's Swift packages need a current Xcode 26: older 26.x
+      # compilers reject expo-modules-jsi (a data-race diagnostic).
+      - run: xcodebuild -version
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
