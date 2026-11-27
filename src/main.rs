@@ -27,6 +27,8 @@ impl EngineControl for IpcEngine {
             native_worker_running: self.0.native_running(),
             restart_attempts: restarts,
             last_error,
+            native_worker_started_unix_ms: self.0.native_started()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64),
         }
     }
     fn start(&self) -> Result<(), String> { self.0.start() }
