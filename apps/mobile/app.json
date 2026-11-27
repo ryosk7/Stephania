@@ -19,7 +19,8 @@
         ],
         "NSAccessorySetupBluetoothServices": [
           "7C3B0200-5D1E-4A6F-9B0E-3A1F2C4D5E60"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
