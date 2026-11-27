@@ -94,7 +94,8 @@ if [ "$variant" = pi ]; then
   cp "$rpi_keyring" "$keydir/raspberrypi-archive.gpg"
 fi
 keyrings=(--keyring="$keydir")
-mmdebstrap --arch="$arch" --variant=apt --include="$runtime,$build" "${keyrings[@]}" "${cache_args[@]}" \
+# force-unsafe-io: no fsync per package; the tree is packed into images afterwards.
+mmdebstrap --arch="$arch" --variant=apt --include="$runtime,$build" "${keyrings[@]}" "${cache_args[@]}" --dpkgopt=force-unsafe-io \
   --customize-hook="$repo/os/image/customize.sh \"\$1\" '$repo' '$bins' '$version' '$build' '$runtime'" \
   "$suite" "$root" "${sources[@]}"
 
