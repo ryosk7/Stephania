@@ -2,3 +2,5 @@ self-hosted-runner:
   labels:
     - stephania-pi5
     - stephania-lab
+    # GitHub-hosted, newer than actionlint v1.7.7's label list.
+    - macos-26

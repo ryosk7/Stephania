@@ -9,6 +9,12 @@ on:
         default: "120"
 permissions:
   contents: read
+defaults:
+  run:
+    # Explicit bash runs steps with -o pipefail: a failing command before
+    # `| tee` or `| tail` fails the step.
+    shell: bash
+
 jobs:
   pi5-hardware:
     runs-on: [self-hosted, Linux, ARM64, stephania-pi5]
