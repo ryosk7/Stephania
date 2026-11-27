@@ -85,14 +85,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Authenticate read-only GHCR access
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - uses: ./.github/actions/cached-build
-        with:
-          profile: x64-bins
-          command: ci/build-bins.sh ci-bins
+      - uses: ./.github/actions/x64-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

@@ -17,6 +17,13 @@
   `arm64-release`).
 - **Build once, test many**: Studio's e2e jobs download the binaries built
   by one `bins` job (debug, stripped) instead of compiling separately.
+- **Content-addressed binaries** (`.github/actions/x64-bins`): the binaries
+  are cached under a hash of every Rust build input; a PR that changes no
+  Rust input reuses main's binaries and compiles nothing.
+- **No per-run downloads that the runner already has**: Playwright uses the
+  preinstalled Chrome; RAUC and image packages are cached.
+- PRs only `cargo check` the no-default-features build; main and nightly
+  run its full test suite.
 - **Cheap stand-ins on PRs, full targets on main/nightly**: PRs boot the
   x86_64 image with KVM (`image-qemu-x64`); the arm64 image under QEMU
   emulation runs on main and nightly (`schedule`). RAUC and the image's

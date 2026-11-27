@@ -86,7 +86,7 @@ jobs:
             cargo clippy --all-targets --locked --all-features -- -D warnings
             cargo clippy --locked -p t3box-phone --all-targets -- -D warnings
             cargo test --locked --all-features -- --skip accelerated_ci::
-            cargo test --locked --no-default-features
+            ${{ github.event_name == 'pull_request' && 'cargo check --locked --no-default-features --all-targets' || 'cargo test --locked --no-default-features' }}
             cargo test --locked -p t3box-phone
 
   arm64-build:

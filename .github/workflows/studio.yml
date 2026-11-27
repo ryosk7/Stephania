@@ -44,15 +44,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Authenticate read-only GHCR access
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - uses: ./.github/actions/cached-build
-        with:
-          profile: x64-bins
-          command: ci/build-bins.sh ci-bins
-      - run: tar -cf ci-bins.tar ci-bins
+      - uses: ./.github/actions/x64-bins
       - uses: actions/upload-artifact@v4
         with:
           name: ci-bins-x64
@@ -175,12 +167,12 @@ jobs:
         run: npm ci --no-audit --no-fund
       - working-directory: apps/studio
         run: npm run build
-      - working-directory: apps/studio
-        run: npx playwright install --with-deps chromium
       - name: Playwright Studio tests
         working-directory: apps/studio
         env:
           T3BOX_ENGINE_BIN: ${{ github.workspace }}/ci-bins/t3box-diag
+          # The runner image ships Google Chrome: no browser download.
+          T3BOX_PLAYWRIGHT_CHANNEL: chrome
         run: npx playwright test
       - if: failure()
         uses: actions/upload-artifact@v4

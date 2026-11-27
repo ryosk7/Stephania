@@ -11,5 +11,7 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   reporter: [['list'], ['html', {open: 'never', outputFolder: 'playwright-report'}]],
-  use: {...devices['Desktop Chrome'], trace: 'retain-on-failure'},
+  // CI uses the runner's preinstalled Chrome (T3BOX_PLAYWRIGHT_CHANNEL=chrome)
+  // instead of downloading Playwright's Chromium on every run.
+  use: {...devices['Desktop Chrome'], channel: process.env.T3BOX_PLAYWRIGHT_CHANNEL || undefined, trace: 'retain-on-failure'},
 });
