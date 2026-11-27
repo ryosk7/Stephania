@@ -20,3 +20,6 @@ Before a real LT event:
 - [ ] Run workflow .github/workflows/hardware.yml on a self-hosted Pi 5
 
 No boxes are checked because physical testing has not occurred.
+
+Detailed procedures, pass criteria and the results log (guarded in CI by
+`ci/check-qualification.py`) are in docs/QUALIFICATION.md.

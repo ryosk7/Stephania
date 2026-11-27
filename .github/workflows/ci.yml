@@ -39,6 +39,9 @@ jobs:
           python3 -m compileall -q ci
           for f in ci/*.sh tests/*.sh tests/virtual-lab/*.sh; do bash -n "$f"; done
           python3 -m compileall -q tests/virtual-lab
+          python3 ci/check-qualification.py --self-test
+          python3 ci/check-qualification.py
+          bash -n tools/qualification/collect.sh
       - uses: actions/cache@v4
         with:
           path: |
