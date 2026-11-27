@@ -15,6 +15,13 @@ export function Settings({api, me, onMessage}: {api: Api; me: Me; onMessage: (m:
 
   async function run(f: () => Promise<void>) { try { await f(); } catch (e) { onMessage(String(e)); } }
   const load = async () => { if (admin) setUsers(await api.users()); };
+  /** Optimistic: the control changes at once; the server answer (or a reload on error) settles it. */
+  function change(u: User, patch: {role?: Role; disabled?: boolean}, done: string) {
+    setUsers(xs => xs.map(x => (x.id === u.id ? {...x, ...patch} : x)));
+    void run(async () => {
+      try { await api.updateUser(u.id, patch); onMessage(done); } finally { await load(); }
+    });
+  }
   useEffect(() => { void run(load); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -38,9 +45,9 @@ export function Settings({api, me, onMessage}: {api: Api; me: Me; onMessage: (m:
               {users.map(u => (
                 <tr key={u.id} data-testid={'user-' + u.username}>
                   <td>{u.username}</td>
-                  <td><select aria-label={'role ' + u.username} value={u.role} onChange={e => void run(async () => { await api.updateUser(u.id, {role: e.target.value as Role}); await load(); onMessage('権限を変更しました'); })}>
+                  <td><select aria-label={'role ' + u.username} value={u.role} onChange={e => change(u, {role: e.target.value as Role}, '権限を変更しました')}>
                     {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}</select></td>
-                  <td><label>無効 <input type="checkbox" checked={u.disabled} onChange={e => void run(async () => { await api.updateUser(u.id, {disabled: e.target.checked}); await load(); })}/></label></td>
+                  <td><label>無効 <input type="checkbox" checked={u.disabled} onChange={e => change(u, {disabled: e.target.checked}, e.target.checked ? '無効にしました' : '有効にしました')}/></label></td>
                   <td><button aria-label={'delete ' + u.username} disabled={me.user_id === u.id} onClick={() => void run(async () => { await api.deleteUser(u.id); await load(); onMessage('削除しました'); })}>削除</button></td>
                 </tr>
               ))}

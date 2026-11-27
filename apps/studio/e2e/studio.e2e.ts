@@ -165,7 +165,7 @@ test('accounts: admin edits scenes with undo/redo and resize, operator cannot, s
   // The admin disables the operator: her session ends immediately.
   await a.goto(stack.url + '#/settings');
   await a.getByTestId('user-olga').getByLabel('無効').check();
-  await expect(a.getByTestId('user-olga').getByLabel('無効')).toBeChecked();
+  await expect(status(a)).toHaveText('無効にしました');
   const me = await o.request.get(stack.url + 'api/v1/auth/me');
   expect(me.status()).toBe(401);
 
