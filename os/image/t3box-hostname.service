@@ -1,0 +1,15 @@
+[Unit]
+Description=T3Box per-device host name
+DefaultDependencies=no
+RequiresMountsFor=/data
+After=local-fs.target
+Before=network-pre.target avahi-daemon.service t3box-pki.service NetworkManager.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/t3box/t3box-hostname
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

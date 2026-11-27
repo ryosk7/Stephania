@@ -82,7 +82,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.os == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/x64-bins
@@ -96,7 +96,7 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          sudo apt-get install -y -qq mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip cpio zstd xz-utils >/dev/null
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
@@ -112,6 +112,14 @@ jobs:
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
       - name: Boot with KVM and run the smoke test
         run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" amd64
+      - name: Build the installer ZIP (ephemeral signing key)
+        run: |
+          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/install-key.pem"
+          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/install-key.pem" \
+            os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
+          ls -la "$RUNNER_TEMP/installer/zip" "$RUNNER_TEMP/installer/zip/t3box-install"
+      - name: Installer end-to-end (ambiguity, power cuts, resume, boot)
+        run: sudo ci/installer-e2e.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
       - if: always()
         uses: actions/upload-artifact@v4
         with:

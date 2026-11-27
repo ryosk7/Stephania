@@ -118,10 +118,17 @@ class EngineClient
 
       raise
     end
+    # A reused connection the engine already closed shows up on the first
+    # read as EOF or, if our write raced the close, as ECONNRESET: either
+    # way the request never reached the engine and is safe to retry.
     header = begin
       read_exact(socket, 4)
     rescue Unavailable => e
       raise Stale if reused && e.message == "engine closed the connection"
+
+      raise
+    rescue Errno::ECONNRESET, Errno::EPIPE
+      raise Stale if reused
 
       raise
     end

@@ -274,7 +274,8 @@ fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
         key.eq_ignore_ascii_case("origin").then_some(value.trim())
     }).next();
     if let Some(origin) = origin {
-        if origin != "http://127.0.0.1:8787" && origin != "http://localhost:8787" {
+        let allowed = LEGACY_ORIGINS.get().map(|o| o.iter().any(|a| a == origin)).unwrap_or(false);
+        if !allowed {
             write_response(stream,"403 Forbidden","application/json","{\"error\":\"cross_origin_forbidden\"}");
             return;
         }
@@ -320,6 +321,19 @@ fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
     write_response(stream,status,content_type,&result);
 }
 
+static LEGACY_ORIGINS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// `T3BOX_LEGACY_HTTP` = `127.0.0.1:<port>` (loopback only) or unset/empty.
+fn legacy_http_addr() -> std::io::Result<Option<std::net::SocketAddr>> {
+    let Ok(raw) = std::env::var("T3BOX_LEGACY_HTTP") else { return Ok(None) };
+    if raw.is_empty() { return Ok(None); }
+    let addr: std::net::SocketAddr = raw.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "T3BOX_LEGACY_HTTP must be ip:port"))?;
+    if !addr.ip().is_loopback() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "T3BOX_LEGACY_HTTP must be a loopback address"));
+    }
+    Ok(Some(addr))
+}
+
 fn main() -> std::io::Result<()> {
     let config = match Config::from_env() {
         Ok(c) => c,
@@ -332,8 +346,18 @@ fn main() -> std::io::Result<()> {
     let controller = Arc::new(Controller::new(config));
     start_engine_ipc(&controller);
     start_phone_ingest();
-    let listener = TcpListener::bind("127.0.0.1:8787")?;
-    println!("T3Box local dashboard: http://127.0.0.1:8787");
+    // docs/MASTER-ARCHITECTURE.md §17: the Unix socket (engine.sock) is the
+    // engine API. The old loopback HTTP dashboard is a transitional test
+    // interface, off unless T3BOX_LEGACY_HTTP names a loopback address
+    // (the Virtual Lab uses it); production units never set it.
+    let Some(addr) = legacy_http_addr()? else {
+        println!("T3Box engine: IPC only (legacy HTTP dashboard disabled)");
+        loop { std::thread::park(); }
+    };
+    let listener = TcpListener::bind(addr)?;
+    let port = listener.local_addr()?.port();
+    let _ = LEGACY_ORIGINS.set(vec![format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")]);
+    println!("T3Box legacy dashboard (tests only): http://127.0.0.1:{port}");
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -349,6 +373,20 @@ fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_http_is_off_by_default_and_loopback_only() {
+        std::env::remove_var("T3BOX_LEGACY_HTTP");
+        assert!(legacy_http_addr().unwrap().is_none());
+        std::env::set_var("T3BOX_LEGACY_HTTP", "");
+        assert!(legacy_http_addr().unwrap().is_none());
+        std::env::set_var("T3BOX_LEGACY_HTTP", "127.0.0.1:8787");
+        assert_eq!(legacy_http_addr().unwrap().unwrap().port(), 8787);
+        std::env::set_var("T3BOX_LEGACY_HTTP", "0.0.0.0:8787");
+        assert!(legacy_http_addr().is_err());
+        std::env::set_var("T3BOX_LEGACY_HTTP", "nonsense");
+        assert!(legacy_http_addr().is_err());
+        std::env::remove_var("T3BOX_LEGACY_HTTP");
+    }
     #[test]
     fn escapes_json() {assert_eq!(escape_json("a\"b\\c"),"a\\\"b\\\\c");}
     #[test]

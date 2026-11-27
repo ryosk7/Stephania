@@ -14,7 +14,7 @@ install -m 0755 "$repo/os/rauc/t3box-update" "$r/usr/local/bin/t3box-update"
 install -d "$r/usr/local/lib/t3box" "$r/usr/local/sbin"
 install -m 0755 "$repo/os/rauc/rauc-pre-install" "$r/usr/local/lib/t3box/rauc-pre-install"
 install -m 0755 "$repo/os/image/t3box-overlay-init" "$r/usr/local/sbin/t3box-overlay-init"
-install -m 0755 "$repo/os/image/t3box-firstboot" "$repo/os/image/t3box-qemu-smoke" "$r/usr/local/lib/t3box/"
+install -m 0755 "$repo/os/image/t3box-firstboot" "$repo/os/image/t3box-qemu-smoke" "$repo/os/image/t3box-hostname" "$r/usr/local/lib/t3box/"
 
 # Control plane with production gems only; native extensions are built
 # here and the build toolchain is purged below.
@@ -59,19 +59,20 @@ install -m 0644 "$repo/os/bluez/main.conf" "$r/etc/bluetooth/main.conf"
 # Read-only root: persistent state lives on the data partition.
 cat >"$r/etc/fstab" <<'FSTAB'
 PARTLABEL=data      /data          ext4  defaults,noatime  0 2
-PARTLABEL=selector  /boot/selector vfat  defaults,umask=0077  0 2
+PARTLABEL=selector  /boot/selector vfat  defaults,uid=0,gid=853,fmask=0117,dmask=0007  0 2
 /data/t3box/varlib  /var/lib/t3box none  bind,x-systemd.requires-mounts-for=/data  0 0
 FSTAB
 install -d "$r/data" "$r/boot/selector" "$r/var/lib/t3box" "$r/overlay" "$r/etc/t3box"
 # The bootstrap token is generated on first boot into the data partition.
 ln -sf /data/t3box/config/control.env "$r/etc/t3box/control.env"
-install -m 0644 "$repo/os/image/t3box-firstboot.service" "$repo/os/image/t3box-qemu-smoke.service" "$r/etc/systemd/system/"
+install -m 0644 "$repo/os/image/t3box-firstboot.service" "$repo/os/image/t3box-qemu-smoke.service" "$repo/os/image/t3box-hostname.service" "$r/etc/systemd/system/"
+install -D -m 0644 "$repo/os/avahi/t3box.service" "$r/etc/avahi/services/t3box.service"
 # Control code location used by t3box-control.service.
 sed -i 's#^WorkingDirectory=.*#WorkingDirectory=/opt/t3box/control#' "$r/etc/systemd/system/t3box-control.service"
 sed -i 's#^ExecStart=/usr/bin/bundle#ExecStart=/usr/local/bin/bundle#' "$r/etc/systemd/system/t3box-control.service"
 [ -x "$r/usr/local/bin/bundle" ] || sed -i 's#^ExecStart=/usr/local/bin/bundle#ExecStart=/usr/bin/bundle#' "$r/etc/systemd/system/t3box-control.service"
 
-in_root systemctl enable t3box-firstboot.service t3box.service t3box-control.service t3box-provision.service \
+in_root systemctl enable t3box-hostname.service avahi-daemon.service t3box-firstboot.service t3box.service t3box-control.service t3box-provision.service \
   t3box-phone.service t3box-pki.timer t3box-update-confirm.service t3box-data-restore.service t3box-update-deadline.timer \
   t3box-qemu-smoke.service
 # Initramfs must mount a SquashFS root from virtio or SD.
