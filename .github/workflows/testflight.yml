@@ -17,9 +17,14 @@ permissions:
 concurrency:
   group: testflight
   cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+
 jobs:
   upload:
-    runs-on: macos-15
+    # Expo SDK 58 needs a current Xcode 26 (see mobile-ios-build.yml).
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
