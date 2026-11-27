@@ -13,20 +13,20 @@ export default function OpenOnPc() {
   const {device} = useLocalSearchParams<{device: string}>();
   const [e, setE] = useState<ManagementEnrollment | null>();
   useEffect(() => { loadEnrollment(device).then(setE).catch(() => setE(null)); }, [device]);
-  if (e === undefined) return <Screen><Text style={s.p}>読み込み中…</Text></Screen>;
-  if (e === null) return <Screen><Text style={s.p}>このT3Boxのアクセス権がありません。</Text></Screen>;
+  if (e === undefined) return <Screen><Text style={s.p}>Loading…</Text></Screen>;
+  if (e === null) return <Screen><Text style={s.p}>This phone has no access to this T3Box.</Text></Screen>;
   const url = e.urls[0]!;
   return (
     <Screen>
-      <Text style={s.p}>PCで次のアドレスを開きます（同じWi-Fiに接続してください）。</Text>
+      <Text style={s.p}>Open this address on the PC (on the same Wi-Fi network).</Text>
       <Text selectable style={s.h}>{url}</Text>
       <Text style={s.p}>
-        初回はブラウザが証明書の警告を出します。T3Box の証明書（{url}ca.pem）を PC に「信頼するルート証明書」として登録し、
-        その指紋が下の値と一致することを確認してください。一致しない場合は登録せず、ネットワークを確認してください。
+        The browser warns about the certificate the first time. Install the T3Box certificate ({url}ca.pem) on the PC as a trusted root certificate,
+        after checking that its fingerprint matches the value below. If it does not match, do not install it and check the network.
       </Text>
       <Text selectable style={[s.p, {fontFamily: 'Menlo', fontWeight: '600'}]}>SHA-256{'\n'}{formatFingerprint(e.caSha256)}</Text>
-      <Text style={s.p}>サインインには Studio のアカウント（管理者が作成）を使います。</Text>
-      <Button title="アドレスと指紋を共有" onPress={() => void Share.share({message: `${url}\nSHA-256: ${formatFingerprint(e.caSha256)}`})} />
+      <Text style={s.p}>Sign in with a Studio account (created by an admin).</Text>
+      <Button title="Share address and fingerprint" onPress={() => void Share.share({message: `${url}\nSHA-256: ${formatFingerprint(e.caSha256)}`})} />
     </Screen>
   );
 }

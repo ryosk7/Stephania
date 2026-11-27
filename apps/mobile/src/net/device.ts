@@ -61,7 +61,7 @@ export class DeviceClient {
       }
       return data as T;
     }
-    throw new DeviceError('unreachable', `T3Box に接続できません (${String((lastError as Error)?.message ?? lastError)})`);
+    throw new DeviceError('unreachable', `Cannot reach the T3Box (${String((lastError as Error)?.message ?? lastError)})`);
   }
 
   status = () => this.call<Status>('/status');

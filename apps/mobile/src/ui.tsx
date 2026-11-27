@@ -25,18 +25,18 @@ export const Screen = ({children}: {children: ReactNode}) => <View style={s.scre
 export function describeError(e: unknown): string {
   const code = (e as {code?: string})?.code ?? (e instanceof Error ? e.message : String(e));
   const messages: Record<string, string> = {
-    bad_proof: 'QRコードがこのT3Boxのものではありません。SDに入れた t3box-setup.txt と同じQRか確認してください。',
-    already_claimed: 'このT3Boxはすでに所有者が登録されています。',
-    locked_out: '失敗が続いたため一時的にロックされています。5分後に再試行してください。',
-    challenge_expired: '登録の有効時間が切れました。もう一度お試しください。',
-    not_claimable: 'このT3Boxはすでに所有者が登録されているか、登録を受け付けていません。',
-    disconnected: 'T3Boxとの接続が切れました。近づいてもう一度お試しください。',
-    bad_seal: '暗号化されたデータを検証できませんでした。アプリを再起動してください。',
-    not_owner: 'このスマホはこのT3Boxの所有者として登録されていません。',
-    join_failed: 'Wi-Fiに接続できませんでした。SSIDとパスワードを確認してください。',
-    response_timeout: 'T3Boxからの応答がありません。近づいてもう一度お試しください。',
-    bluetooth_off: 'Bluetoothをオンにしてください。',
-    storage_failed: 'T3Box側で保存に失敗しました。SDカードの状態を確認してください。',
+    bad_proof: 'This QR code is not for this T3Box. Check that it matches the t3box-setup.txt on the card.',
+    already_claimed: 'This T3Box already has an owner.',
+    locked_out: 'Locked after repeated failures. Try again in 5 minutes.',
+    challenge_expired: 'The registration window expired. Please try again.',
+    not_claimable: 'This T3Box already has an owner or is not accepting registration.',
+    disconnected: 'The connection to the T3Box was lost. Move closer and try again.',
+    bad_seal: 'Could not verify the encrypted data. Restart the app.',
+    not_owner: 'This phone is not registered as the owner of this T3Box.',
+    join_failed: 'Could not join the Wi-Fi network. Check the SSID and password.',
+    response_timeout: 'No response from the T3Box. Move closer and try again.',
+    bluetooth_off: 'Turn Bluetooth on.',
+    storage_failed: 'The T3Box could not save. Check its SD card.',
   };
-  return messages[code] ?? `エラー: ${code}`;
+  return messages[code] ?? `Error: ${code}`;
 }
