@@ -13,6 +13,9 @@
 #   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (QEMU smoke tests)
 #   T3BOX_IMAGE_SUITE  trixie (default)
 #   T3BOX_IMAGE_MIRROR http://deb.debian.org/debian
+#   T3BOX_IMAGE_DEBIAN_KEYRING Debian archive keyring (default: the host's
+#                      debian-archive-keyring; CI takes it from debian:trixie
+#                      because older hosts lack the trixie keys)
 #   T3BOX_IMAGE_RPI_MIRROR http://archive.raspberrypi.com/debian (pi variant)
 #   T3BOX_IMAGE_RPI_KEYRING Raspberry Pi archive keyring (binary); default:
 #                      downloaded and checked against RPI_KEY_FINGERPRINT
@@ -74,7 +77,7 @@ fi
 # variant. The Raspberry Pi key is pinned by fingerprint.
 RPI_KEY_FINGERPRINT=CF8A1AF502A2AA2D763BAE7E82B129927FA3303E
 sources=("deb $mirror $suite $components")
-keyrings=(--keyring=/usr/share/keyrings/debian-archive-keyring.gpg)
+keyrings=(--keyring="${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}")
 if [ "$variant" = pi ]; then
   rpi_mirror=${T3BOX_IMAGE_RPI_MIRROR:-http://archive.raspberrypi.com/debian}
   rpi_keyring=${T3BOX_IMAGE_RPI_KEYRING:-$out/raspberrypi-archive.gpg}

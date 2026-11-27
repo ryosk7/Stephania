@@ -104,7 +104,10 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc zstd xz-utils >/dev/null
+          sudo apt-get install -y -qq gnupg curl mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc zstd xz-utils >/dev/null
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
@@ -117,14 +120,14 @@ jobs:
         run: bash os/release/test-keys.sh "$RUNNER_TEMP/keys"
       - name: Build image (amd64)
         run: |
-          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" \
             T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" os/image/build.sh "$RUNNER_TEMP/image" device-bins
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
       - name: Boot with KVM and run the smoke test
         run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" amd64
       - name: Build the installer ZIP (ephemeral signing key)
         run: |
-          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
             os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
           ls -la "$RUNNER_TEMP/installer/zip" "$RUNNER_TEMP/installer/zip/t3box-install"
       - name: Installer end-to-end (ambiguity, power cuts, resume, boot)
@@ -174,7 +177,10 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          sudo apt-get install -y -qq gnupg curl mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/apt-archives
@@ -182,7 +188,7 @@ jobs:
           restore-keys: image-apt-arm64-${{ hashFiles('os/image/build.sh') }}-
       - name: Build image
         run: |
-          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" \
             os/image/build.sh "$RUNNER_TEMP/image" target/release
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
       - name: Boot in QEMU and run the smoke test
@@ -223,8 +229,11 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          sudo apt-get install -y -qq gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - name: Build the Pi image
-        run: sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_VARIANT=pi os/image/build.sh "$RUNNER_TEMP/image" target/release
+        run: sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_VARIANT=pi os/image/build.sh "$RUNNER_TEMP/image" target/release
       - name: Check the boot slots
         run: ci/pi-image-check.sh "$RUNNER_TEMP/image"

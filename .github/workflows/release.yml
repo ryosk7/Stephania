@@ -63,16 +63,18 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
+          sudo apt-get install -y -qq gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - name: Pi image
         run: |
-          sudo env T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_IMAGE_VARIANT=pi \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_IMAGE_VARIANT=pi \
             T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" \
             os/image/build.sh "$RUNNER_TEMP/image" target/release
           ci/pi-image-check.sh "$RUNNER_TEMP/image"
       - name: Installer ZIP
         run: |
-          sudo env T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
             os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
       - name: Assemble and verify
         run: |

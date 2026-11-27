@@ -33,7 +33,7 @@ kver=$(ls "$img/rootfs/lib/modules" | sort -V | tail -1)
 tools="$out/tools-root"
 rm -rf "$tools"
 mmdebstrap --arch="$arch" --variant=essential --include=busybox-static,fdisk,dosfstools,e2fsprogs,openssl,kmod,libzstd1 \
-  --keyring=/usr/share/keyrings/debian-archive-keyring.gpg "$suite" "$tools" "deb $mirror $suite main" >/dev/null
+  --keyring="${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}" "$suite" "$tools" "deb $mirror $suite main" >/dev/null
 ir="$out/initramfs"
 rm -rf "$ir"; mkdir -p "$ir"/{bin,sbin,etc/t3box,proc,sys,dev,run,mnt,lib,lib64,usr}
 cp "$tools/bin/busybox" "$ir/bin/busybox"

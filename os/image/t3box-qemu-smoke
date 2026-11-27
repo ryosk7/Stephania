@@ -21,7 +21,7 @@ check "read-only root cannot be written" sh -c '! touch /media/rofs/.t3box-write
 check "data partition mounted (ext4)" sh -c 'findmnt -n -o FSTYPE /data | grep -qx ext4'
 check "state bind-mounted from data" sh -c 'findmnt -n /var/lib/t3box'
 check "first-boot token created on data" test -s /data/t3box/config/control.env
-check "licence files of shipped packages are kept" sh -c 'test -s /usr/share/doc/libx264-164/copyright && test -s /usr/share/doc/libavcodec60/copyright'
+check "licence files of shipped packages are kept" sh -c 'test -s /usr/share/doc/libx264-164/copyright && test -s /usr/share/doc/libavcodec61/copyright'
 check "no compiler in the image" sh -c '! command -v gcc && ! command -v cc && ! command -v make'
 for u in t3box t3box-control t3box-firstboot t3box-phone; do check "$u active" systemctl is-active "$u"; done
 info "t3box-provision $(systemctl is-active t3box-provision) (no Wi-Fi device in QEMU)"
