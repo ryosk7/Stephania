@@ -73,6 +73,11 @@ export class DeviceClient {
       fadeMs ? {scene_id, revision, transition: {type: 'fade', duration_ms: fadeMs}} : {scene_id, revision});
   audio = () => this.call<{stored: AudioInput[]; engine: unknown}>('/audio');
   setMuted = (id: AudioInput['id'], muted: boolean) => this.call<{stored: AudioInput[]; applied: boolean}>('/audio', 'PUT', {inputs: [{id, muted}]});
+  // Phone camera session (docs/PHONE.md): non-trickle SDP offer/answer.
+  cameraOffer = (sdp: string, tracks: Record<string, 'rear' | 'front'>, replace = false) =>
+    this.call<{sdp: string}>('/cameras/session/offer', 'POST', replace ? {sdp, tracks, replace: true} : {sdp, tracks});
+  cameraSession = () => this.call<{state: string; access_units?: number; dropped?: number}>('/cameras/session');
+  cameraClose = () => this.call<void>('/cameras/session', 'DELETE');
 }
 
 /** "ab12…" → "AB12 CD34 …" for comparing fingerprints by eye. */

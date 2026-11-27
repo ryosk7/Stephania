@@ -57,10 +57,64 @@ close. Unit tests: RTP reassembly (FU-A, loss, lost marker, wrap,
 duplicates), decoder round-trip with the engine's own x264 encoder,
 ingest protocol and keyframe requests.
 
+## Phone app sender (iOS)
+`apps/mobile/modules/t3box-camera` (native) + `apps/mobile/src/camera`
+(shared TypeScript). The split is the cross-platform contract
+(`modules/t3box-camera/src/T3BoxCamera.types.ts`): native code captures,
+encodes and transports; TypeScript decides. An Android implementation
+provides the same interface and reuses everything in `src/camera`.
+
+- **Capture** (`ios/CameraCapture.swift`): built-in wide cameras,
+  `AVCaptureMultiCamSession` for rear+front. Output is always landscape
+  16:9: each connection is rotated in the ISP to the horizon-level angle
+  (iOS 17 `RotationCoordinator`), because t3box-phone ignores the RTP
+  orientation extension. Frames go from the capture queue straight into
+  the WebRTC video sources; no frame crosses the JS bridge.
+- **Profiles** (§12): dual `720p30+720p30`, `720p30+540p24`,
+  `540p24+540p24`; a profile is offered only if a multi-cam session
+  configured with its formats reports `hardwareCost` and
+  `systemPressureCost` below 1 (`capabilities().dualProfiles`).
+- **Encode / transport** (`ios/CameraSender`, SwiftPM, also the pod's
+  sources): libwebrtc (`WebRTC-SDK` 150.7871.09), VideoToolbox H.264 via
+  the default encoder factory. The local offer is restricted to H.264
+  constrained baseline (`42e0xx`; t3box-phone matches profile and
+  packetization mode, not level), `packetization-mode=1` (+RTX) before
+  `setLocalDescription`; one sendonly transceiver per camera, stream
+  `t3box`, track ids `rear-…`/`front-…`; LAN only (no STUN/TURN), the
+  offer is sent after ICE gathering completes (non-trickle). Plans change
+  `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` and `active` on
+  the running senders, without renegotiation.
+- **Policy** (`src/camera/session.ts`, `plan.ts`, `sdp.ts`): idle →
+  starting → connecting → live; `reconnecting` with backoff 0.5–8 s
+  (6 attempts) after `failed`, or after `disconnected` lasting 3 s;
+  reconnects replace the phone's own session (`replace: true`). HTTP 409
+  `busy` → the user may take over. Background → peer and cameras closed,
+  `paused`; foreground → new session. Capture interruptions (phone call,
+  other app, multitasking, system pressure) keep the peer and are shown.
+  Thermal: the hotter of `ProcessInfo.thermalState` and the capture
+  devices' system pressure selects the plan; dual mode steps down one
+  profile per level and switches the front (audience) camera off at
+  `critical`, keeping the presenter. The offer is checked against what
+  t3box-phone accepts before it is sent.
+- **Screen** (`src/app/camera.tsx`): native Metal previews of what is fed
+  to the encoder, rear/front/both selector (both only when a dual profile
+  is available), status, thermal notice, take-over prompt; the screen
+  stays awake while open.
+
+Verified in CI: `src/camera/*.test.ts` (state machine with a fake native
+sender and clock, plans, offer checks); `mobile-ios-camera` (macOS,
+`swift test`): SDP restriction, and a real libwebrtc loopback — two
+tracks with different synthetic content arrive decoded as H.264 at the
+planned size, not swapped; switching the front track off stops it, rear
+drops to 540p, and both come back; `phone-ios-offer`: that libwebrtc offer
+is accepted by the real t3box-phone through control and answered with
+H.264 42e01f for both tracks. Capture, rotation, MultiCam cost, hardware
+encoder use and thermal behaviour on a real iPhone are physical
+qualification (Q-PHONE); none has been run.
+
 ## Not done yet
-- Phone app sender (react-native-webrtc / native camera modules with
-  hardware encoding, iOS MultiCam, Android Camera2) — the app only has the
-  BLE/LAN enrollment today.
-- WSS/trickle ICE, bandwidth/congestion tuning, audio from the phone.
+- Android sender (Kotlin, Camera2 concurrent cameras, MediaCodec): paused;
+  it implements `T3BoxCamera.types.ts`.
+- WSS/trickle ICE, audio from the phone.
 - Decode load on the Pi 5 (two 720p30 software decodes next to x264) is
   unmeasured: physical qualification Q-PHONE / Q-AV.
