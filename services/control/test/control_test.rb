@@ -217,3 +217,62 @@ class SceneFixtureConformanceTest < Minitest::Test
     fixtures("invalid").each { |name, doc| refute_nil SceneValidator.validate(doc), name }
   end
 end
+
+class CameraSessionTest < Minitest::Test
+  include Rack::Test::Methods
+
+  TOKEN = "c" * 32
+
+  def app = Control
+
+  def setup
+    Control.configure_storage(":memory:")
+    Control.token = TOKEN
+    @phone = FakeEngine.new do |req|
+      case req["method"]
+      when "session.offer"
+        if req.dig("params", "sdp") == "busy" then FakeEngine.error(req, "busy", "a phone session is active")
+        else FakeEngine.ok(req, {"sdp" => "v=0 answer"})
+        end
+      when "session.status" then FakeEngine.ok(req, {"state" => "connected"})
+      when "session.close" then FakeEngine.ok(req, {})
+      end
+    end
+    Control.phone = EngineClient.new(socket_path: @phone.path)
+    header "Host", "localhost"
+    header "Authorization", "Bearer #{TOKEN}"
+    header "Content-Type", "application/json"
+  end
+
+  def teardown = @phone.close
+
+  def test_relays_offer_and_maps_errors
+    post "/api/v1/cameras/session/offer", JSON.generate(sdp: "v=0 offer", tracks: {"t1" => "rear"})
+    assert_equal 200, last_response.status, last_response.body
+    assert_equal "v=0 answer", JSON.parse(last_response.body)["sdp"]
+    req = @phone.requests.pop
+    assert_equal({"sdp" => "v=0 offer", "tracks" => {"t1" => "rear"}}, req["params"])
+    post "/api/v1/cameras/session/offer", JSON.generate(sdp: "busy", tracks: {"t1" => "rear"})
+    assert_equal 409, last_response.status
+    assert_equal "busy", JSON.parse(last_response.body).dig("error", "code")
+    post "/api/v1/cameras/session/offer", JSON.generate(sdp: "x", tracks: {}, extra: 1)
+    assert_equal 422, last_response.status
+  end
+
+  def test_status_close_and_unavailable
+    get "/api/v1/cameras/session"
+    assert_equal "connected", JSON.parse(last_response.body)["state"]
+    delete "/api/v1/cameras/session"
+    assert_equal 204, last_response.status
+    Control.phone = EngineClient.new(socket_path: File.join(Dir.tmpdir, "t3box-no-phone-#{Process.pid}.sock"))
+    get "/api/v1/cameras/session"
+    assert_equal 503, last_response.status
+    assert_equal "phone_unavailable", JSON.parse(last_response.body).dig("error", "code")
+  end
+
+  def test_requires_token
+    header "Authorization", "Bearer #{"x" * 32}"
+    post "/api/v1/cameras/session/offer", JSON.generate(sdp: "v=0", tracks: {"t" => "rear"})
+    assert_equal 401, last_response.status
+  end
+end

@@ -446,6 +446,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cameras/session/offer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start the phone camera session (WebRTC offer → answer)
+         * @description Relays the phone's SDP offer to t3box-phone (docs/PHONE.md) and
+         *     returns the non-trickle answer. Media never passes through this
+         *     API. `tracks` maps the offer's MediaStreamTrack ids to roles. One
+         *     phone at a time: an active session answers 409 busy unless
+         *     `replace` is true.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        sdp: string;
+                        tracks: {
+                            [key: string]: "rear" | "front";
+                        };
+                        replace?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Answer */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            sdp: string;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cameras/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Phone session status */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Status (state none when no session) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            state: string;
+                            access_units?: {
+                                [key: string]: number;
+                            };
+                            keyframe_requests?: number;
+                            dropped?: number;
+                            age_ms?: number;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        /** End the phone session */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Closed (also when none was active) */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/program/transition": {
         parameters: {
             query?: never;
@@ -523,7 +643,8 @@ export interface components {
                  *     invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                 *     program_timeout(503) too_many_streams(429) internal_error(500);
+                 *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503)
+                 *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */
                 code: string;
@@ -550,6 +671,16 @@ export interface components {
                 scene_id: string;
                 revision: number;
             };
+            /** @description Non-HDMI sources seen by the compositor (phone tracks), newest frame each. */
+            sources: {
+                id: string;
+                width: number;
+                height: number;
+                age_ms: number;
+                /** @description Young enough (500 ms) to be composed; stale sources fall back to the layer background. */
+                fresh: boolean;
+                mean_luma: number;
+            }[];
         };
         "scene.schema": {
             /** @constant */

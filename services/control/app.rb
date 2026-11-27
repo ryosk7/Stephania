@@ -48,7 +48,7 @@ class Control < Sinatra::Base
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
-    attr_accessor :db, :token, :engine, :events, :poller, :lan
+    attr_accessor :db, :token, :engine, :events, :poller, :lan, :phone
 
     def configure_storage(path)
       database = Sequel.sqlite(path, max_connections: 1, timeout: 1000)
@@ -75,6 +75,9 @@ class Control < Sinatra::Base
       self.token = env["T3BOX_CONTROL_TOKEN"]
       self.lan = LanAccess.new(pki_dir: env["T3BOX_PKI_DIR"], tokens_file: env["T3BOX_CONTROL_TOKENS_FILE"])
       self.engine = EngineClient.new(socket_path: env.fetch("T3BOX_ENGINE_SOCKET", EngineClient::DEFAULT_SOCKET))
+      # t3box-phone speaks the same framing (docs/PHONE.md); answers wait for
+      # ICE gathering, hence the longer timeout.
+      self.phone = EngineClient.new(socket_path: env.fetch("T3BOX_PHONE_SOCKET", "/run/t3box-phone/phone.sock"), timeout: 8.0)
       configure_storage(env.fetch("T3BOX_CONTROL_DB", ":memory:"))
       configure_events(interval: Float(env.fetch("T3BOX_CONTROL_POLL_SECONDS", "1.0")))
     end
@@ -122,6 +125,16 @@ class Control < Sinatra::Base
       fail_with ENGINE_STATUS.fetch(e.code, 502), e.code, e.message
     rescue EngineClient::Unavailable
       fail_with 503, "engine_unavailable", "media engine is not reachable"
+    end
+
+    PHONE_STATUS = {"busy" => 409, "invalid_offer" => 422, "invalid_params" => 422}.freeze
+
+    def phone_call(method, params = nil)
+      settings.phone.call(method, params, request_id: request_id)
+    rescue EngineClient::RemoteError => e
+      fail_with PHONE_STATUS.fetch(e.code, 502), e.code, e.message
+    rescue EngineClient::Unavailable
+      fail_with 503, "phone_unavailable", "phone media service is not reachable"
     end
 
     def scene_row(id)
@@ -288,6 +301,29 @@ class Control < Sinatra::Base
     # Only reachable once the engine reports an acknowledged application.
     settings.events.publish("program.changed", {scene_id: row[:id], revision: row[:revision]})
     json_reply({scene_id: row[:id], revision: row[:revision], engine: result})
+  end
+
+  # Phone camera session (docs/PHONE.md). The control plane relays SDP
+  # only; media flows phone → t3box-phone (WebRTC) → engine, never here.
+  post "/api/v1/cameras/session/offer" do
+    input = read_json
+    unless input.is_a?(Hash) && (input.keys - %w[sdp tracks replace]).empty? && input["sdp"].is_a?(String) &&
+        input["tracks"].is_a?(Hash) && (input["replace"].nil? || [true, false].include?(input["replace"]))
+      fail_with 422, "invalid_request", "body must be {sdp, tracks, replace?}"
+    end
+    params = {sdp: input["sdp"], tracks: input["tracks"]}
+    params[:replace] = input["replace"] unless input["replace"].nil?
+    json_reply(phone_call("session.offer", params))
+  end
+
+  get "/api/v1/cameras/session" do
+    json_reply(phone_call("session.status"))
+  end
+
+  delete "/api/v1/cameras/session" do
+    phone_call("session.close")
+    status 204
+    ""
   end
 
   get "/" do

@@ -22,7 +22,7 @@ check "data partition mounted (ext4)" sh -c 'findmnt -n -o FSTYPE /data | grep -
 check "state bind-mounted from data" sh -c 'findmnt -n /var/lib/t3box'
 check "first-boot token created on data" test -s /data/t3box/config/control.env
 check "no compiler in the image" sh -c '! command -v gcc && ! command -v cc && ! command -v make'
-for u in t3box t3box-control t3box-firstboot; do check "$u active" systemctl is-active "$u"; done
+for u in t3box t3box-control t3box-firstboot t3box-phone; do check "$u active" systemctl is-active "$u"; done
 info "t3box-provision $(systemctl is-active t3box-provision) (no Wi-Fi device in QEMU)"
 T3BOX_CONTROL_TOKEN=
 [ -r /data/t3box/config/control.env ] && . /data/t3box/config/control.env
@@ -33,6 +33,8 @@ check "control API answers on loopback with the bootstrap token" \
 check "control reaches the engine over IPC" \
   curl -fsS -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9292/api/v1/status
 check "Studio is served by the control plane" sh -c 'curl -fsS http://127.0.0.1:9292/ | grep -q "<div id=\"root\""'
+check "phone service answers through the control plane" sh -c "curl -fsS -H 'Authorization: Bearer $T3BOX_CONTROL_TOKEN' http://127.0.0.1:9292/api/v1/cameras/session | grep -q '\"state\":\"none\"'"
+check "engine ingest socket for phone media exists" test -S /run/t3box/media.sock
 check "engine health via t3box-bootctl" env T3BOX_HEALTH_ATTEMPTS=30 /usr/local/bin/t3box-bootctl health
 check "device PKI published an endpoint" test -s /var/lib/t3box/pki/endpoint.json
 code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /var/lib/t3box/pki/ca.pem --resolve t3box.local:9443:127.0.0.1 https://t3box.local:9443/api/v1/capabilities)

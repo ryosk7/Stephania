@@ -169,6 +169,64 @@ paths:
                     created_at_unix: {type: integer}
                     document: {$ref: "scene.schema.json"}
         default: {$ref: "#/components/responses/Error"}
+  /cameras/session/offer:
+    post:
+      summary: Start the phone camera session (WebRTC offer → answer)
+      description: |
+        Relays the phone's SDP offer to t3box-phone (docs/PHONE.md) and
+        returns the non-trickle answer. Media never passes through this
+        API. `tracks` maps the offer's MediaStreamTrack ids to roles. One
+        phone at a time: an active session answers 409 busy unless
+        `replace` is true.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sdp, tracks]
+              properties:
+                sdp: {type: string, maxLength: 32768}
+                tracks:
+                  type: object
+                  minProperties: 1
+                  maxProperties: 2
+                  additionalProperties: {enum: [rear, front]}
+                replace: {type: boolean}
+      responses:
+        "200":
+          description: Answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sdp]
+                properties: {sdp: {type: string}}
+        default: {$ref: "#/components/responses/Error"}
+  /cameras/session:
+    get:
+      summary: Phone session status
+      responses:
+        "200":
+          description: Status (state none when no session)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state]
+                properties:
+                  state: {type: string}
+                  access_units: {type: object, additionalProperties: {type: integer}}
+                  keyframe_requests: {type: integer}
+                  dropped: {type: integer}
+                  age_ms: {type: integer}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: End the phone session
+      responses:
+        "204": {description: Closed (also when none was active)}
+        default: {$ref: "#/components/responses/Error"}
   /program/transition:
     post:
       summary: Apply a stored draft revision to Program (IPC scene.apply)
@@ -238,7 +296,8 @@ components:
                 invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                program_timeout(503) too_many_streams(429) internal_error(500);
+                program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503)
+                internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}
             request_id: {type: string, description: Same value as the X-Request-Id response header and the IPC request_id.}

@@ -10,6 +10,9 @@ ExecStart=/usr/local/bin/t3box
 Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
 # Control service uid (see t3box.sysusers.conf); root and t3box are implicit.
 Environment=T3BOX_IPC_ALLOWED_UIDS=852
+# Phone ingest (crate::phone_ingest): only t3box-phone (uid 855).
+Environment=T3BOX_MEDIA_SOCKET=/run/t3box/media.sock
+Environment=T3BOX_MEDIA_ALLOWED_UIDS=855
 # Control socket directory; only the t3box group (control service) may enter.
 RuntimeDirectory=t3box
 RuntimeDirectoryMode=0750

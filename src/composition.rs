@@ -101,6 +101,23 @@ impl SourceRegistry {
     pub fn clear(&self) {
         self.frames.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+
+    /// Per-source summary for `engine.status` (`sources`): geometry, age
+    /// of the newest frame, whether it is fresh enough to be composed, and
+    /// a sampled mean luma (black/frozen-feed indicator).
+    pub fn describe(&self, now: Instant) -> Vec<serde_json::Value> {
+        let frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<serde_json::Value> = frames.iter().map(|(id, (f, at))| {
+            let age = now.saturating_duration_since(*at);
+            let y = f.y();
+            let samples: Vec<u32> = y.iter().step_by(61).map(|&v| u32::from(v)).collect();
+            let mean = if samples.is_empty() { 0 } else { samples.iter().sum::<u32>() / samples.len() as u32 };
+            serde_json::json!({"id": id, "width": f.width, "height": f.height, "age_ms": age.as_millis() as u64,
+                               "fresh": age <= SOURCE_MAX_AGE, "mean_luma": mean})
+        }).collect();
+        out.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        out
+    }
 }
 
 /// Marks the composition loop active for its lifetime.

@@ -53,6 +53,8 @@ impl EngineControl for IpcEngine {
     fn program(&self) -> (String, u64) { t3box::composition::current_program() }
 
     fn compositor_enabled(&self) -> bool { t3box::composition::enabled() }
+
+    fn sources(&self) -> Vec<serde_json::Value> { t3box::composition::sources().describe(std::time::Instant::now()) }
 }
 
 /// Resolve the IPC socket path. `T3BOX_ENGINE_SOCKET=off` disables it.
@@ -85,6 +87,35 @@ fn start_engine_ipc(controller: &Arc<Controller>) {
         Err(e) => eprintln!("T3Box engine IPC unavailable at {}: {e}", path.display()),
     }
 }
+
+/// Phone media ingest socket (crate::phone_ingest, docs/PHONE.md).
+/// `T3BOX_MEDIA_SOCKET=off` disables it; peers are limited like the IPC
+/// socket, by `T3BOX_MEDIA_ALLOWED_UIDS` (the t3box-phone service).
+#[cfg(all(unix, feature = "native-aac"))]
+fn start_phone_ingest() {
+    let path = match std::env::var("T3BOX_MEDIA_SOCKET") {
+        Ok(v) if v == "off" => return,
+        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => std::path::PathBuf::from("/run/t3box/media.sock"),
+    };
+    let mut allowed = Vec::new();
+    for part in std::env::var("T3BOX_MEDIA_ALLOWED_UIDS").unwrap_or_default().split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.parse() { Ok(uid) => allowed.push(uid), Err(_) => { eprintln!("T3Box phone ingest disabled: invalid uid {part}"); return; } }
+    }
+    let policy = PeerPolicy { allowed_uids: allowed };
+    match t3box::ipc::bind(&path) {
+        Ok(listener) => {
+            match std::thread::Builder::new().name("t3box-phone-ingest".into()).spawn(move || t3box::phone_ingest::serve(listener, policy)) {
+                Ok(_) => println!("T3Box phone ingest: {}", path.display()),
+                Err(e) => eprintln!("T3Box phone ingest thread failed: {e}"),
+            }
+        }
+        Err(e) => eprintln!("T3Box phone ingest unavailable at {}: {e}", path.display()),
+    }
+}
+
+#[cfg(not(all(unix, feature = "native-aac")))]
+fn start_phone_ingest() {}
 
 fn video_devices() -> Vec<String> {
     let Ok(entries) = fs::read_dir("/dev") else { return Vec::new() };
@@ -293,6 +324,7 @@ fn main() -> std::io::Result<()> {
     // Loopback-only by design; the control API has no authentication yet.
     let controller = Arc::new(Controller::new(config));
     start_engine_ipc(&controller);
+    start_phone_ingest();
     let listener = TcpListener::bind("127.0.0.1:8787")?;
     println!("T3Box local dashboard: http://127.0.0.1:8787");
     for connection in listener.incoming() {

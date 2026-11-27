@@ -50,6 +50,10 @@ pub mod transport_deadline;
 
 #[cfg(feature = "native-aac")]
 pub mod native_aac;
+#[cfg(feature = "native-aac")]
+pub mod h264_decode;
+#[cfg(all(unix, feature = "native-aac"))]
+pub mod phone_ingest;
 
 #[cfg(test)]
 mod accelerated_ci;

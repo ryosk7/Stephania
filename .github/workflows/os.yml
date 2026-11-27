@@ -72,7 +72,7 @@ jobs:
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - uses: ./.github/actions/cached-build
         with:
-          command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl
+          command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
