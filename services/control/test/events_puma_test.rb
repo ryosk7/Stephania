@@ -87,8 +87,8 @@ class EventsPumaTest < Minitest::Test
   end
 
   def test_open_streams_do_not_block_shutdown
-    sock, = open_stream
-    read_until(sock, "event: snapshot", +"")
+    sock, head = open_stream
+    read_until(sock, "event: snapshot", head.dup)
     started = Time.now
     Process.kill("TERM", @pid)
     deadline = started + 8
