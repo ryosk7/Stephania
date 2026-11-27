@@ -276,3 +276,134 @@ class CameraSessionTest < Minitest::Test
     assert_equal 401, last_response.status
   end
 end
+
+class CameraCredentialTest < Minitest::Test
+  include Rack::Test::Methods
+
+  OWNER = "o" * 32
+
+  def app = Control
+
+  def setup
+    Control.configure_storage(":memory:")
+    Control.token = OWNER
+    Control.phone_session_owner = nil
+    @phone = FakeEngine.new do |req|
+      case req["method"]
+      when "session.offer" then FakeEngine.ok(req, {"sdp" => "answer"})
+      else FakeEngine.ok(req, {"state" => "none"})
+      end
+    end
+    Control.phone = EngineClient.new(socket_path: @phone.path)
+    @engine = FakeEngine.new { |req| FakeEngine.ok(req, {"state" => "idle"}) }
+    Control.engine = EngineClient.new(socket_path: @engine.path)
+    header "Host", "localhost"
+    header "Content-Type", "application/json"
+  end
+
+  def teardown
+    @phone.close
+    @engine.close
+  end
+
+  def as(token) = header("Authorization", "Bearer #{token}")
+  def body = JSON.parse(last_response.body)
+
+  def issue(ttl: 3600, label: "stage phone")
+    as OWNER
+    post "/api/v1/credentials/camera", JSON.generate(ttl_s: ttl, label: label)
+    assert_equal 201, last_response.status, last_response.body
+    body
+  end
+
+  def offer(replace: nil)
+    payload = {sdp: "v=0", tracks: {"t" => "rear"}}
+    payload[:replace] = replace unless replace.nil?
+    post "/api/v1/cameras/session/offer", JSON.generate(payload)
+  end
+
+  def test_camera_token_only_reaches_the_camera_session
+    cred = issue
+    assert_match(/\At3c_[0-9a-f]{64}\z/, cred["token"])
+    as cred["token"]
+    offer
+    assert_equal 200, last_response.status, last_response.body
+    get "/api/v1/cameras/session"
+    assert_equal 200, last_response.status
+    %w[/api/v1/status /api/v1/scenes /api/v1/credentials/camera /api/v1/events].each do |path|
+      get path
+      assert_equal 403, last_response.status, path
+      assert_equal "forbidden_role", body.dig("error", "code")
+    end
+    post "/api/v1/stream/start"
+    assert_equal 403, last_response.status
+    post "/api/v1/credentials/camera", JSON.generate(ttl_s: 60, label: "x")
+    assert_equal 403, last_response.status, "a camera cannot mint credentials"
+  end
+
+  def test_only_the_hash_is_stored_and_listing_hides_tokens
+    cred = issue
+    stored = Control.db[:camera_credentials].first
+    refute_includes stored.values.map(&:to_s), cred["token"]
+    as OWNER
+    get "/api/v1/credentials/camera"
+    assert_equal [cred["id"]], body.map { |c| c["id"] }
+    refute body.first.key?("token")
+  end
+
+  def test_expiry_and_revocation
+    cred = issue(ttl: 60)
+    Control.db[:camera_credentials].update(expires_at_unix: Time.now.to_i - 1)
+    as cred["token"]
+    get "/api/v1/cameras/session"
+    assert_equal 401, last_response.status, "expired"
+
+    cred = issue
+    as cred["token"]
+    offer
+    assert_equal cred["id"], Control.phone_session_owner
+    as OWNER
+    delete "/api/v1/credentials/camera/#{cred["id"]}"
+    assert_equal 204, last_response.status
+    assert_nil Control.phone_session_owner
+    closes = []
+    closes << @phone.requests.pop until @phone.requests.empty?
+    assert_includes closes.map { |r| r["method"] }, "session.close", "revoking ends that camera's session"
+    as cred["token"]
+    get "/api/v1/cameras/session"
+    assert_equal 401, last_response.status
+  end
+
+  def test_a_camera_cannot_take_over_or_end_another_session
+    first, second = issue, issue
+    as OWNER
+    offer
+    as second["token"]
+    offer(replace: true)
+    assert_equal 403, last_response.status
+    delete "/api/v1/cameras/session"
+    assert_equal 403, last_response.status
+    as first["token"]
+    delete "/api/v1/cameras/session"
+    assert_equal 403, last_response.status
+    as OWNER
+    delete "/api/v1/cameras/session"
+    assert_equal 204, last_response.status
+  end
+
+  def test_validation_and_bounds
+    as OWNER
+    post "/api/v1/credentials/camera", JSON.generate(ttl_s: 10, label: "x")
+    assert_equal 422, last_response.status
+    post "/api/v1/credentials/camera", JSON.generate(ttl_s: 100_000)
+    assert_equal 422, last_response.status
+    Control::MAX_CAMERA_CREDENTIALS.times { issue }
+    as OWNER
+    post "/api/v1/credentials/camera", JSON.generate(ttl_s: 60, label: "x")
+    assert_equal 409, last_response.status
+    delete "/api/v1/credentials/camera/zzzz"
+    assert_equal 400, last_response.status
+    delete "/api/v1/credentials/camera/00000000"
+    assert_equal 404, last_response.status
+  end
+end

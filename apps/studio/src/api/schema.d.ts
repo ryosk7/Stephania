@@ -566,6 +566,117 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/credentials/camera": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List unexpired camera credentials (never the tokens) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Credentials */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CameraCredential"][];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Issue a camera-role credential (owner only)
+         * @description Short-lived token (`t3c_…`, shown once, stored as SHA-256) that can
+         *     only use the camera session endpoints; every other route answers
+         *     403 forbidden_role. A camera cannot replace or end a session it did
+         *     not open. Revoking the credential ends the session it opened.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @default 43200 */
+                        ttl_s?: number;
+                        label?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Issued */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CameraCredential"] & {
+                            token: string;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/credentials/camera/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke a camera credential (ends its phone session) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Revoked */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/program/transition": {
         parameters: {
             query?: never;
@@ -630,6 +741,12 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        CameraCredential: {
+            id: string;
+            label: string;
+            created_at_unix: number;
+            expires_at_unix: number;
+        };
         Id: string;
         StoredScene: {
             id: components["schemas"]["Id"];
@@ -643,7 +760,8 @@ export interface components {
                  *     invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                 *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503)
+                 *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403)
+                 *     too_many_credentials(409)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */

@@ -30,8 +30,9 @@ class StorageTest < Minitest::Test
       path = File.join(dir, "control.db")
       Control.configure_storage(path)
       Control.configure_storage(path)
-      assert_equal 2, Control.db[:schema_info].get(:version)
+      assert_equal 3, Control.db[:schema_info].get(:version)
       assert Control.db.table_exists?(:scene_revisions)
+      assert Control.db.table_exists?(:camera_credentials)
     end
   end
 

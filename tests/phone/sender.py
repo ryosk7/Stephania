@@ -26,9 +26,9 @@ def check(cond, message):
         raise SystemExit(1)
 
 
-def api(method, path, body=None):
+def api(method, path, body=None, bearer=None):
     req = urllib.request.Request(base + path, method=method, data=None if body is None else json.dumps(body).encode(),
-                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "Host": "localhost"})
+                                 headers={"Authorization": "Bearer " + (bearer or token), "Content-Type": "application/json", "Host": "localhost"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             raw = r.read()
@@ -68,11 +68,18 @@ async def main():
         tracks[t.id] = role
     await pc.setLocalDescription(await pc.createOffer())
 
-    status, body = api("POST", "/api/v1/cameras/session/offer", {"sdp": pc.localDescription.sdp, "tracks": tracks})
+    # The phone uses a camera-role credential issued by the owner.
+    status, cred = api("POST", "/api/v1/credentials/camera", {"ttl_s": 600, "label": "e2e phone"})
+    check(status == 201 and cred["token"].startswith("t3c_"), f"owner issued a camera credential ({status})")
+    camera = cred["token"]
+    status, _ = api("GET", "/api/v1/status", bearer=camera)
+    check(status == 403, f"camera credential cannot read device status ({status})")
+
+    status, body = api("POST", "/api/v1/cameras/session/offer", {"sdp": pc.localDescription.sdp, "tracks": tracks}, bearer=camera)
     check(status == 200 and "sdp" in body, f"device answered the offer ({status})")
     await pc.setRemoteDescription(RTCSessionDescription(sdp=body["sdp"], type="answer"))
 
-    status, again = api("POST", "/api/v1/cameras/session/offer", {"sdp": pc.localDescription.sdp, "tracks": tracks})
+    status, again = api("POST", "/api/v1/cameras/session/offer", {"sdp": pc.localDescription.sdp, "tracks": tracks}, bearer=camera)
     check(status == 409 and again["error"]["code"] == "busy", f"second phone refused while the first is active ({status})")
 
     deadline = time.time() + 20
@@ -93,8 +100,11 @@ async def main():
     print("phone session:", json.dumps(ps), flush=True)
     check(ps["state"] == "connected" and ps["access_units"].get("phone:rear", 0) > seconds * 15, "access units forwarded at frame rate")
 
-    status, _ = api("DELETE", "/api/v1/cameras/session")
-    check(status == 204, "session closed")
+    # Revoking the credential ends the session it opened.
+    status, _ = api("DELETE", f"/api/v1/credentials/camera/{cred['id']}")
+    check(status == 204, "camera credential revoked")
+    _, ps = api("GET", "/api/v1/cameras/session")
+    check(ps["state"] == "none", f"revocation ended the phone session ({ps['state']})")
     await pc.close()
     await asyncio.sleep(1.5)
     _, st = api("GET", "/api/v1/status")

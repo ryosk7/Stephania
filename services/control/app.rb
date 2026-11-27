@@ -23,6 +23,9 @@ class Control < Sinatra::Base
   MIGRATIONS = File.expand_path("db/migrations", __dir__)
   ID = /\A[a-zA-Z0-9_-]{1,64}\z/
   ALLOWED_HOSTS = %w[localhost 127.0.0.1].freeze
+  CAMERA_ROUTES = [%w[POST /api/v1/cameras/session/offer], %w[GET /api/v1/cameras/session], %w[DELETE /api/v1/cameras/session]].freeze
+  MAX_CAMERA_TTL = 86_400
+  MAX_CAMERA_CREDENTIALS = 8
 
   # Engine IPC error code -> HTTP status. Unknown codes are a contract
   # violation by the engine and surface as 502.
@@ -49,6 +52,9 @@ class Control < Sinatra::Base
   # HTTP 500 in the first foundation CI run.
   class << self
     attr_accessor :db, :token, :engine, :events, :poller, :lan, :phone
+    # Camera credential id that opened the current phone session (nil when
+    # the owner opened it); revoking that credential ends the session.
+    attr_accessor :phone_session_owner
 
     def configure_storage(path)
       database = Sequel.sqlite(path, max_connections: 1, timeout: 1000)
@@ -127,6 +133,20 @@ class Control < Sinatra::Base
       fail_with 503, "engine_unavailable", "media engine is not reachable"
     end
 
+    CAMERA_TOKEN = /\At3c_[0-9a-f]{64}\z/
+
+    # Valid, unexpired camera credential row for a presented token, or nil.
+    def camera_credential(supplied)
+      return nil unless supplied.match?(CAMERA_TOKEN)
+
+      row = settings.db[:camera_credentials].where(token_sha256: OpenSSL::Digest::SHA256.hexdigest(supplied)).first
+      row if row && row[:expires_at_unix] > Time.now.to_i
+    end
+
+    def credential_json(row)
+      {id: row[:id], label: row[:label], created_at_unix: row[:created_at_unix], expires_at_unix: row[:expires_at_unix]}
+    end
+
     PHONE_STATUS = {"busy" => 409, "invalid_offer" => 422, "invalid_params" => 422}.freeze
 
     def phone_call(method, params = nil)
@@ -176,8 +196,13 @@ class Control < Sinatra::Base
     # owner enrolled over BLE (revoked by factory reset).
     local = !@lan_request && bearer && env_token && supplied.bytesize == token.bytesize &&
       OpenSSL.fixed_length_secure_compare(supplied, token)
-    authorized = local || (bearer && settings.lan&.issued_token?(supplied))
-    fail_with 401, "unauthorized", "missing or invalid bearer token" unless authorized
+    owner = local || (bearer && settings.lan&.issued_token?(supplied))
+    @camera = !owner && bearer && camera_credential(supplied)
+    fail_with 401, "unauthorized", "missing or invalid bearer token" unless owner || @camera
+    # Camera role: media session only (§26). Everything else is owner-only.
+    if @camera && !CAMERA_ROUTES.any? { |verb, path| request.request_method == verb && request.path_info == path }
+      fail_with 403, "forbidden_role", "camera credentials only allow the camera session"
+    end
   end
 
   get "/api/v1/capabilities" do
@@ -313,7 +338,13 @@ class Control < Sinatra::Base
     end
     params = {sdp: input["sdp"], tracks: input["tracks"]}
     params[:replace] = input["replace"] unless input["replace"].nil?
-    json_reply(phone_call("session.offer", params))
+    # A camera may not take over a session opened by someone else.
+    if @camera && params[:replace] && Control.phone_session_owner != @camera[:id]
+      fail_with 403, "forbidden_role", "a camera credential cannot replace another session"
+    end
+    result = phone_call("session.offer", params)
+    Control.phone_session_owner = @camera && @camera[:id]
+    json_reply(result)
   end
 
   get "/api/v1/cameras/session" do
@@ -321,7 +352,53 @@ class Control < Sinatra::Base
   end
 
   delete "/api/v1/cameras/session" do
+    if @camera && Control.phone_session_owner != @camera[:id]
+      fail_with 403, "forbidden_role", "a camera credential can only end its own session"
+    end
     phone_call("session.close")
+    Control.phone_session_owner = nil
+    status 204
+    ""
+  end
+
+  # Camera credentials (owner only): short-lived tokens that can do nothing
+  # but run the phone camera session. Shown once; stored as SHA-256.
+  post "/api/v1/credentials/camera" do
+    input = read_json
+    ttl = input.is_a?(Hash) ? input.fetch("ttl_s", 12 * 3600) : nil
+    label = input.is_a?(Hash) ? input.fetch("label", "camera") : nil
+    unless input.is_a?(Hash) && (input.keys - %w[ttl_s label]).empty? && ttl.is_a?(Integer) && ttl.between?(60, MAX_CAMERA_TTL) &&
+        label.is_a?(String) && label.match?(/\A[[:print:]]{1,64}\z/)
+      fail_with 422, "invalid_request", "body must be {ttl_s: 60..#{MAX_CAMERA_TTL}, label: 1..64 printable}"
+    end
+    now = Time.now.to_i
+    db = settings.db
+    db[:camera_credentials].where(Sequel[:expires_at_unix] <= now).delete
+    fail_with 409, "too_many_credentials", "at most #{MAX_CAMERA_CREDENTIALS} camera credentials" if db[:camera_credentials].count >= MAX_CAMERA_CREDENTIALS
+    token = "t3c_#{SecureRandom.hex(32)}"
+    row = {id: SecureRandom.hex(4), token_sha256: OpenSSL::Digest::SHA256.hexdigest(token), label: label,
+           created_at_unix: now, expires_at_unix: now + ttl}
+    db[:camera_credentials].insert(row)
+    json_reply(credential_json(row).merge(token: token), 201)
+  end
+
+  get "/api/v1/credentials/camera" do
+    rows = settings.db[:camera_credentials].where(Sequel[:expires_at_unix] > Time.now.to_i).order(:created_at_unix).all
+    json_reply(rows.map { |r| credential_json(r) })
+  end
+
+  delete "/api/v1/credentials/camera/:id" do
+    id = params[:id]
+    fail_with 400, "invalid_id", "credential id must be 8 hex digits" unless id.match?(/\A[0-9a-f]{8}\z/)
+    fail_with 404, "not_found", "no such credential" if settings.db[:camera_credentials].where(id: id).delete.zero?
+    if Control.phone_session_owner == id
+      begin
+        settings.phone.call("session.close", nil, request_id: request_id)
+      rescue EngineClient::Unavailable, EngineClient::RemoteError
+        nil # the session ends with the service anyway
+      end
+      Control.phone_session_owner = nil
+    end
     status 204
     ""
   end

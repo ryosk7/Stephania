@@ -227,6 +227,52 @@ paths:
       responses:
         "204": {description: Closed (also when none was active)}
         default: {$ref: "#/components/responses/Error"}
+  /credentials/camera:
+    post:
+      summary: Issue a camera-role credential (owner only)
+      description: |
+        Short-lived token (`t3c_…`, shown once, stored as SHA-256) that can
+        only use the camera session endpoints; every other route answers
+        403 forbidden_role. A camera cannot replace or end a session it did
+        not open. Revoking the credential ends the session it opened.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ttl_s: {type: integer, minimum: 60, maximum: 86400, default: 43200}
+                label: {type: string, minLength: 1, maxLength: 64}
+      responses:
+        "201":
+          description: Issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: "#/components/schemas/CameraCredential"}
+                  - type: object
+                    required: [token]
+                    properties: {token: {type: string, pattern: "^t3c_[0-9a-f]{64}$"}}
+        default: {$ref: "#/components/responses/Error"}
+    get:
+      summary: List unexpired camera credentials (never the tokens)
+      responses:
+        "200":
+          description: Credentials
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/CameraCredential"}}
+        default: {$ref: "#/components/responses/Error"}
+  /credentials/camera/{id}:
+    delete:
+      summary: Revoke a camera credential (ends its phone session)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^[0-9a-f]{8}$"}}
+      responses:
+        "204": {description: Revoked}
+        default: {$ref: "#/components/responses/Error"}
   /program/transition:
     post:
       summary: Apply a stored draft revision to Program (IPC scene.apply)
@@ -270,6 +316,14 @@ components:
   securitySchemes:
     bearer: {type: http, scheme: bearer}
   schemas:
+    CameraCredential:
+      type: object
+      required: [id, label, created_at_unix, expires_at_unix]
+      properties:
+        id: {type: string, pattern: "^[0-9a-f]{8}$"}
+        label: {type: string}
+        created_at_unix: {type: integer}
+        expires_at_unix: {type: integer}
     Id: {type: string, pattern: "^[a-zA-Z0-9_-]{1,64}$"}
     StoredScene:
       type: object
@@ -296,7 +350,8 @@ components:
                 invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503)
+                program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403)
+                too_many_credentials(409)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}
