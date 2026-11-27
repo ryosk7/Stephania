@@ -123,7 +123,7 @@ test('accounts: admin edits scenes with undo/redo and resize, operator cannot, s
   await expect(status(a)).toHaveText('シーン「Keynote」を作成しました');
   const layers = a.getByRole('region', {name: 'layers'}).getByRole('listitem');
   await expect(layers).toHaveCount(1);
-  await a.getByRole('button', {name: 'レイヤー追加'}).click();
+  await a.getByRole('button', {name: 'レイヤー追加', exact: true}).click();
   await expect(layers).toHaveCount(2);
   await a.getByRole('button', {name: '元に戻す'}).click();
   await expect(layers).toHaveCount(1);
@@ -158,7 +158,7 @@ test('accounts: admin edits scenes with undo/redo and resize, operator cannot, s
   await expect(o.getByTestId('whoami')).toHaveText('olga（オペレーター）');
   await expect(o.getByRole('region', {name: 'scenes'})).toContainText('Keynote');
   await expect(o.getByRole('button', {name: '下書き保存'})).toHaveCount(0);
-  await expect(o.getByRole('button', {name: 'レイヤー追加'})).toHaveCount(0);
+  await expect(o.getByRole('button', {name: 'レイヤー追加', exact: true})).toHaveCount(0);
   await o.goto(stack.url + '#/settings');
   await expect(o.getByRole('region', {name: 'users'})).toHaveCount(0);
 
@@ -191,8 +191,8 @@ test('scene v2: convert, colour layer, opacity, PNG asset, rendered template, fa
   await expect(page.getByTestId('v1-banner')).toHaveCount(0);
 
   await page.getByRole('button', {name: '色レイヤー追加'}).click();
-  await page.getByLabel('opacity').fill('40');
-  await page.getByLabel('rotation').fill('5');
+  await page.getByLabel('opacity', {exact: true}).fill('40');
+  await page.getByLabel('rotation', {exact: true}).fill('5');
 
   await page.getByLabel('PNGをアップロード').setInputFiles({name: 'red.png', mimeType: 'image/png', buffer: RED_PNG});
   await expect(status(page)).toContainText('アップロードしました');
