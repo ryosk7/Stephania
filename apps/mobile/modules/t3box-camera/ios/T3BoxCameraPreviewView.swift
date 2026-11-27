@@ -6,7 +6,8 @@ import WebRTC
 /// Shows exactly what is fed to the encoder, before any network.
 final class T3BoxCameraPreviewView: ExpoView {
   private let video = RTCMTLVideoView()
-  private weak var track: RTCVideoTrack?
+  // Strong: the ObjC wrapper owns the renderer adapter (released → no frames).
+  private var track: RTCVideoTrack?
   private(set) var role = ""
 
   var mirrored = false {
