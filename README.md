@@ -2,6 +2,8 @@
 
 **The open-source operating system for live broadcasting.**
 
+[Website](https://ryosk7.github.io/Stephania/) · [Install](docs/INSTALL.md) · [Releases](https://github.com/ryosk7/Stephania/releases)
+
 Stephania turns a Raspberry Pi 5 into a self-contained broadcasting box for
 lightning talks, meetups and small events. HDMI slides, both cameras of one
 phone and audio are composed on the device and streamed to YouTube Live —
@@ -62,6 +64,7 @@ failure never stops a healthy HDMI broadcast.
 | `os/` | Debian 13 / Raspberry Pi OS image, RAM installer, RAUC, systemd units |
 | `contracts/` | OpenAPI, IPC and scene schemas, BLE protocol, shared test fixtures |
 | `ci/`, `tests/` | CI scripts, QEMU and virtual-lab tests, end-to-end suites |
+| `site/` | The website on GitHub Pages (`.github/workflows/pages.yml`) |
 | `docs/` | Architecture, install, update, licensing and component documents |
 | `DESIGN.md` | Design system and UI architecture for Connect and Studio |
 

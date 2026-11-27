@@ -1,0 +1,48 @@
+name: Website
+# Publishes site/ (the Stephania website) to GitHub Pages:
+# https://ryosk7.github.io/Stephania/. Pull requests only check the page;
+# main deploys it. Requires Settings > Pages > Source: GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - site/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Local references resolve
+        run: |
+          cd site
+          for f in $(grep -oE '(href|src)="[^"#:]+"' index.html | sed -E 's/.*="([^"]+)"/\1/'); do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+          node --check download.js
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
