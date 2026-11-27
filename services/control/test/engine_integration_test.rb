@@ -72,7 +72,8 @@ class EngineIntegrationTest < Minitest::Test
     assert_equal false, status["youtube_ingest_confirmed"]
     caps = @client.call("engine.capabilities")
     assert_equal 1, caps["ipc_version"]
-    assert_equal false, caps["program_apply"]
+    assert_equal true, caps["program_apply"]
+    assert_equal true, caps["compositor"]
     error = assert_raises(EngineClient::RemoteError) { @client.call("stream.start") }
     assert_equal "engine_start_failed", error.code
     assert_equal false, @client.call("stream.stop")["streaming_requested"]

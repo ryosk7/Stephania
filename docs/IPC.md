@@ -29,14 +29,16 @@ Unknown top-level properties are rejected.
 | Method | Params | Result / behaviour |
 |---|---|---|
 | `engine.status` | none | `instance_id` (random per process; change ⇒ engine restarted), `uptime_ms`, `state`, `streaming_requested`, `native_worker_running`, `youtube_ingest_confirmed` (always `false`), `restart_attempts`, `last_error` |
-| `engine.capabilities` | none | `ipc_version`, `methods`, `scene_versions`, `program_apply:false`, `compositor:false`, `phone_camera:false`, `max_frame_bytes`, `instance_id` |
+| `engine.capabilities` | none | `ipc_version`, `methods`, `scene_versions`, `program_apply` and `compositor` (`true` unless `T3BOX_COMPOSITOR=0`), `phone_camera:false`, `max_frame_bytes`, `instance_id` |
 | `stream.start` | none | `accepted:true` — request taken; not ingest confirmation. `engine_start_failed` on configuration error |
 | `stream.stop` | none | `accepted:true, streaming_requested:false` (cooperative stop) |
 | `scene.validate` | `{scene}` | Independent engine validation of draft scene v1 |
-| `scene.apply` | `{scene}` | Validates, then **fails closed** with `not_implemented`; Program unchanged until the compositor acknowledges frame-boundary application |
+| `scene.apply` | `{scene, scene_id, revision}` | Validates, then succeeds only after the media thread acknowledges frame-boundary application. Fails closed (Program unchanged) with `program_inactive` when no stream runs, `program_timeout` when no frame boundary arrives, `not_implemented` when `T3BOX_COMPOSITOR=0` |
+| `audio.status` | none | Per-input config/state/levels, master level, resync and limiter counters (docs/AUDIO.md) |
+| `audio.configure` | `{inputs}` | Validates and applies input config live; returns the new status |
 
 ## Not yet implemented
-Cancellation, idempotency keys, `source.*`, `audio.configure`, `metrics.snapshot`, server-pushed events.
+Cancellation, idempotency keys, `source.*`, `metrics.snapshot`, server-pushed events.
 
 ## Restart reconciliation
 The engine keeps no state across restarts; it always starts idle. The control service records the last seen `instance_id` and reports `engine_restarted: true` on `/api/v1/status` when it changes, so clients re-read state instead of assuming a stream is still running. Auto-resume after an engine crash is deliberately not implemented (§27: manual initial start; opt-in recovery policy later).

@@ -15,9 +15,12 @@ Every input, including the single-input case, goes through the same mixer
   drift and discontinuities of independent USB clocks) and a bounded queue
   (8192 frames), placed on the publisher's monotonic 48 kHz timeline. A
   missing, unplugged or failing input contributes silence: program audio
-  and its PTS never stop. The mix runs 40 ms behind capture
-  (`T3BOX_AUDIO_LATENCY_MS`, 20–200) to absorb scheduling jitter; capture
-  timestamps are kept, so A/V sync is unaffected.
+  and its PTS never stop. A block leaves as soon as every input
+  that is still delivering has supplied it, so a single source adds no
+  delay. Only while one input lags does the mixer wait, at most 40 ms
+  (`T3BOX_AUDIO_LATENCY_MS`, 20–200), before mixing silence for the missing
+  part; an input whose newest sample is older than that budget is not
+  waited on. Capture timestamps are kept, so A/V sync is unaffected.
 - **Gain and mute** change live and are ramped across one 21 ms block (no
   clicks). Range −60…+12 dB.
 - **Limiter:** keeps the sum below −1 dBFS; instant attack inside the block

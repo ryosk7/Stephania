@@ -79,6 +79,9 @@ impl Input {
         Ok(())
     }
 
+    /// One past the newest sample held (0 = never fed).
+    fn end(&self) -> u64 { self.start + self.queue.len() as u64 }
+
     fn at(&mut self, pts: u64) -> [i16; 2] {
         while !self.queue.is_empty() && self.start < pts {
             self.queue.pop_front();
@@ -147,11 +150,29 @@ impl AudioMixer {
             result.resynced = true;
         }
         let mut produced = 0;
-        while now >= due(self.next) && produced < MAX_BLOCKS_PER_POLL {
+        while produced < MAX_BLOCKS_PER_POLL && (now >= due(self.next) || self.complete(now, delay)) {
             out.push(self.mix_block(targets));
             produced += 1;
         }
         result
+    }
+
+    /// A block may leave before its deadline once every input that is still
+    /// delivering has supplied all of it. The latency budget then only applies
+    /// while waiting for a lagging input, so a single source adds no delay.
+    /// An input whose newest sample is older than the budget is not waited on.
+    fn complete(&self, now: u64, delay: u64) -> bool {
+        let end = self.next + BLOCK as u64;
+        let mut any = false;
+        for input in &self.inputs {
+            let e = input.end();
+            if e >= end {
+                any = true;
+            } else if e + delay >= now {
+                return false;
+            }
+        }
+        any
     }
 
     fn mix_block(&mut self, targets: [f64; 2]) -> MixedBlock {
@@ -223,11 +244,10 @@ mod tests {
         let mut m = AudioMixer::new(40);
         m.ingest(0, &frame(2, 1000)).unwrap();
         m.ingest(1, &frame(1, 2000)).unwrap();
-        // Prime gains so this block is not a ramp.
         m.inputs[0].gain = 0.5;
         m.inputs[1].gain = 0.5;
-        assert!(poll(&mut m, 60000, [0.5, 0.5]).1.is_empty());
-        let (_, a) = poll(&mut m, 62000, [0.5, 0.5]);
+        // Both inputs cover the block: it leaves without waiting for the budget.
+        let (_, a) = poll(&mut m, 30000, [0.5, 0.5]);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].block.pts_samples, 4800);
         assert!(a[0].block.interleaved.iter().all(|&x| x == 1500));
@@ -235,6 +255,20 @@ mod tests {
         let (_, b) = poll(&mut m, 84000, [0.5, 0.5]);
         assert_eq!(b[0].block.pts_samples, 4800 + 1024);
         assert!(b[0].block.interleaved.iter().all(|&x| x == 0), "missing input is silence");
+    }
+
+    #[test]
+    fn waits_for_a_lagging_input_only_within_the_budget() {
+        let mut m = AudioMixer::new(40);
+        m.ingest(0, &frame(2, 1000)).unwrap(); // 4800..5824
+        let half = AudioFrame { timestamp_us: 100000, sample_rate: 48000, channels: 2, samples: vec![2000; BLOCK] };
+        m.ingest(1, &half).unwrap(); // 4800..5312: still delivering, not complete
+        assert!(poll(&mut m, 22000, [1.0, 1.0]).1.is_empty(), "lagging input inside the budget is waited for");
+        let (_, a) = poll(&mut m, 62000, [1.0, 1.0]);
+        assert_eq!(a.len(), 1, "deadline releases the block regardless");
+        // An input that stopped delivering is not waited on: input 0 alone is early.
+        m.ingest(0, &AudioFrame { timestamp_us: 121333, ..frame(2, 1000) }).unwrap();
+        assert_eq!(poll(&mut m, 56250, [1.0, 1.0]).1.len(), 1, "before the 8768-sample deadline");
     }
 
     #[test]

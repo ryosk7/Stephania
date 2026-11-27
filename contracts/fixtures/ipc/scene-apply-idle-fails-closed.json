@@ -25,6 +25,6 @@
  },
  "expect": {
   "ok": false,
-  "code": "not_implemented"
+  "code": "program_inactive"
  }
 }

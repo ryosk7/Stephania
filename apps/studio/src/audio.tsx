@@ -31,6 +31,9 @@ export function AudioPanel({api, levels, onMessage}: {api: Api; levels?: AudioLe
   const [inputs, setInputs] = useState<AudioInput[]>([]);
   const [state, setState] = useState<Record<string, {state: string; error?: string}>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Saves run one at a time so a slow response can never overwrite a newer edit.
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const pending = useRef(0);
 
   async function load() {
     const r = await api.audio();
@@ -43,15 +46,28 @@ export function AudioPanel({api, levels, onMessage}: {api: Api; levels?: AudioLe
   }
   useEffect(() => { load().catch(e => onMessage(String(e))); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function save(id: string, change: Partial<AudioInput>) {
-    try {
-      const r = await api.saveAudio({inputs: [{id: id as 'hdmi' | 'mic', ...change}]});
-      setInputs(r.stored);
-      onMessage(r.applied ? '音声設定を適用しました' : '保存しました（エンジン接続時に適用されます）');
-    } catch (e) {
-      onMessage(String(e));
-      await load();
-    }
+  function save(id: string, change: Partial<AudioInput>): Promise<void> {
+    pending.current += 1;
+    queue.current = queue.current.then(async () => {
+      try {
+        const r = await api.saveAudio({inputs: [{id: id as 'hdmi' | 'mic', ...change}]});
+        // Only the last queued save replaces local state; earlier ones would
+        // briefly undo edits the user has already made.
+        if (pending.current === 1) setInputs(r.stored);
+        onMessage(r.applied ? '音声設定を適用しました' : '保存しました（エンジン接続時に適用されます）');
+      } catch (e) {
+        onMessage(String(e));
+        await load().catch(() => undefined);
+      } finally {
+        pending.current -= 1;
+      }
+    });
+    return queue.current;
+  }
+  /** Optimistic toggle: the control reflects the click immediately. */
+  function commit(id: string, change: Partial<AudioInput>) {
+    setInputs(xs => xs.map(i => (i.id === id ? {...i, ...change} : i)));
+    void save(id, change);
   }
   function edit(id: string, change: Partial<AudioInput>, live = false) {
     setInputs(xs => xs.map(i => (i.id === id ? {...i, ...change} : i)));
@@ -74,11 +90,11 @@ export function AudioPanel({api, levels, onMessage}: {api: Api; levels?: AudioLe
             <strong>{NAMES[i.id] ?? i.id}</strong> <span data-testid={'audio-state-' + i.id}>{st ? STATES[st] ?? st : ''}</span>
             {state[i.id]?.error && <span> {state[i.id]!.error}</span>}
             <Meter level={live?.levels} label={i.id}/>
-            <label>有効 <input type="checkbox" checked={i.enabled} onChange={e => void save(i.id, {enabled: e.target.checked, device: i.device})}/></label>
+            <label>有効 <input type="checkbox" checked={i.enabled} onChange={e => commit(i.id, {enabled: e.target.checked, device: i.device})}/></label>
             <label>デバイス <input value={i.device} onChange={e => edit(i.id, {device: e.target.value})} onBlur={e => void save(i.id, {device: e.target.value})} placeholder="plughw:CARD=Mic,DEV=0"/></label>
             <label>ゲイン {i.gain_db.toFixed(1)} dB <input type="range" min={-60} max={12} step={0.5} value={i.gain_db}
               aria-label={'gain ' + i.id} onChange={e => edit(i.id, {gain_db: Number(e.target.value)}, true)}/></label>
-            <button aria-pressed={i.muted} onClick={() => void save(i.id, {muted: !i.muted})}>{i.muted ? 'ミュート解除' : 'ミュート'}</button>
+            <button aria-pressed={i.muted} onClick={() => commit(i.id, {muted: !i.muted})}>{i.muted ? 'ミュート解除' : 'ミュート'}</button>
           </div>
         );
       })}
