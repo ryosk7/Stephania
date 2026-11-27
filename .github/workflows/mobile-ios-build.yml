@@ -31,10 +31,15 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # Expo's Swift packages need Swift 6.2 (Xcode 26).
+      # Expo SDK 58's Swift packages need Swift 6.2 (Xcode 26); Xcode 26.3's
+      # compiler rejects expo-modules-jsi (data-race check), so prefer 26.2.
       - name: Select Xcode 26
         run: |
-          x=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          ls -d /Applications/Xcode_26*.app
+          for v in 26.2 26.1 26.0 26.3; do
+            x=$(ls -d /Applications/Xcode_$v*.app 2>/dev/null | sort -V | tail -1)
+            [ -n "$x" ] && break
+          done
           sudo xcode-select -s "$x/Contents/Developer"
           xcodebuild -version
       - uses: actions/setup-node@v4
