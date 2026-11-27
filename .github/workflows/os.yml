@@ -97,28 +97,29 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - uses: ./.github/actions/cached-build
-        with:
-          profile: x64-device-bins
-          image: device-build
-          command: ci/build-device-bins.sh device-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/studio/package-lock.json
-      - name: Build Studio
+      - name: Build Studio (background)
         working-directory: apps/studio
-        run: npm ci --no-audit --no-fund && npm run build
+        run: nohup bash -c 'npm ci --no-audit --no-fund && npm run build && touch /tmp/studio.ok' >/tmp/studio.log 2>&1 &
+      - uses: ./.github/actions/cached-build
+        with:
+          profile: x64-device-bins
+          image: device-build
+          command: ci/build-device-bins.sh device-bins
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/apt-archives
           key: image-apt-amd64-${{ hashFiles('os/image/build.sh') }}-${{ github.run_id }}
           restore-keys: image-apt-amd64-${{ hashFiles('os/image/build.sh') }}-
-      - name: Wait for host packages
+      - name: Wait for host packages and Studio
         run: |
-          for _ in $(seq 1 240); do [ -f /tmp/apt.ok ] && break; sleep 1; done
+          for _ in $(seq 1 240); do [ -f /tmp/apt.ok ] && [ -f /tmp/studio.ok ] && break; sleep 1; done
           [ -f /tmp/apt.ok ] || { cat /tmp/apt.log; exit 1; }
+          [ -f /tmp/studio.ok ] || { cat /tmp/studio.log; exit 1; }
           # trixie keys: the runner's debian-archive-keyring predates them.
           docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
           echo "STEPHANIA_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
