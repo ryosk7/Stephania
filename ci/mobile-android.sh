@@ -15,7 +15,7 @@ cd apps/mobile
 CI=1 npx expo prebuild --platform android --no-install --clean
 cd android
 ./gradlew --no-daemon --stacktrace :t3box-pinned-fetch:testDebugUnitTest :app:assembleDebug -PreactNativeArchitectures=x86_64
-report=$(find . -path '*t3box-pinned-fetch*' -name 'TEST-*PinnedHttpTest.xml' | head -1)
+report=$(find .. -path '*t3box-pinned-fetch*' -name 'TEST-*PinnedHttpTest.xml' -not -path '*/node_modules/*' | head -1)
 test -n "$report" || { echo "PinnedHttpTest report missing"; exit 1; }
 python3 - "$report" <<'PY'
 import sys, xml.etree.ElementTree as ET
