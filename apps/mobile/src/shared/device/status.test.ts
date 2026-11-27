@@ -16,13 +16,13 @@ describe('broadcastState', () => {
 describe('elapsedSince', () => {
   const t0 = Date.parse('2026-11-27T10:00:00Z');
   it('formats minutes and seconds, and hours when needed', () => {
-    expect(elapsedSince('2026-11-27T10:00:00Z', t0 + 724_000)).toBe('12:04');
-    expect(elapsedSince('2026-11-27T10:00:00Z', t0 + 3_729_000)).toBe('1:02:09');
-    expect(elapsedSince('2026-11-27T10:00:00Z', t0 + 5_000)).toBe('0:05');
+    expect(elapsedSince(t0, t0 + 724_000)).toBe('12:04');
+    expect(elapsedSince(t0, t0 + 3_729_000)).toBe('1:02:09');
+    expect(elapsedSince(t0, t0 + 5_000)).toBe('0:05');
   });
-  it('shows nothing without a valid start in the past', () => {
+  it('shows nothing without a start in the past', () => {
     expect(elapsedSince(undefined, t0)).toBeUndefined();
-    expect(elapsedSince('not a date', t0)).toBeUndefined();
-    expect(elapsedSince('2026-11-27T10:00:10Z', t0)).toBeUndefined();
+    expect(elapsedSince(null, t0)).toBeUndefined();
+    expect(elapsedSince(t0 + 10_000, t0)).toBeUndefined();
   });
 });

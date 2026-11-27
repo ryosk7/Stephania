@@ -18,10 +18,10 @@ export function broadcastState(s: Status | undefined): {tone: Tone; icon: IconNa
   }
 }
 
-/** Minutes and seconds since `since` (ISO time), for the on-air chip: "12:04", "1:02:09". */
-export function elapsedSince(since: string | undefined, now = Date.now()): string | undefined {
-  const t = since ? Date.parse(since) : NaN;
-  if (Number.isNaN(t) || now < t) return undefined;
+/** Minutes and seconds since `since` (Unix ms), for the on-air chip: "12:04", "1:02:09". */
+export function elapsedSince(since: number | null | undefined, now = Date.now()): string | undefined {
+  if (since == null || !Number.isFinite(since) || now < since) return undefined;
+  const t = since;
   const s = Math.floor((now - t) / 1000);
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   const pad = (n: number) => String(n).padStart(2, '0');
