@@ -26,7 +26,8 @@ for u in t3box t3box-control t3box-firstboot; do check "$u active" systemctl is-
 info "t3box-provision $(systemctl is-active t3box-provision) (no Wi-Fi device in QEMU)"
 T3BOX_CONTROL_TOKEN=
 [ -r /data/t3box/config/control.env ] && . /data/t3box/config/control.env
-for i in $(seq 60); do curl -fs -o /dev/null http://127.0.0.1:9292/ 2>/dev/null; [ $? -ne 7 ] && break; sleep 1; done
+# Ruby boot is slow under QEMU TCG: wait for Puma to listen.
+for i in $(seq 240); do curl -s -o /dev/null http://127.0.0.1:9292/ 2>/dev/null && break; sleep 1; done
 check "control API answers on loopback with the bootstrap token" \
   curl -fsS -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9292/api/v1/capabilities
 check "control reaches the engine over IPC" \
@@ -37,5 +38,9 @@ check "device PKI published an endpoint" test -s /var/lib/t3box/pki/endpoint.jso
 code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /var/lib/t3box/pki/ca.pem --resolve t3box.local:9443:127.0.0.1 https://t3box.local:9443/api/v1/capabilities)
 [ "$code" = 401 ] && ok "LAN TLS listener verifies against the device CA and requires an issued token" || bad "LAN TLS listener ($code)"
 info "rauc: $(rauc status 2>&1 | head -3 | tr '\n' ' ')"
+if [ "$fails" != 0 ]; then
+  info "control: $(systemctl show -p ActiveState,SubState,NRestarts t3box-control | tr '\n' ' ')"
+  journalctl -b -u t3box-control -n 40 --no-pager | sed 's/^/SMOKE INFO control-log /'
+fi
 for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do info "failed unit $u: $(journalctl -b -u "$u" -n 5 --no-pager | tail -5 | tr '\n' ' ')"; done
 if [ "$fails" = 0 ]; then echo "SMOKE RESULT PASS"; else echo "SMOKE RESULT FAIL ($fails)"; fi
