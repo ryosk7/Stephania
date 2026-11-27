@@ -27,6 +27,8 @@ for yjit in 0 1; do
     --uid="$(id -u)" --gid="$(id -g)" -- bash -c "cd services/control && exec bundle exec puma -C config/puma.rb config.ru" >"$out/puma-yjit$yjit.log" 2>&1 &
   pids+=($!)
   for _ in $(seq 100); do curl -fs -o /dev/null -H "Authorization: Bearer $token" "http://127.0.0.1:$port/api/v1/capabilities" && break; sleep 0.2; done
+  echo "status probe: $(curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:$port/api/v1/status")"
+  ps -o user,pid,cmd -C ruby,t3box | head -5
   # Warm-up, then the measured run.
   python3 ci/control_load.py "http://127.0.0.1:$port" "$token" 3 4 warmup 0 >/dev/null
   r=$(python3 ci/control_load.py "http://127.0.0.1:$port" "$token" 20 4 "yjit=$yjit")
@@ -37,4 +39,4 @@ for yjit in 0 1; do
   sudo systemctl stop t3box-load-puma.scope
   sleep 1
 done
-printf '%s\n' "${results[@]}" | python3 ci/control_load_report.py "$out"
+printf '%s\n' "${results[@]}" | python3 ci/control_load_report.py "$out" || { echo "--- engine log"; tail -20 "$out/engine.log"; echo "--- puma log"; tail -20 "$out/puma-yjit0.log"; exit 1; }
