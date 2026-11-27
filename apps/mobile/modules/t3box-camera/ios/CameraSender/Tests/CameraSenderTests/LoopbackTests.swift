@@ -158,6 +158,9 @@ final class Receiver: NSObject, RTCPeerConnectionDelegate {
   private var pc: RTCPeerConnection!
   private var gathered = false
   private var renderers: [String: CountingRenderer] = [:]
+  // The ObjC track wrapper owns its renderer adapters: if it is released,
+  // the renderers silently stop receiving frames. Keep it alive.
+  private var tracks: [RTCVideoTrack] = []
   private let lock = NSLock()
 
   override init() {
@@ -177,7 +180,7 @@ final class Receiver: NSObject, RTCPeerConnectionDelegate {
       guard let track = tr.receiver.track as? RTCVideoTrack else { continue }
       let mid = tr.mid
       let r = CountingRenderer()
-      lock.lock(); renderers[mid] = r; lock.unlock()
+      lock.lock(); renderers[mid] = r; tracks.append(track); lock.unlock()
       track.add(r)
     }
     let answer: RTCSessionDescription = try await withCheckedThrowingContinuation { c in
