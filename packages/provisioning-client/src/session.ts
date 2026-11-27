@@ -65,7 +65,10 @@ export class ProvisioningSession {
       response = await this.transport.write(uuid, f);
     }
     if (!response) throw new ProvisioningError('no_response');
-    return json(response);
+    const r = json(response);
+    // Over BLE, device errors arrive as a notified {"error": code}.
+    if (typeof r.error === 'string') throw new ProvisioningError(r.error);
+    return r;
   }
 
   /**

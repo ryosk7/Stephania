@@ -35,3 +35,24 @@ describe('framing', () => {
     expect(() => validateWifi({ssid: 'LT 会場', security: 'wpa-psk', psk: 'password'})).not.toThrow();
   });
 });
+
+import {Reassembler} from './framing';
+describe('reassembler', () => {
+  it('round-trips out of order and ignores other ids', () => {
+    const msg = new Uint8Array(1000).map((_, i) => i * 7);
+    const frags = fragment(42, msg, 23).reverse();
+    const r = new Reassembler(42);
+    expect(r.push(Uint8Array.of(41, 0, 1, 9))).toBeNull();
+    let out: Uint8Array | null = null;
+    for (const f of frags) out = r.push(f) ?? out;
+    expect(out).toEqual(msg);
+  });
+  it('rejects duplicates and inconsistent counts', () => {
+    const r = new Reassembler(1);
+    r.push(Uint8Array.of(1, 0, 2, 9));
+    expect(() => r.push(Uint8Array.of(1, 0, 2, 9))).toThrow('duplicate');
+    expect(() => new Reassembler(1).push(Uint8Array.of(1, 2, 2, 9))).toThrow('malformed');
+    const s = new Reassembler(1); s.push(Uint8Array.of(1, 0, 2, 9));
+    expect(() => s.push(Uint8Array.of(1, 1, 3, 9))).toThrow('inconsistent');
+  });
+});

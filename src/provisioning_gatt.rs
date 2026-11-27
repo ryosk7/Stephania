@@ -22,7 +22,11 @@ use std::time::Instant;
 
 pub const PROTOCOL_VERSION: u64 = 1;
 pub const MAX_SCAN_RESULTS: usize = 60;
-pub const SCAN_PAGE_SIZE: usize = 20;
+/// Worst-case entry (32-byte SSID, rssi -100, "unsupported") is 75 bytes;
+/// 5 per page (~446 bytes) keeps every read within the 512-byte limit.
+pub const SCAN_PAGE_SIZE: usize = 5;
+/// ATT attribute values are at most 512 bytes (Bluetooth Core, Vol 3 Part F).
+pub const MAX_READ_BYTES: usize = 512;
 pub const SERVICE_UUID: &str = "7c3b0001-5d1e-4a6f-9b0e-3a1f2c4d5e60";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -217,8 +221,17 @@ impl<N: NetworkBackend, S: OwnershipStore> GattService<N, S> {
         &self.network
     }
 
-    /// Handle a characteristic read; returns the complete JSON message.
+    /// Handle a characteristic read; returns the complete JSON message
+    /// (always ≤ [`MAX_READ_BYTES`], served with ATT long reads).
     pub fn read(&mut self, c: Characteristic, now: Instant) -> Result<Vec<u8>, GattError> {
+        let value = self.read_value(c, now)?;
+        if value.len() > MAX_READ_BYTES {
+            return Err(GattError::Request("value_too_large"));
+        }
+        Ok(value)
+    }
+
+    fn read_value(&mut self, c: Characteristic, now: Instant) -> Result<Vec<u8>, GattError> {
         let value = match c {
             Characteristic::ProtocolVersion => json!({"version": PROTOCOL_VERSION}),
             Characteristic::DeviceInformation => json!({
@@ -268,7 +281,10 @@ impl<N: NetworkBackend, S: OwnershipStore> GattService<N, S> {
     }
 
     /// Handle one written fragment. Returns `Some(response JSON)` once a
-    /// complete message has been processed.
+    /// complete message has been processed. The transport delivers it as
+    /// notifications on the same characteristic, fragmented with
+    /// [`crate::provisioning::fragment`] using the request's message id
+    /// (`fragment[0]` of the completing write).
     pub fn write(&mut self, c: Characteristic, fragment: &[u8], now: Instant) -> Result<Option<Vec<u8>>, GattError> {
         if !c.writable() {
             return Err(GattError::NotWritable);
@@ -452,6 +468,25 @@ mod tests {
     }
 
     #[test]
+    fn worst_case_scan_page_fits_one_attribute() {
+        let now = Instant::now();
+        // 32-byte ASCII and 32-byte multibyte SSIDs (JSON does not escape them).
+        let networks: Vec<ScanResult> = (0..SCAN_PAGE_SIZE as u8).map(|i| ScanResult {
+            ssid: if i % 2 == 0 { format!("{}{}", (b'a' + i) as char, "w".repeat(31)) } else { format!("{}{}", (b'a' + i) as char, "\u{3042}".repeat(10)) + "z" },
+            rssi: -100, security: "unsupported".into(),
+        })
+            .collect();
+        let mut s = service(FakeNetwork { networks, ..Default::default() });
+        let key = claim(&mut s, now);
+        op(&mut s, &key, Characteristic::WifiScanRequest, "wifi.scan", b"{}", now).unwrap();
+        let page = s.read(Characteristic::WifiScanResults, now).unwrap();
+        assert!(page.len() <= MAX_READ_BYTES, "{} bytes", page.len());
+        for c in Characteristic::ALL.into_iter().filter(|c| !c.writable()) {
+            if let Ok(v) = s.read(c, now) { assert!(v.len() <= MAX_READ_BYTES, "{c:?}"); }
+        }
+    }
+
+    #[test]
     fn uuids_are_unique_and_round_trip() {
         let mut seen = std::collections::HashSet::new();
         for c in Characteristic::ALL {
@@ -476,11 +511,11 @@ mod tests {
         assert_eq!(read(&mut s, Characteristic::PairingChallenge, now)["state"], "CLAIMED");
 
         let r = op(&mut s, &key, Characteristic::WifiScanRequest, "wifi.scan", b"{}", now).unwrap();
-        assert_eq!((r["networks"].as_u64(), r["pages"].as_u64()), (Some(45), Some(3)));
-        let pages: Vec<Value> = (0..3).map(|_| read(&mut s, Characteristic::WifiScanResults, now)).collect();
+        assert_eq!((r["networks"].as_u64(), r["pages"].as_u64()), (Some(45), Some(9)));
+        let pages: Vec<Value> = (0..9).map(|_| read(&mut s, Characteristic::WifiScanResults, now)).collect();
         assert_eq!(pages[0]["networks"][0]["ssid"], "net00");
         assert_eq!(pages[0]["networks"][0]["rssi"], -30, "strongest duplicate kept");
-        assert_eq!(pages[2]["networks"].as_array().unwrap().len(), 5);
+        assert_eq!(pages[8]["networks"].as_array().unwrap().len(), 5);
         assert_eq!(read(&mut s, Characteristic::WifiScanResults, now)["page"], 0, "cursor wraps");
 
         let payload = br#"{"ssid":"LT Hall","security":"wpa-psk","psk":"correct horse"}"#;

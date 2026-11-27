@@ -24,16 +24,18 @@ Base UUID `7c3bXXXX-5d1e-4a6f-9b0e-3a1f2c4d5e60`; service `7c3b0001-…`.
 | 0002 | ProtocolVersion | read | `{"version":1}` |
 | 0003 | DeviceInformation | read | `{"model","firmware","ownership","network"}` (no secrets) |
 | 0004 | PairingChallenge | read, notify | `{"state","nonce"?}` — nonce hex(32 B) while PAIRING |
-| 0005 | PairingResponse | write | `{"owner_id","proof"}` |
-| 0006 | WiFiScanRequest | write | `{}` (owner-authenticated, see below) |
-| 0007 | WiFiScanResults | read, notify | `{"page","pages","networks":[{"ssid","rssi","security"}]}` ≤ 20 per page, ≤ 60 total, strongest per SSID; each read returns the next page (wraps); owner only |
-| 0008 | WiFiConfiguration | write | authenticated envelope around `{"ssid","security":"open"|"wpa-psk","psk"?}` |
+| 0005 | PairingResponse | write, notify | `{"owner_id","proof"}` |
+| 0006 | WiFiScanRequest | write, notify | `{}` (owner-authenticated, see below) |
+| 0007 | WiFiScanResults | read, notify | `{"page","pages","networks":[{"ssid","rssi","security"}]}` ≤ 5 per page, ≤ 60 total, strongest per SSID; each read returns the next page (wraps); owner only |
+| 0008 | WiFiConfiguration | write, notify | authenticated envelope around `{"ssid","security":"open"|"wpa-psk","psk"?}` |
 | 0009 | NetworkStatus | read, notify | `{"state","error"?}` |
 | 000a | ManagementEndpoint | read | `{"urls":[…],"certificate_sha256"}` once trusted TLS exists; empty until then |
 | 000b | DevicePublicKey | read | reserved for the TLS/identity PoC |
 | 000c | OperationChallenge | read | `{"nonce"}` single-use, 120 s |
 
 ## Framing
+**Responses to writes:** GATT writes carry no response data. The client subscribes to notifications on the written characteristic *before* sending; after the final fragment the device notifies the JSON response on that characteristic, fragmented with the same framing and the **request's message_id**. Errors are delivered the same way as `{"error":"<code>"}`.
+**Reads** return the whole value with ATT long reads and are capped at 512 bytes (the attribute limit); the device rejects larger values (`value_too_large`), which is why scan pages hold 5 networks.
 Writes/notifications carry fragments `[message_id u8, index u8, count u8, chunk…]`, each ≤ ATT payload (MTU − 3, min 20). Message ≤ 4096 bytes, ≤ 64 fragments, ≤ 4 messages in flight, 10 s reassembly timeout. Out-of-order fragments are accepted; duplicates, inconsistent counts and oversize messages discard that message. A 4 KiB message needs an ATT payload ≥ 67 bytes; at the minimum MTU messages are limited to 64 × 17 bytes.
 
 ## Cryptography
