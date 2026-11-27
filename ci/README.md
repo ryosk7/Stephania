@@ -1,4 +1,34 @@
-# CI strategy — native AArch64
+# CI strategy
+
+## Pull request speed (target: about a minute)
+- **Change-based selection** (`ci/changes.py`, self-tested in the plan job):
+  each workflow's first job maps the PR diff to areas (rust, media,
+  control, studio, provisioning, mobile, ble, wifi, lan, phone, os) and
+  only those jobs run. Unknown paths, workflow/CI/Cargo changes and
+  failures to compute the diff run everything; docs-only PRs run nothing.
+  `ci-gate` requires every selected job to pass and every unselected one to
+  be skipped.
+- **Warm builds from main** (`.github/actions/cached-build`): Cargo
+  registry, sccache and the whole `target/` directory are cached per
+  *profile*, restored everywhere and saved only from main. A PR starts
+  from main's build and recompiles only what it changed; PRs never evict
+  main's caches. Jobs that run the identical command share a profile
+  (`ci/build-bins.sh` → `x64-bins`, `arm64-build`/virtual-lab →
+  `arm64-release`).
+- **Build once, test many**: Studio's e2e jobs download the binaries built
+  by one `bins` job (debug, stripped) instead of compiling separately.
+- **Cheap stand-ins on PRs, full targets on main/nightly**: PRs boot the
+  x86_64 image with KVM (`image-qemu-x64`); the arm64 image under QEMU
+  emulation runs on main and nightly (`schedule`). RAUC and the image's
+  package downloads are cached.
+- **Everything still runs**: every push to main and a nightly schedule run
+  the full set, so anything a PR skipped is verified within a day.
+
+Media jobs (arm64 transport, composition, quality) stream and encode for
+fixed durations, so PRs that touch the media engine take longer than a
+minute by design.
+
+# Native AArch64
 
 The normal CI workflow now uses a GitHub-hosted `ubuntu-24.04-arm`
 runner for real ARM64 user-space execution, instead of repeatedly compiling

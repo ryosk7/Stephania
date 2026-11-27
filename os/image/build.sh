@@ -42,7 +42,17 @@ runtime=systemd,systemd-sysv,udev,dbus,kmod,iproute2,util-linux,mount,network-ma
 build=build-essential,ruby-dev,libsqlite3-dev,libssl-dev,pkgconf
 
 rm -rf "$root"
-mmdebstrap --arch="$arch" --variant=apt --components="$components" --include="$runtime,$build" \
+# Optional package cache across builds (CI): downloads are reused, the image
+# content is unchanged (apt-get clean still runs in customize.sh).
+cache_args=()
+if [ -n "${T3BOX_IMAGE_APT_CACHE:-}" ]; then
+  mkdir -p "$T3BOX_IMAGE_APT_CACHE"
+  cache_args=(--skip=download/empty --skip=essential/unlink
+    --setup-hook='mkdir -p "$1"/var/cache/apt/archives/'
+    --setup-hook="sync-in '$T3BOX_IMAGE_APT_CACHE' /var/cache/apt/archives/"
+    --customize-hook="sync-out /var/cache/apt/archives '$T3BOX_IMAGE_APT_CACHE'")
+fi
+mmdebstrap --arch="$arch" --variant=apt --components="$components" --include="$runtime,$build" "${cache_args[@]}" \
   --customize-hook="$repo/os/image/customize.sh \"\$1\" '$repo' '$bins' '$version' '$build' '$runtime'" \
   "$suite" "$root" "$mirror"
 

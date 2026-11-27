@@ -46,7 +46,7 @@ impl Input {
             self.queue.clear();
             self.start = start;
         }
-        for pair in corrected.samples.chunks_exact(2) {
+        for pair in corrected.samples.as_chunks::<2>().0 {
             if self.queue.len() == CAPACITY {
                 self.queue.pop_front();
                 self.start += 1;
@@ -94,7 +94,7 @@ impl AudioMixer {
         }
         let mut wide = [0i64; BLOCK * 2];
         let mut peak = 1i64;
-        for (i, pair) in wide.chunks_exact_mut(2).enumerate() {
+        for (i, pair) in wide.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let p = self.next + i as u64;
             let a = self.inputs[0].at(p);
             let b = self.inputs[1].at(p);
