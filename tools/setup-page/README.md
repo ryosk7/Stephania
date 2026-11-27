@@ -7,4 +7,6 @@ Single-file static page (`dist/index.html`) that generates the device setup secr
 - QR generation: vendored `qrcode-generator` 1.4.4 (MIT, Kazuhiko Arase), inlined at build.
 - `npm test` builds the page and tests the exact embedded script: fixture format, randomness, and QR round-trip through an independent decoder (jsQR).
 
-Publishing: `.github/workflows/setup-page-pages.yml` is manual-only and requires typing `publish`. A Pages site is public even for a private repository, so run it only after explicitly deciding to publish. Users can instead open the built `index.html` locally.
+- Design: the tokens and components of DESIGN.md §4–5 (same values as Connect), light and dark following the system with a three-way switch stored in the browser, Lucide icons inlined. No fonts or images are loaded, so the system UI font is used.
+
+Publishing: `.github/workflows/setup-page-pages.yml` (manual, type `publish`) deploys `dist/` to https://ryosk7.github.io/Stephania/. Users can instead open the built `index.html` locally.
