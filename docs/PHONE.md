@@ -30,6 +30,15 @@ t3box-phone ──Unix socket (H.264 access units)──▶ engine ── libavc
   offer's MediaStreamTrack ids to `rear`/`front`. A second phone gets
   409 `busy` unless `replace` is true.
 
+## Camera credentials
+The owner issues short-lived camera tokens (`POST /api/v1/credentials/camera
+{ttl_s ≤ 86400, label}` → `t3c_…`, shown once, stored as SHA-256, at most 8).
+A camera token can only call the three camera-session endpoints (403
+`forbidden_role` elsewhere, including events, status and credentials),
+cannot replace or end a session it did not open, stops working at expiry,
+and revoking it ends the session it opened. A session already running when
+its credential expires continues until it is closed or revoked.
+
 ## Engine ingest framing
 `u32be length ‖ payload`. Client → engine: `0x01 ‖ source ‖ pts_us u64be ‖
 Annex-B AU` (≤ 2 MiB). Engine → client: `0x02 ‖ source` (keyframe
@@ -52,7 +61,6 @@ ingest protocol and keyframe requests.
 - Phone app sender (react-native-webrtc / native camera modules with
   hardware encoding, iOS MultiCam, Android Camera2) — the app only has the
   BLE/LAN enrollment today.
-- Camera-role credentials (the endpoint currently takes the management
-  token), WSS/trickle ICE, bandwidth/congestion tuning, audio from the phone.
+- WSS/trickle ICE, bandwidth/congestion tuning, audio from the phone.
 - Decode load on the Pi 5 (two 720p30 software decodes next to x264) is
   unmeasured: physical qualification Q-PHONE / Q-AV.
