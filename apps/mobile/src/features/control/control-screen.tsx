@@ -1,28 +1,36 @@
 // Operating one T3Box over the LAN (DESIGN.md §6 Control): device name and
-// broadcast state on top, what is on air, scenes as tiles, audio, and the
-// stream action pinned at the bottom.
+// broadcast state on top, layouts as tiles (the on-air one marked), audio,
+// and the stream action pinned at the bottom.
 import * as Haptics from 'expo-haptics';
 import {Stack, router} from 'expo-router';
 import {useState} from 'react';
 import {Alert, Pressable, StyleSheet, Switch, View} from 'react-native';
 import {DeviceGate, broadcastState, useDeviceClient, type DeviceClient, type StoredScene} from '@/shared/device';
 import {
-  Body, Caption, Card, DestructiveButton, Footnote, Headline, LargeTitle, List, Notice, PrimaryButton, Screen,
+  Caption, Card, DestructiveButton, Footnote, Headline, IconButton, LargeTitle, List, Notice, PrimaryButton, Screen,
   StatusPill, Symbol, color, radius, space, symbols,
 } from '@/shared/ui';
+import {RenameSheet} from './rename-sheet';
+import {SceneThumbnail} from './scene-thumbnail';
 import {useControl} from './use-control';
 
 export function ControlScreen({deviceId}: {deviceId: string}) {
   const handle = useDeviceClient(deviceId);
-  return <DeviceGate handle={handle}>{handle.state === 'ready' && <Control deviceId={deviceId} name={handle.name} client={handle.client} />}</DeviceGate>;
+  return (
+    <DeviceGate handle={handle}>
+      {handle.state === 'ready' && <Control deviceId={deviceId} name={handle.name} host={handle.host} client={handle.client} />}
+    </DeviceGate>
+  );
 }
 
-function Control({deviceId, name, client}: {deviceId: string; name: string; client: DeviceClient}) {
+function Control({deviceId, name: initialName, host, client}: {deviceId: string; name: string; host: string; client: DeviceClient}) {
   const {status, scenes, audio, error, pending, run} = useControl(client);
   const [fade, setFade] = useState(true);
+  const [name, setName] = useState(initialName);
+  const [renaming, setRenaming] = useState(false);
   const state = broadcastState(status);
   const streaming = status?.streaming_requested === true;
-  const onAir = status?.program ? scenes.find(s => s.id === status.program!.scene_id) : undefined;
+  const onAirId = status?.program?.scene_id;
 
   const stop = () => Alert.alert('Stop the stream?', 'Viewers will see the stream end.', [
     {text: 'Cancel', style: 'cancel'},
@@ -39,7 +47,11 @@ function Control({deviceId, name, client}: {deviceId: string; name: string; clie
       : <PrimaryButton title="Start stream" symbol={symbols.broadcast} busy={pending === 'stream'} disabled={!status} onPress={start} />}>
       <Stack.Screen options={{title: ''}} />
       <View style={{gap: space.s}}>
-        <LargeTitle>{name}</LargeTitle>
+        <View style={st.titleRow}>
+          <LargeTitle style={{flexShrink: 1}} numberOfLines={1}>{name}</LargeTitle>
+          <IconButton symbol={symbols.pencil} label="Rename" onPress={() => setRenaming(true)} />
+        </View>
+        {host !== '' && <Footnote>{host}</Footnote>}
         <View style={st.statusLine}>
           <StatusPill tone={state.tone} label={state.label} pulse={state.pulse} />
           {status?.last_error ? <Footnote tone="warning" style={{flex: 1}} numberOfLines={2}>{status.last_error}</Footnote> : null}
@@ -47,26 +59,28 @@ function Control({deviceId, name, client}: {deviceId: string; name: string; clie
       </View>
       {error !== '' && <Notice tone="warning">{error}</Notice>}
 
-      <Card>
-        <Caption>ON AIR</Caption>
-        <Headline>{onAir ? onAir.document.name : status?.program ? status.program.scene_id : 'HDMI input (no scene)'}</Headline>
-        {status?.program && <Footnote>Revision {status.program.revision}</Footnote>}
-        <View style={st.switchRow}>
-          <Body style={{flex: 1}}>Switch scenes with a 0.5 s fade</Body>
-          <Switch value={fade} onValueChange={setFade} accessibilityLabel="Switch scenes with a fade" />
-        </View>
-      </Card>
-
       <View style={{gap: space.s}}>
-        <Caption style={{paddingHorizontal: space.l}}>SCENES</Caption>
-        {!streaming && scenes.length > 0 && <Footnote style={{paddingHorizontal: space.l}}>Scenes can be switched while streaming.</Footnote>}
-        <View style={st.grid}>
-          {scenes.map(sc => (
-            <SceneTile key={sc.id} scene={sc} onAir={status?.program?.scene_id === sc.id} disabled={!streaming || pending !== null}
-              onPress={() => void run(`scene:${sc.id}`, () => client.transition(sc.id, sc.revision, fade ? 500 : undefined))} />
-          ))}
+        <View style={st.sectionHeader}>
+          <View style={{flex: 1}}>
+            <Caption>LAYOUTS</Caption>
+            <Footnote>{streaming ? 'What viewers see. Tap to switch.' : 'What viewers will see. Switch while streaming.'}</Footnote>
+          </View>
+          <Footnote>Fade</Footnote>
+          <Switch value={fade} onValueChange={setFade} accessibilityLabel="Switch layouts with a 0.5 second fade" />
         </View>
-        {scenes.length === 0 && <Footnote style={{paddingHorizontal: space.l}}>No scenes yet. Create them in the Studio on a PC.</Footnote>}
+        {scenes.length === 0 ? (
+          <Card>
+            <Headline>No layouts yet</Headline>
+            <Footnote>The HDMI input goes on air as it is. Create layouts in the Studio on a PC.</Footnote>
+          </Card>
+        ) : (
+          <View style={st.grid}>
+            {scenes.map(sc => (
+              <LayoutTile key={sc.id} scene={sc} onAir={onAirId === sc.id} disabled={!streaming || pending !== null}
+                onPress={() => void run(`scene:${sc.id}`, () => client.transition(sc.id, sc.revision, fade ? 500 : undefined))} />
+            ))}
+          </View>
+        )}
       </View>
 
       <List>
@@ -86,26 +100,38 @@ function Control({deviceId, name, client}: {deviceId: string; name: string; clie
             onPress={() => router.push({pathname: '/device/[id]/pc', params: {id: deviceId}})} />
         </List.Section>
       </List>
+
+      <RenameSheet deviceId={deviceId} name={name} host={host} visible={renaming} onClose={() => setRenaming(false)} onRenamed={setName} />
     </Screen>
   );
 }
 
-/** 16:9 scene tile; the on-air tile is outlined red, not recoloured (DESIGN.md §2). */
-function SceneTile({scene, onAir, disabled, onPress}: {scene: StoredScene; onAir: boolean; disabled: boolean; onPress: () => void}) {
+/**
+ * Layout tile: a 16:9 miniature with the name under it. Always half the row,
+ * whatever the count, so 1, 3 or 9 layouts look the same; the on-air tile is
+ * outlined red with an ON AIR tag (DESIGN.md §2).
+ */
+function LayoutTile({scene, onAir, disabled, onPress}: {scene: StoredScene; onAir: boolean; disabled: boolean; onPress: () => void}) {
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`${scene.document.name}${onAir ? ', on air' : ''}`}
       accessibilityState={{disabled, selected: onAir}} disabled={disabled || onAir} onPress={onPress}
-      style={({pressed}) => [st.tile, onAir && st.tileOnAir, {opacity: disabled && !onAir ? 0.5 : pressed ? 0.7 : 1}]}>
-      <Headline numberOfLines={2}>{scene.document.name}</Headline>
-      <Caption>{onAir ? 'On air' : `r${scene.revision}`}</Caption>
+      style={({pressed}) => [st.tile, {opacity: disabled && !onAir ? 0.5 : pressed ? 0.7 : 1}]}>
+      <View style={[st.thumb, onAir && st.thumbOnAir]}>
+        <SceneThumbnail layers={scene.document.layers} />
+        {onAir && <Caption tone="primary" style={st.onAirTag}>ON AIR</Caption>}
+      </View>
+      <Headline numberOfLines={2} style={{fontSize: 15, lineHeight: 20, paddingHorizontal: 2}}>{scene.document.name}</Headline>
     </Pressable>
   );
 }
 
 const st = StyleSheet.create({
+  titleRow: {flexDirection: 'row', alignItems: 'center', gap: space.s},
   statusLine: {flexDirection: 'row', alignItems: 'center', gap: space.m},
-  switchRow: {flexDirection: 'row', alignItems: 'center', gap: space.m, marginTop: space.xs},
+  sectionHeader: {flexDirection: 'row', alignItems: 'center', gap: space.s, paddingLeft: space.l},
   grid: {flexDirection: 'row', flexWrap: 'wrap', gap: space.m},
-  tile: {width: '47%', flexGrow: 1, aspectRatio: 16 / 9, borderRadius: radius.tile, backgroundColor: color.surface, padding: space.m, justifyContent: 'space-between', borderWidth: 2, borderColor: 'transparent'},
-  tileOnAir: {borderColor: color.live},
+  tile: {width: '48%', gap: 6},
+  thumb: {width: '100%', aspectRatio: 16 / 9, borderRadius: radius.tile, backgroundColor: color.surface, borderWidth: 2, borderColor: 'transparent', overflow: 'hidden'},
+  thumbOnAir: {borderColor: color.live},
+  onAirTag: {position: 'absolute', top: 6, left: 6, backgroundColor: color.live, borderRadius: 4, paddingHorizontal: 5, overflow: 'hidden', fontWeight: '800', letterSpacing: 0.5, fontSize: 10},
 });

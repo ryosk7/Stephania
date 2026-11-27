@@ -16,7 +16,12 @@ export class DeviceError extends Error {
 }
 
 export type Status = {state: string; streaming_requested: boolean; last_error: string; program: {scene_id: string; revision: number} | null; engine_restarted?: boolean};
-export type StoredScene = {id: string; revision: number; document: {name: string; version: number}};
+/** Layer of a stored scene (docs/SCENE.md); v1 layers have no `type` (video). */
+export type SceneLayer = {
+  id: string; type?: 'video' | 'image' | 'color' | 'text' | 'template'; source?: string;
+  x: number; y: number; width: number; height: number; visible: boolean; color?: string;
+};
+export type StoredScene = {id: string; revision: number; document: {name: string; version: number; layers?: SceneLayer[]; canvas?: {background?: string}}};
 export type AudioInput = {id: 'hdmi' | 'mic'; enabled: boolean; device: string; channels: number; gain_db: number; muted: boolean};
 
 export const TIMEOUT_MS = 8000;

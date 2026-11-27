@@ -26,6 +26,9 @@ export const symbols = {
   mic: {ios: 'mic.fill', android: 'mic'},
   share: {ios: 'square.and.arrow.up', android: 'share'},
   plus: {ios: 'plus', android: 'add'},
+  pencil: {ios: 'pencil', android: 'edit'},
+  person: {ios: 'person.fill', android: 'person'},
+  slides: {ios: 'display', android: 'present_to_all'},
 } satisfies Record<string, SymbolName>;
 
 export function Symbol({name, size = 20, tone, tint}: {name: SymbolName; size?: number; tone?: Tone; tint?: string}) {

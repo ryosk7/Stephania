@@ -6,7 +6,7 @@ import {enrolledDevices, loadEnrollment} from './enrollment';
 export type DeviceHandle =
   | {state: 'loading'}
   | {state: 'missing'}
-  | {state: 'ready'; client: DeviceClient; name: string};
+  | {state: 'ready'; client: DeviceClient; name: string; host: string};
 
 /** Opens the enrolled device `deviceId` (secure store → pinned client). */
 export function useDeviceClient(deviceId: string | undefined): DeviceHandle {
@@ -18,7 +18,8 @@ export function useDeviceClient(deviceId: string | undefined): DeviceHandle {
       .then(([e, list]) => {
         if (!alive) return;
         if (!e) { setHandle({state: 'missing'}); return; }
-        setHandle({state: 'ready', client: new DeviceClient(e, PinnedFetch), name: list.find(d => d.deviceId === deviceId)?.name ?? 'T3Box'});
+        const host = (() => { try { return new URL(e.urls[0]!).hostname; } catch { return ''; } })();
+        setHandle({state: 'ready', client: new DeviceClient(e, PinnedFetch), name: list.find(d => d.deviceId === deviceId)?.name ?? 'T3Box', host});
       })
       .catch(() => alive && setHandle({state: 'missing'}));
     return () => { alive = false; };

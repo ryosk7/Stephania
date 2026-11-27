@@ -133,10 +133,21 @@ instead of boolean modes.
   symbols, `Field` for the password, `PrimaryButton` "Join", then progress
   states (joining, issuing access); *Done* — `StatusView` with a check,
   `PrimaryButton` "Open controls".
-- **Control** (`device/[id]`) — Tesla header: device name as large title,
-  status pill + one-line state below; program card ("On air: scene name",
-  revision) with the fade switch; scenes as a 2-column grid of 16:9 tiles,
-  the on-air tile outlined red; audio as a `List` with switches; footer:
+- **Control** (`device/[id]`) — Tesla header: device name as large title
+  with a rename button (the name lives on this phone only: host name,
+  certificate and mDNS name stay, so nothing is set up again; rename is a
+  bottom sheet, not `Alert.prompt`, which Android lacks), the host name
+  below it, then the status pill. **Layouts** (Studio scenes, named for
+  what they are to an operator: "what viewers see"): a 2-column grid of
+  16:9 miniatures drawn from each scene's own layers (slides, cameras,
+  overlays), name under the tile; the on-air tile is outlined red with an
+  ON AIR tag, which is why there is no separate "on air" card. Tiles are
+  always half a row, whatever the count (1 and 3 leave the last cell
+  empty rather than stretching); more than fit scroll with the screen
+  while the footer stays pinned; none = a card saying HDMI goes on air as
+  it is and layouts are made in the Studio. Revision numbers are not shown
+  (an editing detail, kept in the Studio). The fade switch sits on the
+  section header. Audio as a `List` with switches; footer:
   `PrimaryButton` "Start stream" or `DestructiveButton` "Stop stream"
   (confirmed with a system alert, since stopping is public).
 - **Camera** (`device/[id]/camera`, full-screen modal) — GoPro/live-app pattern: previews on black;
