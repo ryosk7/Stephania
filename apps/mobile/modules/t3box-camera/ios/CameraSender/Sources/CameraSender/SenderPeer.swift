@@ -109,6 +109,13 @@ public final class SenderPeer: NSObject, RTCPeerConnectionDelegate {
         initObj.sendEncodings = [e]
       }
       guard let tr = pc.addTransceiver(with: t.track, init: initObj) else { throw SenderError.transceiver(t.role) }
+      // Broadcast sources keep their geometry: under bandwidth pressure
+      // lower the frame rate and quality, never silently the resolution
+      // (libwebrtc's default starts low and scales up). Explicit plans
+      // (scaleResolutionDownBy) still change it.
+      let params = tr.sender.parameters
+      params.degradationPreference = NSNumber(value: RTCDegradationPreference.maintainResolution.rawValue)
+      tr.sender.parameters = params
       senders[t.role] = tr.sender
     }
   }
