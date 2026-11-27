@@ -1,0 +1,18 @@
+[Unit]
+Description=T3Box update trial confirmation (commit or roll back)
+# Runs on every boot; does nothing unless a tryboot trial is pending.
+After=t3box.service rauc.service
+Wants=t3box.service
+
+[Service]
+Type=oneshot
+Environment=T3BOX_AUTOBOOT=/boot/selector/autoboot.txt
+Environment=T3BOX_BOOT_STATE=/data/t3box/update/bootctl.json
+Environment=T3BOX_BOOT_SLOTS=A=2,B=3
+Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
+Environment=T3BOX_DATA_DIR=/data/t3box
+ExecStart=/usr/local/bin/t3box-bootctl confirm
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
