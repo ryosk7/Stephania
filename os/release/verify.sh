@@ -34,7 +34,10 @@ names = {p["name"] for p in d["packages"]}
 assert {"libx264-164", "rustls"} <= names, "expected components missing"
 print(f"PASS SBOM: {len(d['packages'])} packages ({', '.join(sorted(eco))})")
 PY
-tar -tzf "$dist/LICENSES.tar.gz" | grep -q 'LICENSES/deb/.*libx264.*/copyright' || fail "deb copyright files missing from LICENSES"
+# List to a file first: grep -q exits at the first match, and under
+# pipefail tar's SIGPIPE would then fail the check.
+tar -tzf "$dist/LICENSES.tar.gz" >"$w/licences.txt"
+grep -q 'LICENSES/deb/.*libx264.*/copyright' "$w/licences.txt" || fail "deb copyright files missing from LICENSES"
 echo "PASS licence texts include the system packages' copyright files"
 xz -t "$dist/$name.img.xz" || fail "image archive"
 echo "release verification: passed"
