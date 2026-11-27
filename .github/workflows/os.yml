@@ -32,9 +32,8 @@ jobs:
             ~/.cargo/git
             target
           key: os-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      # Ubuntu 24.04's RAUC 1.11 rejects verity bundles on the runner's newer
-      # kernel ("Unexpected dm-verity status 'V -'"), fixed upstream; build a
-      # pinned release built from source (installs its own D-Bus policy).
+      # RAUC v1.15 pinned and built from source (installs its own D-Bus
+      # policy).
       # Units in systemd/ are verified by studio.yml.
       - run: |
           sudo apt-get update -qq
