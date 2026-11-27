@@ -48,6 +48,31 @@ paths:
                     required: [engine_restarted]
                     properties: {engine_restarted: {type: boolean}}
         default: {$ref: "#/components/responses/Error"}
+  /events:
+    get:
+      summary: Server-Sent Events stream of device state changes
+      description: |
+        text/event-stream. The first event is always `snapshot`
+        ({engine: engine_status|null, scenes: [{id, revision}]}); clients
+        reconcile from it on every (re)connect. Then: engine.connected,
+        engine.unavailable, engine.restarted, stream.state_changed
+        ({state, streaming_requested, native_worker_running, last_error}),
+        program.changed ({scene_id, revision}), scene.updated
+        ({id, revision}), scene.deleted ({id}). Comment lines are
+        keepalives (every 15 s). Slow consumers are disconnected. Unknown
+        event names must be ignored.
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        "429":
+          description: Concurrent stream limit (8) reached (error code too_many_streams)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        default: {$ref: "#/components/responses/Error"}
   /engine/capabilities:
     get:
       summary: Engine capabilities (IPC engine.capabilities)
@@ -207,7 +232,7 @@ components:
                 invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                program_timeout(503) internal_error(500);
+                program_timeout(503) too_many_streams(429) internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}
             request_id: {type: string, description: Same value as the X-Request-Id response header and the IPC request_id.}

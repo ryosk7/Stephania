@@ -92,6 +92,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Server-Sent Events stream of device state changes
+         * @description text/event-stream. The first event is always `snapshot`
+         *     ({engine: engine_status|null, scenes: [{id, revision}]}); clients
+         *     reconcile from it on every (re)connect. Then: engine.connected,
+         *     engine.unavailable, engine.restarted, stream.state_changed
+         *     ({state, streaming_requested, native_worker_running, last_error}),
+         *     program.changed ({scene_id, revision}), scene.updated
+         *     ({id, revision}), scene.deleted ({id}). Comment lines are
+         *     keepalives (every 15 s). Slow consumers are disconnected. Unknown
+         *     event names must be ignored.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Event stream */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
+                /** @description Concurrent stream limit (8) reached (error code too_many_streams) */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/engine/capabilities": {
         parameters: {
             query?: never;
@@ -466,7 +523,7 @@ export interface components {
                  *     invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                 *     program_timeout(503) internal_error(500);
+                 *     program_timeout(503) too_many_streams(429) internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */
                 code: string;

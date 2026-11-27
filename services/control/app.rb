@@ -7,6 +7,7 @@ require "openssl"
 require "securerandom"
 require_relative "lib/engine_client"
 require_relative "lib/scene_validator"
+require_relative "lib/event_hub"
 
 # T3Box management plane. Contract: contracts/openapi.yaml.
 #
@@ -44,7 +45,7 @@ class Control < Sinatra::Base
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
-    attr_accessor :db, :token, :engine
+    attr_accessor :db, :token, :engine, :events, :poller
 
     def configure_storage(path)
       database = Sequel.sqlite(path, max_connections: 1, timeout: 1000)
@@ -71,6 +72,16 @@ class Control < Sinatra::Base
       self.token = env["T3BOX_CONTROL_TOKEN"]
       self.engine = EngineClient.new(socket_path: env.fetch("T3BOX_ENGINE_SOCKET", EngineClient::DEFAULT_SOCKET))
       configure_storage(env.fetch("T3BOX_CONTROL_DB", ":memory:"))
+      configure_events(interval: Float(env.fetch("T3BOX_CONTROL_POLL_SECONDS", "1.0")))
+    end
+
+    # The poller reads `Control.engine` on every tick, so tests that swap
+    # the engine adapter are observed without restarting it.
+    def configure_events(interval: 1.0)
+      poller&.stop
+      events&.close_all
+      self.events = EventHub.new
+      self.poller = EventHub::EnginePoller.new(events, -> { Control.engine }, interval: interval)
     end
   end
 
@@ -147,6 +158,21 @@ class Control < Sinatra::Base
     json_reply(result.merge("engine_restarted" => restarted))
   end
 
+  # Server-Sent Events (text/event-stream). First event is `snapshot`
+  # ({engine, scenes}); then engine.connected / engine.unavailable /
+  # engine.restarted / stream.state_changed / program.changed /
+  # scene.updated / scene.deleted, plus comment keepalives. Bounded to
+  # EventHub::MAX_CLIENTS concurrent streams (429 beyond).
+  get "/api/v1/events" do
+    hub = settings.events
+    settings.poller.start
+    snapshot = {engine: settings.poller.last, scenes: settings.db[:scenes].order(:id).select(:id, :revision).all}
+    sub = hub.subscribe
+    fail_with 429, "too_many_streams", "at most #{EventHub::MAX_CLIENTS} event streams" unless sub
+    headers "Content-Type" => "text/event-stream", "X-Accel-Buffering" => "no"
+    halt 200, EventHub::Stream.new(hub, sub, snapshot)
+  end
+
   get "/api/v1/engine/capabilities" do
     json_reply(engine_call("engine.capabilities"))
   end
@@ -183,6 +209,7 @@ class Control < Sinatra::Base
     fail_with 422, "invalid_request", "revision query parameter required" unless expected
     deleted = settings.db[:scenes].where(id: row[:id], revision: expected).delete
     fail_with 409, "revision_conflict", "scene revision is #{row[:revision]}" if deleted.zero?
+    settings.events.publish("scene.deleted", {id: row[:id]})
     status 204
     ""
   end
@@ -220,6 +247,7 @@ class Control < Sinatra::Base
       end
     end
     fail_with 409, "revision_conflict", "scene was modified; reload and retry" unless saved
+    settings.events.publish("scene.updated", {id: id, revision: revision + 1})
     json_reply({id: id, revision: revision + 1, document: input["document"]})
   end
 
@@ -239,6 +267,7 @@ class Control < Sinatra::Base
     fail_with 409, "revision_conflict", "scene revision is #{row[:revision]}" unless row[:revision] == input["revision"]
     result = engine_call("scene.apply", {scene: JSON.parse(row[:document]), scene_id: row[:id], revision: row[:revision]})
     # Only reachable once the engine reports an acknowledged application.
+    settings.events.publish("program.changed", {scene_id: row[:id], revision: row[:revision]})
     json_reply({scene_id: row[:id], revision: row[:revision], engine: result})
   end
 
