@@ -16,6 +16,7 @@ pub mod media_core;
 pub mod scene;
 pub mod ipc;
 pub mod compositor;
+pub mod composition;
 pub mod provisioning;
 pub mod provisioning_gatt;
 #[cfg(unix)]

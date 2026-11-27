@@ -169,6 +169,15 @@ impl VirtualCapture {
     }
 }
 
+/// CI only: feed a deterministic phone:rear track when requested, so the
+/// composed broadcast can be verified without a phone.
+#[cfg(feature = "ci-virtual")]
+fn virtual_phone_tick(timestamp_us: u64) {
+    if env::var_os("T3BOX_CI_VIRTUAL_PHONE").is_some() {
+        crate::composition::sources().submit("phone:rear", crate::composition::virtual_phone_frame(timestamp_us));
+    }
+}
+
 fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
@@ -193,6 +202,8 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     if adaptive { pipeline.reconfigure_rate(network_rate, 500)?; }
     if content_aware { pipeline.enable_content_analysis(); }
     pipeline.configure_audio(&aac.configuration()?)?;
+    let mut composition = crate::composition::enabled()
+        .then(|| crate::composition::CompositionStage::new(s.capture.width as usize, s.capture.height as usize));
     let origin = timestamp_us();
     let mut clock = AudioClock::default();
     let mut framer = PcmFramer::new(48000, 2)?;
@@ -248,7 +259,9 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
             if frame.timestamp_us >= origin {
                 last_video = Instant::now();
                 frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                stage(pipeline.push_frame(&frame), "video encode/send")?;
+                #[cfg(feature = "ci-virtual")]
+                virtual_phone_tick(frame.timestamp_us);
+                stage(pipeline.push_frame_with(&frame, composition.as_mut()), "video encode/send")?;
                 frames = frames.saturating_add(1);
                 if s.max_frames != 0 && frames >= s.max_frames { break; }
             }
@@ -292,6 +305,8 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
     let mut sink = NativeMediaSink::new(session,&sps,&pps)?;
     sink.configure_audio(&aac.configuration()?)?;
     let writer = crate::media_worker::MediaWorker::start(sink,socket)?;
+    let mut composition = crate::composition::enabled()
+        .then(|| crate::composition::CompositionStage::new(s.capture.width as usize, s.capture.height as usize));
     let origin = timestamp_us();
     let mut clock = AudioClock::default();
     let mut framer = PcmFramer::new(48000, 2)?;
@@ -350,7 +365,9 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
                 last_video = Instant::now();
                 let captured = Instant::now().checked_sub(Duration::from_micros(timestamp_us().saturating_sub(frame.timestamp_us))).unwrap_or_else(Instant::now);
                 frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                if let Some(unit) = stage(encoder.encode(&frame), "video encode")? {
+                #[cfg(feature = "ci-virtual")]
+                virtual_phone_tick(frame.timestamp_us);
+                if let Some(unit) = stage(encoder.encode_with(&frame, composition.as_mut()), "video encode")? {
                     stage(writer.video(unit,captured), "video enqueue")?;
                 }
                 frames = frames.saturating_add(1);

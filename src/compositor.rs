@@ -78,6 +78,38 @@ impl Program {
     }
 }
 
+impl Program {
+    /// Map scene coordinates (1920×1080 canvas) onto an encoder of
+    /// `width`×`height`, rounding rectangles to even luma positions so chroma
+    /// edges stay aligned and every layer keeps at least 2×2 pixels.
+    pub fn for_output(&self, width: usize, height: usize) -> Program {
+        let sx = |v: usize| (v * width / self.width) & !1;
+        let sy = |v: usize| (v * height / self.height) & !1;
+        let layers = self.layers.iter().filter_map(|l| {
+            let x = sx(l.x).min(width.saturating_sub(2));
+            let y = sy(l.y).min(height.saturating_sub(2));
+            let w = (sx(l.x + l.width).max(x + 2)).min(width) - x;
+            let h = (sy(l.y + l.height).max(y + 2)).min(height) - y;
+            (w >= 2 && h >= 2).then(|| Layer { id: l.id.clone(), source: l.source.clone(), x, y, width: w, height: h })
+        }).collect();
+        Program { scene_id: self.scene_id.clone(), revision: self.revision, width, height, layers }
+    }
+
+    /// True when the Program is exactly "HDMI, full canvas": the encoder can
+    /// take the captured frame directly (HDMI fast path, no composition).
+    pub fn is_hdmi_passthrough(&self) -> bool {
+        matches!(self.layers.as_slice(), [l] if l.source == "hdmi" && l.x == 0 && l.y == 0 && l.width == self.width && l.height == self.height)
+    }
+
+    /// The Program used before any scene is applied: HDMI full screen.
+    pub fn hdmi_only() -> Program {
+        Program {
+            scene_id: String::new(), revision: 0, width: 1920, height: 1080,
+            layers: vec![Layer { id: "hdmi".into(), source: "hdmi".into(), x: 0, y: 0, width: 1920, height: 1080 }],
+        }
+    }
+}
+
 /// Per-frame composition report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameReport {
@@ -242,6 +274,11 @@ impl ProgramSwitch {
         rx
     }
 
+    /// Drop a pending request that was not applied yet (its waiter sees failure).
+    pub fn cancel_pending(&self) {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
     /// Swap in a pending Program (if any) and return the Program to compose
     /// for frame `frame_index`. The ack is sent before composition begins, and
     /// names that frame; call it from the media thread only.
@@ -402,6 +439,24 @@ mod tests {
         for i in 1..5 { c.compose(&program, i, |s| (s == "hdmi").then_some(&hdmi)); }
         assert_eq!(c.output().bytes, first);
         assert_eq!((c.output.bytes.capacity(), c.x_map.capacity()), (cap_out, cap_map));
+    }
+
+    #[test]
+    fn for_output_scales_and_detects_passthrough() {
+        let p = Program::from_scene("lt", 1, &lt_scene()).unwrap().for_output(640, 360);
+        assert_eq!((p.width, p.height), (640, 360));
+        assert_eq!(p.layers[0], Layer { id: "slides".into(), source: "hdmi".into(), x: 0, y: 0, width: 480, height: 360 });
+        assert_eq!(p.layers[1], Layer { id: "rear".into(), source: "phone:rear".into(), x: 480, y: 0, width: 160, height: 180 });
+        assert!(!p.is_hdmi_passthrough());
+        assert!(Program::hdmi_only().for_output(640, 360).is_hdmi_passthrough());
+        assert!(Program::hdmi_only().is_hdmi_passthrough());
+        // Tiny layers survive as at least 2x2 and stay in bounds.
+        let doc = json!({"version":1,"name":"t","layers":[{"id":"a","source":"phone:front","x":1919,"y":1079,"width":1,"height":1,"visible":true}]});
+        let t = Program::from_scene("t", 1, &doc).unwrap().for_output(640, 360);
+        let l = &t.layers[0];
+        assert!(l.x + l.width <= 640 && l.y + l.height <= 360 && l.width >= 2 && l.height >= 2, "{l:?}");
+        let mut c = Compositor::new(640, 360);
+        c.compose(&t, 0, |_| None);
     }
 
     #[test]

@@ -400,9 +400,10 @@ export interface paths {
         put?: never;
         /**
          * Apply a stored draft revision to Program (IPC scene.apply)
-         * @description Succeeds only after the engine acknowledges frame-boundary application.
-         *     Until the compositor exists the engine fails closed and this returns
-         *     501 not_implemented with Program unchanged.
+         * @description Succeeds only after the engine acknowledges frame-boundary application
+         *     (response `engine.first_frame_index`). Program is unchanged on 501
+         *     not_implemented (compositor disabled), 409 program_inactive (no stream
+         *     running) or 503 program_timeout.
          */
         post: {
             parameters: {
@@ -420,12 +421,24 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Applied and acknowledged by engine */
+                /** @description Applied and acknowledged by the engine at a frame boundary */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            scene_id: components["schemas"]["Id"];
+                            revision: number;
+                            engine: {
+                                /** @constant */
+                                applied: true;
+                                scene_id: string;
+                                revision: number;
+                                first_frame_index: number;
+                            };
+                        };
+                    };
                 };
                 default: components["responses"]["Error"];
             };
@@ -452,7 +465,8 @@ export interface components {
                  * @description unauthorized(401) not_configured(503) forbidden_host(403) invalid_json(400)
                  *     invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
-                 *     engine_start_failed(503) busy(503) not_implemented(501) internal_error(500);
+                 *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
+                 *     program_timeout(503) internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */
                 code: string;

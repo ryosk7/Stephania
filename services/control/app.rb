@@ -26,7 +26,9 @@ class Control < Sinatra::Base
     "engine_start_failed" => 503,
     "busy" => 503,
     "invalid_scene" => 422,
-    "not_implemented" => 501
+    "not_implemented" => 501,
+    "program_inactive" => 409,
+    "program_timeout" => 503
   }.freeze
 
   set :bind, "127.0.0.1"
@@ -222,9 +224,10 @@ class Control < Sinatra::Base
   end
 
   # Request Program transition to a stored draft revision. The engine
-  # validates independently and must acknowledge real frame-boundary
-  # application; until the compositor exists it fails closed (501) and
-  # Program is unchanged.
+  # validates independently and answers only after the media thread
+  # acknowledged frame-boundary application (first_frame_index). Without the
+  # compositor (501), without a running stream (409 program_inactive) or on
+  # timeout (503) Program is unchanged.
   post "/api/v1/program/transition" do
     input = read_json
     unless input.is_a?(Hash) && input.keys.sort == %w[revision scene_id] &&
@@ -234,7 +237,7 @@ class Control < Sinatra::Base
     row = scene_row(input["scene_id"])
     fail_with 404, "not_found", "scene does not exist" unless row
     fail_with 409, "revision_conflict", "scene revision is #{row[:revision]}" unless row[:revision] == input["revision"]
-    result = engine_call("scene.apply", {scene: JSON.parse(row[:document])})
+    result = engine_call("scene.apply", {scene: JSON.parse(row[:document]), scene_id: row[:id], revision: row[:revision]})
     # Only reachable once the engine reports an acknowledged application.
     json_reply({scene_id: row[:id], revision: row[:revision], engine: result})
   end

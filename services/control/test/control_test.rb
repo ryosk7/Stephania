@@ -173,11 +173,26 @@ class ControlTest < Minitest::Test
     request = @engine.requests.pop
     assert_equal "scene.apply", request["method"]
     assert_equal JSON.parse(JSON.generate(SCENE)), request.dig("params", "scene")
+    assert_equal "lt", request.dig("params", "scene_id")
+    assert_equal 1, request.dig("params", "revision")
     post "/api/v1/program/transition", JSON.generate(scene_id: "lt", revision: 7)
     assert_error 409, "revision_conflict"
     post "/api/v1/program/transition", JSON.generate(scene_id: "missing", revision: 1)
     assert_error 404, "not_found"
     assert_equal 0, @engine.requests.size
+  end
+
+  def test_program_transition_acknowledged_and_inactive
+    auth
+    put_scene "lt", 0, SCENE
+    header "Content-Type", "application/json"
+    use_engine { |req| FakeEngine.ok(req, {"applied" => true, "scene_id" => "lt", "revision" => 1, "first_frame_index" => 42}) }
+    post "/api/v1/program/transition", JSON.generate(scene_id: "lt", revision: 1)
+    assert_equal 200, last_response.status, last_response.body
+    assert_equal 42, body.dig("engine", "first_frame_index")
+    use_engine { |req| FakeEngine.error(req, "program_inactive", "no stream is running") }
+    post "/api/v1/program/transition", JSON.generate(scene_id: "lt", revision: 1)
+    assert_error 409, "program_inactive"
   end
 
   def test_unknown_api_route_uses_envelope

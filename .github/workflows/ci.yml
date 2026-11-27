@@ -164,6 +164,30 @@ jobs:
           path: transport-results/
           retention-days: 3
 
+  arm64-composition:
+    # Opt-in live compositor: HDMI fast path, frame-boundary acknowledged
+    # scene.apply over IPC, and a virtual phone track, verified pixel-wise.
+    needs: [plan, arm64-build]
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg openssl
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box
+      - name: Composed broadcast with scene changes (60s)
+        run: timeout --kill-after=5s 60 bash ci/composition-e2e.sh target/release/t3box composition-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composition
+          path: composition-results/
+          retention-days: 3
+
   arm64-quality:
     needs: [plan, arm64-build]
     if: needs.plan.outputs.full == 'true'
@@ -214,7 +238,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [plan, rust-check, arm64-build, arm64-logical, arm64-transport, arm64-quality, arm64-soak]
+    needs: [plan, rust-check, arm64-build, arm64-logical, arm64-transport, arm64-composition, arm64-quality, arm64-soak]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -244,6 +268,7 @@ jobs:
           BUILD: ${{ needs.arm64-build.result }}
           LOGICAL: ${{ needs.arm64-logical.result }}
           TRANSPORT: ${{ needs.arm64-transport.result }}
+          COMPOSITION: ${{ needs.arm64-composition.result }}
           QUALITY: ${{ needs.arm64-quality.result }}
           SOAK: ${{ needs.arm64-soak.result }}
           SOAK_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.soak }}
@@ -252,11 +277,11 @@ jobs:
           echo "Coverage selection: $REASON" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$SOAK_REQUESTED" == true ]]; then test "$SOAK" = success; else test "$SOAK" = skipped; fi
           if [[ "$FULL" == true ]]; then
-            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = success; done
+            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$QUALITY"; do test "$result" = success; done
           else
             test "$FULL" = false
             test "$REASON" = docs-only
-            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$QUALITY"; do test "$result" = skipped; done
+            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$QUALITY"; do test "$result" = skipped; done
           fi
 
   arm64-soak:
