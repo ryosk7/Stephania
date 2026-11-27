@@ -127,7 +127,7 @@ jobs:
       - name: Control-plane load within the section 9 cgroup (YJIT off and on)
         shell: bash
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
           ci/control-load.sh ci-bins/t3box "$RUNNER_TEMP/control-load"
           cat "$RUNNER_TEMP/control-load/control-load.md" >> "$GITHUB_STEP_SUMMARY"
       - if: always()
@@ -253,7 +253,7 @@ jobs:
           working-directory: services/control
           bundler-cache: true
       - run: |
-          sudo apt-get update -qq
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
           python3 -m pip install --break-system-packages -q aiortc numpy
       - name: Phone WebRTC end to end
@@ -399,7 +399,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: apps/mobile/modules/t3box-camera/ios/CameraSender/.build
-          key: camera-sender-${{ runner.os }}-${{ hashFiles('apps/mobile/modules/t3box-camera/ios/CameraSender/Package.swift') }}
+          # Keyed by repository too: SwiftPM's .build keeps absolute paths of the checkout.
+          key: camera-sender-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('apps/mobile/modules/t3box-camera/ios/CameraSender/Package.swift') }}
       - name: Sender core against libwebrtc (H.264 baseline, dual tracks, live plans)
         working-directory: apps/mobile/modules/t3box-camera/ios/CameraSender
         env:
@@ -451,7 +452,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq bluez bluez-test-tools libdbus-1-dev pkg-config >/dev/null
+      - run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq bluez bluez-test-tools libdbus-1-dev pkg-config >/dev/null
       - run: sudo pip3 install --break-system-packages -q bleak==3.1.0 cryptography
       # Host build (bluer needs libdbus): main's target directory, saved
       # only from main so PRs never pin a stale one.
@@ -481,7 +482,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq network-manager hostapd dnsmasq-base iw >/dev/null
+      - run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq network-manager hostapd dnsmasq-base iw >/dev/null
       - run: sudo pip3 install --break-system-packages -q cryptography
       - uses: actions/download-artifact@v4
         with:

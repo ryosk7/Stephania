@@ -1,6 +1,12 @@
-# T3Box
+# Stephania
 
-Rust-based Raspberry Pi 5 LT event streaming box.
+**The open-source operating system for live broadcasting.**
+
+Stephania (formerly T3Box) is a self-contained Linux-based broadcasting appliance for Raspberry Pi 5, combining a native Rust media engine, browser-based Studio, device management and smartphone integration.
+
+The name is inspired by the plant genus *Stephania* and also stands for **S**treaming and **T**ransmission **E**nvironment for **P**ortable **H**ardware, **A**utonomous **N**etworking and **I**ntegrated **A**rchitecture.
+
+The project is under development; see [Master Architecture](docs/MASTER-ARCHITECTURE.md) for the intended system and implementation status. Existing `t3box` binaries, environment variables and service identifiers remain unchanged during the branding transition.
 
 ## Production architecture
 

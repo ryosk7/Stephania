@@ -147,6 +147,7 @@
         "youtube_ingest_confirmed",
         "restart_attempts",
         "last_error",
+        "native_worker_started_unix_ms",
         "program",
         "sources"
       ],
@@ -184,6 +185,11 @@
         },
         "last_error": {
           "type": "string"
+        },
+        "native_worker_started_unix_ms": {
+          "description": "Unix time in milliseconds the running native worker started (elapsed on-air time in the apps); null while none runs. Worker activity only, not evidence of ingest.",
+          "type": ["integer", "null"],
+          "minimum": 0
         },
         "program": {
           "description": "Stored scene on air, or null when none was applied in this engine process (HDMI passthrough default).",

@@ -53,6 +53,8 @@ fn number(key: &str, default: u32, min: u32, max: u32) -> Result<u32, String> {
 struct NativeWorker {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     handle: thread::JoinHandle<std::io::Result<()>>,
+    /// Wall-clock time the worker was spawned: what "on air for 12:04" counts from.
+    started: std::time::SystemTime,
 }
 
 struct State {
@@ -162,7 +164,7 @@ impl Controller {
         let handle = thread::Builder::new().name("t3box-native-publisher".into())
             .spawn(move || native_av::run_with_settings(&url, &settings, || signal.load(Ordering::Acquire)))
             .map_err(|e| e.to_string())?;
-        state.native = Some(NativeWorker { cancel, handle });
+        state.native = Some(NativeWorker { cancel, handle, started: std::time::SystemTime::now() });
         state.last_error.clear();
         Ok(())
     }
@@ -194,6 +196,17 @@ impl Controller {
         }
         #[cfg(not(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac")))]
         { false }
+    }
+
+    /// When the running native worker started; None while none runs.
+    pub fn native_started(&self) -> Option<std::time::SystemTime> {
+        #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
+        {
+            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.native.as_ref().filter(|w| !w.handle.is_finished()).map(|w| w.started)
+        }
+        #[cfg(not(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac")))]
+        { None }
     }
 
     pub fn status(&self) -> (bool, bool, u64, String) {
