@@ -519,7 +519,7 @@ export interface components {
         Error: {
             error: {
                 /**
-                 * @description unauthorized(401) not_configured(503) forbidden_host(403) invalid_json(400)
+                 * @description unauthorized(401) not_configured(503) forbidden_host(403) forbidden_origin(403) invalid_json(400)
                  *     invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)

@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react';
 import {FlatList, Pressable, Text, TextInput} from 'react-native';
 import type {ScanNetwork} from '@t3box/provisioning-client';
-import {activeSession} from '../state/session';
+import {activeSession, saveEnrollment} from '../state/session';
 import {Button, describeError, Screen, s} from '../ui';
 
 export default function Wifi() {
@@ -31,8 +31,20 @@ export default function Wifi() {
       selected!.security === 'open' ? {ssid: selected!.ssid, security: 'open'} : {ssid: selected!.ssid, security: 'wpa-psk', psk},
     );
     setPsk('');
-    if (state === 'CONNECTED') setStatus('接続しました。管理画面は安全な接続方法の準備ができ次第ここに表示されます。');
+    if (state === 'CONNECTED') setStatus('接続しました。続けて管理画面へのアクセスを発行できます。');
     else throw Object.assign(new Error('join_failed'), {code: 'join_failed'});
+  });
+
+  // Owner-only: the device issues a LAN token and delivers the URLs and its
+  // CA fingerprint sealed under the owner key (never over plain BLE).
+  const enroll = () => run('管理画面へのアクセスを発行しています…', async () => {
+    if (!(await active.session.managementAvailable())) {
+      setStatus('T3Boxが安全な接続（TLS証明書）を準備中です。数分後にもう一度お試しください。');
+      return;
+    }
+    const e = await active.session.enrollManagement();
+    await saveEnrollment(active.deviceId, e);
+    setStatus(`発行しました: ${e.urls[0]}\n証明書の指紋 ${e.caSha256.slice(0, 16)}…（アプリ内に安全に保存）`);
   });
 
   return (
@@ -54,6 +66,7 @@ export default function Wifi() {
       )}
       <Button title="このWi-Fiに接続" disabled={busy || !selected || !['open', 'wpa-psk'].includes(selected.security)} onPress={() => void join()} />
       <Button title="再検索" disabled={busy} onPress={() => void scan()} />
+      <Button title="管理画面へのアクセスを発行" disabled={busy} onPress={() => void enroll()} />
       {status !== '' && <Text style={s.p}>{status}</Text>}
     </Screen>
   );

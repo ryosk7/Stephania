@@ -8,12 +8,15 @@ require "securerandom"
 require_relative "lib/engine_client"
 require_relative "lib/scene_validator"
 require_relative "lib/event_hub"
+require_relative "lib/lan_access"
 
 # T3Box management plane. Contract: contracts/openapi.yaml.
 #
 # Never carries media. Talks to the engine only through EngineClient
-# (Unix socket IPC). Loopback-only until trusted LAN TLS and authenticated
-# enrollment exist (docs/STUDIO-ARCHITECTURE.md safety gates).
+# (Unix socket IPC). Plain HTTP is loopback-only (T3BOX_CONTROL_TOKEN).
+# The LAN is served only over TLS with the device-CA certificate
+# (crate::pki) and accepts only owner-issued tokens enrolled over
+# authenticated BLE (crate::management_tokens); see LanAccess.
 class Control < Sinatra::Base
   MAX_BODY_BYTES = 65_536
   MAX_REVISIONS_KEPT = 50
@@ -45,7 +48,7 @@ class Control < Sinatra::Base
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
-    attr_accessor :db, :token, :engine, :events, :poller
+    attr_accessor :db, :token, :engine, :events, :poller, :lan
 
     def configure_storage(path)
       database = Sequel.sqlite(path, max_connections: 1, timeout: 1000)
@@ -70,6 +73,7 @@ class Control < Sinatra::Base
 
     def configure_from_env(env = ENV)
       self.token = env["T3BOX_CONTROL_TOKEN"]
+      self.lan = LanAccess.new(pki_dir: env["T3BOX_PKI_DIR"], tokens_file: env["T3BOX_CONTROL_TOKENS_FILE"])
       self.engine = EngineClient.new(socket_path: env.fetch("T3BOX_ENGINE_SOCKET", EngineClient::DEFAULT_SOCKET))
       configure_storage(env.fetch("T3BOX_CONTROL_DB", ":memory:"))
       configure_events(interval: Float(env.fetch("T3BOX_CONTROL_POLL_SECONDS", "1.0")))
@@ -134,17 +138,32 @@ class Control < Sinatra::Base
     headers "Cache-Control" => "no-store", "X-Content-Type-Options" => "nosniff",
       "X-Request-Id" => request_id,
       "Content-Security-Policy" => "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
-    fail_with 403, "forbidden_host", "management is loopback-only" unless ALLOWED_HOSTS.include?(request.host)
+    @lan_request = !ALLOWED_HOSTS.include?(request.host)
+    if @lan_request
+      # Non-loopback Host values are accepted only over TLS and only for the
+      # names/addresses in the device certificate (DNS-rebinding defence).
+      fail_with 403, "forbidden_host", "LAN access requires TLS to a certified device name" unless request.ssl? && settings.lan&.lan_host?(request.host)
+      headers "Strict-Transport-Security" => "max-age=31536000"
+    end
+    origin = request.env["HTTP_ORIGIN"]
+    fail_with 403, "forbidden_origin", "cross-origin requests are not allowed" if origin && origin != "#{request.scheme}://#{request.host_with_port}"
   end
 
   before "/api/*" do
     content_type :json
     token = settings.token
-    fail_with 503, "not_configured", "T3BOX_CONTROL_TOKEN must be at least 32 bytes" unless token.is_a?(String) && token.bytesize >= 32
+    env_token = token.is_a?(String) && token.bytesize >= 32
+    unless env_token || settings.lan&.configured?
+      fail_with 503, "not_configured", "T3BOX_CONTROL_TOKEN must be at least 32 bytes"
+    end
     header = request.env.fetch("HTTP_AUTHORIZATION", "")
     supplied = header.delete_prefix("Bearer ")
-    authorized = header.start_with?("Bearer ") && supplied.bytesize == token.bytesize &&
+    bearer = header.start_with?("Bearer ")
+    # The bootstrap token is loopback-only; the LAN accepts only tokens the
+    # owner enrolled over BLE (revoked by factory reset).
+    local = !@lan_request && bearer && env_token && supplied.bytesize == token.bytesize &&
       OpenSSL.fixed_length_secure_compare(supplied, token)
+    authorized = local || (bearer && settings.lan&.issued_token?(supplied))
     fail_with 401, "unauthorized", "missing or invalid bearer token" unless authorized
   end
 

@@ -55,3 +55,12 @@ export function parseSetupUri(text: string): Uint8Array | null {
 export function seal(ownerKey: Uint8Array, opNonce: Uint8Array, operation: string, plaintext: Uint8Array): Uint8Array {
   return chacha20poly1305(mac(ownerKey, ['t3box-seal-v1']), opNonce.subarray(0, 12), new TextEncoder().encode(operation)).encrypt(plaintext);
 }
+
+/** Opens a value sealed by the device (e.g. management.enroll); null if forged. */
+export function open(ownerKey: Uint8Array, opNonce: Uint8Array, operation: string, sealed: Uint8Array): Uint8Array | null {
+  try {
+    return chacha20poly1305(mac(ownerKey, ['t3box-seal-v1']), opNonce.subarray(0, 12), new TextEncoder().encode(operation)).decrypt(sealed);
+  } catch {
+    return null;
+  }
+}

@@ -2,7 +2,7 @@
 // One request/response channel; the transport carries a complete request
 // message and returns the complete response (fragmentation, indications and
 // reassembly are the transport's job).
-import {claimProof, deriveOwnerKey, fromHex, operationProof, OWNER_ID, seal, toHex} from './crypto';
+import {claimProof, deriveOwnerKey, fromHex, open, operationProof, OWNER_ID, seal, toHex} from './crypto';
 
 export const UUID = {
   service: '7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60',
@@ -29,6 +29,9 @@ const RETRIABLE = new Set(['response_timeout', 'ble_write_failed', 'ble_notify_f
 
 export type WifiConfig = {ssid: string; security: 'open'} | {ssid: string; security: 'wpa-psk'; psk: string};
 export type ScanNetwork = {ssid: string; rssi: number; security: string};
+/** LAN management access delivered sealed by the device. Keep `token` in
+ * secure storage; connect only to servers whose chain ends in `caSha256`. */
+export type ManagementEnrollment = {token: string; tokenId: string; urls: string[]; caSha256: string};
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -119,5 +122,29 @@ export class ProvisioningSession {
     const r = await this.call({op: 'wifi.configure', sealed: toHex(sealed), proof: toHex(operationProof(this.ownerKey!, nonce, 'wifi.configure', sealed))});
     if (typeof r.state !== 'string') throw new ProvisioningError('invalid_response');
     return r.state;
+  }
+
+  /** Whether the device has LAN TLS set up (unauthenticated hint only). */
+  async managementAvailable(): Promise<boolean> {
+    return (await this.call({op: 'management.endpoint'})).available === true;
+  }
+
+  /**
+   * Owner-only: issues a LAN access token. URLs and the CA pin arrive
+   * sealed under the owner key, so a BLE man-in-the-middle cannot swap them.
+   */
+  async enrollManagement(): Promise<ManagementEnrollment> {
+    const nonce = await this.operationNonce();
+    const r = await this.call({op: 'management.enroll', proof: toHex(operationProof(this.ownerKey!, nonce, 'management.enroll', new Uint8Array()))});
+    if (typeof r.sealed !== 'string') throw new ProvisioningError('invalid_response');
+    const plain = open(this.ownerKey!, nonce, 'management.enroll', fromHex(r.sealed));
+    if (!plain) throw new ProvisioningError('bad_seal');
+    const v = JSON.parse(dec.decode(plain)) as Record<string, unknown>;
+    const urls = Array.isArray(v.urls) ? v.urls.filter((u): u is string => typeof u === 'string' && u.startsWith('https://')) : [];
+    if (typeof v.token !== 'string' || !/^t3b_[0-9a-f]{64}$/.test(v.token) || typeof v.token_id !== 'string' ||
+        typeof v.ca_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(v.ca_sha256) || urls.length === 0) {
+      throw new ProvisioningError('invalid_response');
+    }
+    return {token: v.token, tokenId: v.token_id, urls, caSha256: v.ca_sha256};
   }
 }

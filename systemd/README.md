@@ -10,12 +10,15 @@
 | `t3box-ble.dbus.conf` | `/etc/dbus-1/system.d/t3box-ble.conf` |
 | `../os/bluez/main.conf` | `/etc/bluetooth/main.conf` (LE-only, static address, MTU 517) |
 | `t3box.sysusers.conf` | `/usr/lib/sysusers.d/t3box.conf` |
+| `t3box.tmpfiles.conf` | `/usr/lib/tmpfiles.d/t3box.conf` — shared LAN token directory |
+| `t3box-pki.service` / `.timer` | `/etc/systemd/system/` — device CA and LAN TLS certificate (`t3box-pki ensure`), re-checked every 5 min; restarts control only when a certificate is reissued |
 
 ```bash
 sudo systemd-sysusers
 sudo install -d -m 0755 /etc/t3box
 printf 'T3BOX_CONTROL_TOKEN=%s\n' "$(openssl rand -hex 32)" | sudo install -m 0600 /dev/stdin /etc/t3box/control.env
-sudo systemctl daemon-reload && sudo systemctl enable --now t3box t3box-control
+sudo systemd-tmpfiles --create
+sudo systemctl daemon-reload && sudo systemctl enable --now t3box t3box-pki.timer t3box-control
 systemd-analyze verify /etc/systemd/system/t3box*.service
 ```
 The control limits (CPUQuota 50 %, MemoryMax 128M, …) are the §9 starting experiment, not measured production values. Control depends on the engine only via `Wants=`, so restarting or crashing control never stops media; verify on hardware with `systemctl kill t3box-control` during a stream.
