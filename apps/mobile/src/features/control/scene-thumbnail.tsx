@@ -2,7 +2,7 @@
 // so the tile shows where the slides and cameras go — no screenshots.
 import {StyleSheet, View} from 'react-native';
 import type {SceneLayer} from '@/shared/device';
-import {Symbol, color, symbols} from '@/shared/ui';
+import {color, Icon} from '@/shared/ui';
 
 const W = 1920, H = 1080;
 
@@ -23,7 +23,7 @@ export function SceneThumbnail({layers}: {layers: SceneLayer[] | undefined}) {
             backgroundColor: k === 'slides' ? '#48484A' : k === 'camera' ? '#636366' : (l.color ?? '#3A3A3C'),
             opacity: k === 'overlay' ? 0.7 : 1,
           }]}>
-            {k !== 'overlay' && l.width > W / 6 && <Symbol name={k === 'camera' ? symbols.person : symbols.slides} size={14} tint="rgba(235,235,245,0.5)" />}
+            {k !== 'overlay' && l.width > W / 6 && <Icon name={k === 'camera' ? 'person' : 'slides'} size={14} tint="rgba(235,235,245,0.5)" />}
           </View>
         );
       })}

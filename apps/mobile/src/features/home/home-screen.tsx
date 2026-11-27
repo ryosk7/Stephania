@@ -4,7 +4,7 @@ import {router, useFocusEffect} from 'expo-router';
 import {useCallback, useState} from 'react';
 import {View} from 'react-native';
 import {broadcastState, enrolledDevices, useDeviceClient, type EnrolledDevice, type Status} from '@/shared/device';
-import {ButtonRow, Card, Footnote, LargeTitle, PrimaryButton, Screen, SecondaryButton, StatusPill, TextButton, space, symbols} from '@/shared/ui';
+import {ButtonRow, Card, Footnote, Display, PrimaryButton, Screen, SecondaryButton, StatusPill, TextButton, space} from '@/shared/ui';
 
 export function HomeScreen() {
   const [devices, setDevices] = useState<EnrolledDevice[] | null>(null);
@@ -12,7 +12,7 @@ export function HomeScreen() {
 
   return (
     <Screen scroll footer={<TextButton title="Connect to a registered T3Box nearby" onPress={() => router.push('/setup/nearby')} />}>
-      <LargeTitle>T3Box</LargeTitle>
+      <Display>T3Box</Display>
       {devices?.length === 0 && <SetupCard />}
       {devices?.map(d => <DeviceCard key={d.deviceId} device={d} />)}
       {devices && devices.length > 0 && <TextButton title="Set up another T3Box" onPress={() => router.push('/setup/scan')} />}
@@ -29,7 +29,7 @@ function SetupCard() {
         <Footnote>2. Copy t3box-setup.txt to the microSD card, insert it and power the T3Box on.</Footnote>
         <Footnote>3. Scan the QR code shown on the PC.</Footnote>
       </Card.Body>
-      <PrimaryButton title="Scan setup code" symbol={symbols.qr} onPress={() => router.push('/setup/scan')} />
+      <PrimaryButton title="Scan setup code" icon={'qr'} onPress={() => router.push('/setup/scan')} />
     </Card>
   );
 }
@@ -54,7 +54,7 @@ function DeviceCard({device}: {device: EnrolledDevice}) {
       {status === null && <Footnote>Check that the phone is on the same Wi-Fi as the T3Box.</Footnote>}
       <View style={{marginTop: space.xs}}>
         <ButtonRow>
-          <SecondaryButton title="Camera" symbol={symbols.camera} onPress={() => open('/device/[id]/camera')} />
+          <SecondaryButton title="Camera" icon={'camera'} onPress={() => open('/device/[id]/camera')} />
           <PrimaryButton title="Control" onPress={() => open('/device/[id]')} />
         </ButtonRow>
       </View>

@@ -1,7 +1,8 @@
-// Input controls: Segmented (compound, state through context), Field.
+// Input controls drawn by T3Box (same on every platform): Segmented
+// (compound, state through context), Toggle, Field.
 import * as Haptics from 'expo-haptics';
-import {createContext, use, useState, type ReactNode} from 'react';
-import {Pressable, StyleSheet, Switch, Text, TextInput, View, type TextInputProps} from 'react-native';
+import {createContext, use, useEffect, useRef, useState, type ReactNode} from 'react';
+import {Animated, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps} from 'react-native';
 import {Footnote} from './text';
 import {color, radius, size, space, type} from './tokens';
 
@@ -9,7 +10,7 @@ type SegmentedState = {value: string; select(v: string): void; locked: boolean};
 const SegmentedContext = createContext<SegmentedState | null>(null);
 
 /**
- * Mutually exclusive modes (Tesla "Off | No A/C | On").
+ * Mutually exclusive modes.
  * <Segmented value onChange><Segmented.Item value label /></Segmented>
  * `locked` disables every item (e.g. while live) without per-item flags.
  */
@@ -34,38 +35,51 @@ Segmented.Item = function SegmentedItem({value, label, unavailable}: {value: str
   const disabled = ctx.locked || unavailable;
   return (
     <Pressable accessibilityRole="radio" accessibilityLabel={label} accessibilityState={{selected, disabled}}
-      disabled={disabled} onPress={() => ctx.select(value)}
-      style={[st.item, selected && st.itemSelected]}>
-      <Text style={[type.subheadline, {color: disabled && !selected ? color.textTertiary : color.text, fontWeight: selected ? '600' : '500'}]}>{label}</Text>
+      disabled={disabled} onPress={() => ctx.select(value)} style={[st.item, selected && st.itemSelected]}>
+      <Text style={[type.label, {color: selected ? color.onPrimary : disabled ? color.textTertiary : color.text}]}>{label}</Text>
     </Pressable>
   );
 };
 
-/** On/off control: the system switch in the token colours (green = on). */
+/**
+ * On/off control drawn by T3Box (not the system switch): a 48×28 track,
+ * light when on with a dark knob, so the look is the same on iOS and Android.
+ */
 export function Toggle({value, onChange, label, disabled}: {value: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean}) {
+  const x = useRef(new Animated.Value(value ? 1 : 0)).current;
+  useEffect(() => { Animated.timing(x, {toValue: value ? 1 : 0, duration: 150, useNativeDriver: false}).start(); }, [value, x]);
+  const bg = x.interpolate({inputRange: [0, 1], outputRange: ['rgba(255,255,255,0.12)', color.text]});
+  const knobBg = x.interpolate({inputRange: [0, 1], outputRange: [color.textSecondary, color.onPrimary]});
+  const left = x.interpolate({inputRange: [0, 1], outputRange: [3, 23]});
   return (
-    <Switch value={value} onValueChange={v => { void Haptics.selectionAsync(); onChange(v); }} disabled={disabled} accessibilityLabel={label}
-      trackColor={{false: 'rgba(120,120,128,0.32)', true: color.success}} ios_backgroundColor="rgba(120,120,128,0.32)" thumbColor="#FFFFFF" />
+    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{checked: value, disabled}} disabled={disabled}
+      onPress={() => { void Haptics.selectionAsync(); onChange(!value); }} hitSlop={8} style={{opacity: disabled ? 0.4 : 1}}>
+      <Animated.View style={[st.toggle, {backgroundColor: bg}]}>
+        <Animated.View style={[st.knob, {left, backgroundColor: knobBg}]} />
+      </Animated.View>
+    </Pressable>
   );
 }
 
-/** Filled text input with its label above (Alexa Wi-Fi form). */
+/** Filled text input with its label above. */
 export function Field({label, secure, ...input}: TextInputProps & {label: string; secure?: boolean}) {
   const [focused, setFocused] = useState(false);
   return (
     <View style={{gap: 6}}>
-      <Footnote style={{paddingHorizontal: space.l}}>{label}</Footnote>
+      <Footnote style={{paddingHorizontal: space.xs}}>{label}</Footnote>
       <TextInput accessibilityLabel={label} placeholderTextColor={color.textTertiary} secureTextEntry={secure}
-        autoCapitalize="none" autoCorrect={false} {...input}
+        autoCapitalize="none" autoCorrect={false} selectionColor={color.text} {...input}
         onFocus={e => { setFocused(true); input.onFocus?.(e); }} onBlur={e => { setFocused(false); input.onBlur?.(e); }}
-        style={[type.body, st.field, focused && {borderColor: color.info}]} />
+        style={[type.body, st.field, focused && {borderColor: color.textSecondary}]} />
     </View>
   );
 }
 
 const st = StyleSheet.create({
-  track: {flexDirection: 'row', gap: 2, backgroundColor: color.fill, borderRadius: radius.segment + 3, padding: 3},
-  item: {flex: 1, height: 38, borderRadius: radius.segment, alignItems: 'center', justifyContent: 'center'},
-  itemSelected: {backgroundColor: color.segment, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: {width: 0, height: 3}},
-  field: {color: color.text, backgroundColor: color.surface, borderRadius: radius.control, borderWidth: 2, borderColor: 'transparent', paddingHorizontal: space.l, height: 48},
+  track: {flexDirection: 'row', gap: 4, backgroundColor: color.surface, borderWidth: 1, borderColor: color.border, borderRadius: radius.control + 2, padding: 4},
+  item: {flex: 1, minHeight: size.hit - 4, borderRadius: radius.control - 2, alignItems: 'center', justifyContent: 'center'},
+  itemSelected: {backgroundColor: color.text},
+  toggle: {width: 48, height: 28, borderRadius: 14, justifyContent: 'center'},
+  knob: {position: 'absolute', top: 3, width: 22, height: 22, borderRadius: 11},
+  field: {color: color.text, backgroundColor: color.surface, borderRadius: radius.control, borderWidth: 1, borderColor: color.border, paddingHorizontal: space.l, height: 50},
 });

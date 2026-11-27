@@ -5,7 +5,7 @@ import {useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
 import type {Device} from 'react-native-ble-plx';
 import {ProvisioningSession} from '@t3box/provisioning-client';
-import {Body, Footnote, List, ListIcon, Notice, Screen, TextButton, Title, color, space, symbols} from '@/shared/ui';
+import {Body, Footnote, List, ListIcon, Notice, Screen, TextButton, Title, color, space, TopBar} from '@/shared/ui';
 import {connectTransport, disconnect, ensurePermissions, scanDevices, waitPoweredOn} from './ble/manager';
 import {describeSetupError} from './errors';
 import {loadOwnerKey, ownerId, pendingSecret, saveOwnerKey, setActive, setPendingSecret} from './state';
@@ -61,7 +61,7 @@ export function NearbyScreen() {
 
   const busy = phase.kind === 'connecting';
   return (
-    <Screen scroll>
+    <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} scroll>
       <Title>Nearby T3Box</Title>
       <Footnote>Keep the phone within a few metres of the powered-on T3Box.</Footnote>
       <List.Section footer={devices.length === 0 ? 'Make sure the T3Box is plugged in and has finished starting (about 30 seconds).' : undefined}>
@@ -69,7 +69,7 @@ export function NearbyScreen() {
           ? <List.Row title="Searching…" accessory={<ActivityIndicator color={color.textSecondary} />} />
           : devices.map(d => (
             <List.Row key={d.id} title={d.localName ?? d.name ?? 'T3Box'} detail={busy && phase.id === d.id ? phase.label : signal(d.rssi)}
-              leading={<ListIcon symbol={symbols.bluetooth} />}
+              leading={<ListIcon icon={'bluetooth'} />}
               accessory={busy && phase.id === d.id ? <ActivityIndicator color={color.textSecondary} /> : undefined}
               disabled={busy} onPress={() => void open(d)} />
           ))}

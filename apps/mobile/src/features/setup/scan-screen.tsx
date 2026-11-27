@@ -6,7 +6,7 @@ import {router} from 'expo-router';
 import {useRef, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
 import {parseSetupUri} from '@t3box/provisioning-client';
-import {Body, Notice, PrimaryButton, Screen, StatusView, TextButton, color, radius, space, symbols} from '@/shared/ui';
+import {Body, Notice, PrimaryButton, Screen, StatusView, TextButton, color, radius, space, TopBar} from '@/shared/ui';
 import {setPendingSecret} from './state';
 
 export function ScanScreen() {
@@ -14,16 +14,16 @@ export function ScanScreen() {
   const [error, setError] = useState('');
   const handled = useRef(false);
 
-  if (!permission) return <Screen><StatusView symbol={symbols.qr} title="Preparing the camera…" /></Screen>;
+  if (!permission) return <Screen header={<TopBar onBack={() => router.back()} title="Set up" />}><StatusView icon={'qr'} title="Preparing the camera…" /></Screen>;
   if (!permission.granted) {
     return (
-      <Screen footer={<PrimaryButton title="Allow camera" onPress={() => void requestPermission()} />}>
-        <StatusView symbol={symbols.qr} title="Scan the setup code" body="The camera reads the QR code shown by the T3Box setup page on your PC." />
+      <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<PrimaryButton title="Allow camera" onPress={() => void requestPermission()} />}>
+        <StatusView icon={'qr'} title="Scan the setup code" body="The camera reads the QR code shown by the T3Box setup page on your PC." />
       </Screen>
     );
   }
   return (
-    <Screen footer={<TextButton title="Find it nearby instead" onPress={() => router.replace('/setup/nearby')} />}>
+    <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<TextButton title="Find it nearby instead" onPress={() => router.replace('/setup/nearby')} />}>
       <View style={st.finder}>
         <CameraView style={StyleSheet.absoluteFill} facing="back" barcodeScannerSettings={{barcodeTypes: ['qr']}}
           onBarcodeScanned={({data}) => {

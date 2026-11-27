@@ -1,5 +1,5 @@
-// One component per iOS text style (DESIGN.md §4): explicit variants, no
-// `size`/`bold` flags.
+// One component per text style (DESIGN.md §4): explicit variants, no
+// `size`/`bold` flags. All Inter, so iOS and Android render alike.
 import type {ReactNode} from 'react';
 import {Text, type TextProps} from 'react-native';
 import {color, toneColor, type, type Tone} from './tokens';
@@ -18,12 +18,12 @@ function make(style: (typeof type)[keyof typeof type], defaultTone: Props['tone'
   };
 }
 
-export const LargeTitle = make(type.largeTitle, 'primary', true);
+export const Display = make(type.display, 'primary', true);
 export const Title = make(type.title, 'primary', true);
 export const Headline = make(type.headline, 'primary');
 export const Body = make(type.body, 'primary');
-export const Callout = make(type.callout, 'secondary');
-export const Subheadline = make(type.subheadline, 'secondary');
+export const Label = make(type.label, 'primary');
 export const Footnote = make(type.footnote, 'secondary');
-export const Caption = make(type.caption, 'secondary');
+/** Small uppercase section label. */
+export const Overline = make(type.overline, 'secondary', true);
 export const Mono = make(type.mono, 'primary');

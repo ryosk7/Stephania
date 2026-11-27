@@ -1,21 +1,24 @@
 // Root navigator (routes only; screens live in src/features, DESIGN.md §7).
-import {Stack, ThemeProvider} from 'expo-router';
+// Headers are drawn by the screens (TopBar), not by the platform navigator,
+// so iOS and Android look the same.
+import {Stack} from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import {StatusBar} from 'expo-status-bar';
-import {navigationTheme, stackScreenOptions} from '@/shared/ui';
+import {useEffect} from 'react';
+import {color, useAppFonts} from '@/shared/ui';
+
+void SplashScreen.preventAutoHideAsync();
 
 export default function Layout() {
+  const [loaded, error] = useAppFonts();
+  useEffect(() => { if (loaded || error) void SplashScreen.hideAsync(); }, [loaded, error]);
+  if (!loaded && !error) return null;
   return (
-    <ThemeProvider value={navigationTheme}>
+    <>
       <StatusBar style="light" />
-      <Stack screenOptions={stackScreenOptions}>
-        <Stack.Screen name="index" options={{title: '', headerShown: false}} />
-        <Stack.Screen name="setup/scan" options={{title: 'Set up'}} />
-        <Stack.Screen name="setup/nearby" options={{title: 'Set up'}} />
-        <Stack.Screen name="setup/wifi" options={{title: 'Wi-Fi'}} />
-        <Stack.Screen name="device/[id]/index" options={{title: ''}} />
-        <Stack.Screen name="device/[id]/camera" options={{headerShown: false, presentation: 'fullScreenModal'}} />
-        <Stack.Screen name="device/[id]/pc" options={{title: 'Open on PC'}} />
+      <Stack screenOptions={{headerShown: false, contentStyle: {backgroundColor: color.bg}, animation: 'slide_from_right'}}>
+        <Stack.Screen name="device/[id]/camera" options={{presentation: 'fullScreenModal', animation: 'slide_from_bottom'}} />
       </Stack>
-    </ThemeProvider>
+    </>
   );
 }

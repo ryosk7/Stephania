@@ -6,7 +6,7 @@ import {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
 import type {ScanNetwork} from '@t3box/provisioning-client';
 import {saveEnrollment} from '@/shared/device';
-import {Field, Footnote, List, Notice, PrimaryButton, Screen, StatusView, Symbol, TextButton, Title, color, symbols} from '@/shared/ui';
+import {Field, Footnote, List, Notice, PrimaryButton, Screen, StatusView, TextButton, Title, color, Icon, TopBar} from '@/shared/ui';
 import {describeSetupError} from './errors';
 import {activeSession} from './state';
 
@@ -28,7 +28,7 @@ export function WifiScreen() {
   useEffect(() => { void scan(); }, [scan]);
 
   if (!active) {
-    return <Screen><StatusView symbol={symbols.bluetooth} tone="warning" title="Not connected" body="Open the T3Box from the nearby list first.">
+    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'bluetooth'} tone="warning" title="Not connected" body="Open the T3Box from the nearby list first.">
       <PrimaryButton title="Find nearby T3Box" onPress={() => router.replace('/setup/nearby')} />
     </StatusView></Screen>;
   }
@@ -60,22 +60,22 @@ export function WifiScreen() {
   }
 
   if (step.kind === 'joining' || step.kind === 'issuing') {
-    return <Screen><StatusView symbol={symbols.wifi} tone="info"
+    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'wifi'} tone="info"
       title={step.kind === 'joining' ? `Joining ${selected?.ssid}…` : 'Setting up secure access…'}
       body={step.kind === 'joining' ? 'This can take up to 30 seconds.' : 'The T3Box hands this phone its address and certificate.'}>
       <ActivityIndicator color={color.textSecondary} />
     </StatusView></Screen>;
   }
   if (step.kind === 'done') {
-    return <Screen footer={<PrimaryButton title="Open controls" onPress={() => router.replace({pathname: '/device/[id]', params: {id: active.deviceId}})} />}>
-      <StatusView symbol={symbols.check} tone="success" title={`${active.name} is ready`} body={`Reachable at ${step.url}`} />
+    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />} footer={<PrimaryButton title="Open controls" onPress={() => router.replace({pathname: '/device/[id]', params: {id: active.deviceId}})} />}>
+      <StatusView icon={'done'} tone="success" title={`${active.name} is ready`} body={`Reachable at ${step.url}`} />
     </Screen>;
   }
 
   const supported = (n: ScanNetwork) => n.security === 'open' || n.security === 'wpa-psk';
   const canJoin = !!selected && supported(selected) && (selected.security === 'open' || psk.length >= 8);
   return (
-    <Screen scroll footer={<PrimaryButton title="Join" disabled={!canJoin} onPress={() => void join()} />}>
+    <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />} scroll footer={<PrimaryButton title="Join" disabled={!canJoin} onPress={() => void join()} />}>
       <Title>Choose Wi-Fi for {active.name}</Title>
       <Footnote>Use the network the phone and the PC are on.</Footnote>
       <List.Section title="Networks">
@@ -86,10 +86,10 @@ export function WifiScreen() {
             : networks.map(n => (
               // iOS Wi-Fi list: check on the left of the chosen network, lock and signal on the right.
               <List.Row key={n.ssid} title={n.ssid} detail={supported(n) ? undefined : 'Security not supported'}
-                leading={<View style={{width: 20}}>{selected?.ssid === n.ssid && <Symbol name={symbols.checkmark} size={17} tone="info" />}</View>}
+                leading={<View style={{width: 20}}>{selected?.ssid === n.ssid && <Icon name="check" size={18} strokeWidth={2.5} />}</View>}
                 accessory={<View style={{flexDirection: 'row', gap: 8, alignItems: 'center'}}>
-                  {n.security !== 'open' && <Symbol name={symbols.lock} size={14} tint={supported(n) ? color.text : color.textTertiary} />}
-                  <Symbol name={symbols.wifi} size={16} tint={supported(n) ? color.text : color.textTertiary} />
+                  {n.security !== 'open' && <Icon name={'lock'} size={14} tint={supported(n) ? color.text : color.textTertiary} />}
+                  <Icon name={'wifi'} size={16} tint={supported(n) ? color.text : color.textTertiary} />
                 </View>}
                 selected={selected?.ssid === n.ssid} disabled={!supported(n)} onPress={() => setSelected(n)} />
             ))}

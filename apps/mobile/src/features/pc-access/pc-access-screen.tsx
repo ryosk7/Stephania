@@ -1,3 +1,4 @@
+import {router} from 'expo-router';
 // Opening the Studio on a PC. The PC has no BLE-delivered pin, so the user
 // installs the device CA there and compares its fingerprint with the one
 // this phone received sealed from the device.
@@ -5,23 +6,23 @@ import {useEffect, useState} from 'react';
 import {Share} from 'react-native';
 import type {ManagementEnrollment} from '@t3box/provisioning-client';
 import {formatFingerprint, loadEnrollment} from '@/shared/device';
-import {Caption, Card, List, Mono, PrimaryButton, Screen, StatusView, Title, symbols} from '@/shared/ui';
+import {Overline, Card, List, Mono, PrimaryButton, Screen, StatusView, Title, TopBar} from '@/shared/ui';
 
 export function PcAccessScreen({deviceId}: {deviceId: string}) {
   const [e, setE] = useState<ManagementEnrollment | null>();
   useEffect(() => { loadEnrollment(deviceId).then(setE).catch(() => setE(null)); }, [deviceId]);
-  if (e === undefined) return <Screen><StatusView symbol={symbols.desktop} title="Loading…" /></Screen>;
-  if (e === null) return <Screen><StatusView symbol={symbols.warning} tone="warning" title="No access" body="This phone has no access to this T3Box. Set it up again from Wi-Fi setup." /></Screen>;
+  if (e === undefined) return <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />}><StatusView icon={'desktop'} title="Loading…" /></Screen>;
+  if (e === null) return <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />}><StatusView icon={'warning'} tone="warning" title="No access" body="This phone has no access to this T3Box. Set it up again from Wi-Fi setup." /></Screen>;
   const url = e.urls[0]!;
   const fingerprint = formatFingerprint(e.caSha256);
   return (
-    <Screen scroll footer={<PrimaryButton title="Share address and fingerprint" symbol={symbols.share}
+    <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />} scroll footer={<PrimaryButton title="Share address and fingerprint" icon={'share'}
       onPress={() => void Share.share({message: `${url}\nSHA-256: ${fingerprint}`})} />}>
       <Title>Open the Studio on a PC</Title>
       <Card>
-        <Caption>ADDRESS</Caption>
+        <Overline>ADDRESS</Overline>
         <Mono selectable>{url}</Mono>
-        <Caption>CERTIFICATE SHA-256</Caption>
+        <Overline>CERTIFICATE SHA-256</Overline>
         <Mono selectable>{fingerprint}</Mono>
       </Card>
       <List.Section title="Steps" footer="If the fingerprints differ, do not install the certificate and check the network.">

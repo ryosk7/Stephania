@@ -2,15 +2,12 @@
 // Camera). Renders CameraSession state only; capture, encoding and
 // transport are native.
 import * as Haptics from 'expo-haptics';
-import {Stack, router} from 'expo-router';
+import {router} from 'expo-router';
 import {useEffect, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
 import {CameraPreview, type CameraMode, type CameraRole} from '@modules/t3box-camera';
 import {DeviceGate, useDeviceClient, type DeviceClient} from '@/shared/device';
-import {
-  ButtonRow, Caption, DestructiveButton, Footnote, IconButton, ImmersiveScreen, LiveBadge, Notice, PrimaryButton, SecondaryButton,
-  Segmented, StatusPill, color, radius, space, symbols, type Tone,
-} from '@/shared/ui';
+import {ButtonRow, Overline, DestructiveButton, Footnote, IconButton, Screen, LiveBadge, Notice, PrimaryButton, SecondaryButton, Segmented, StatusPill, color, radius, space, type Tone} from '@/shared/ui';
 import {bestDual} from './plan';
 import type {Snapshot} from './session';
 import {useCameraSession, useElapsed} from './use-camera-session';
@@ -65,15 +62,14 @@ function Camera({client}: {client: DeviceClient}) {
     || (state === 'live' && snap?.degraded ? 'Front camera paused to protect the phone. It comes back when the phone cools down.' : '');
 
   return (
-    <ImmersiveScreen footer={<Footer state={state} sending={sending} onStart={() => void session?.start(mode)} onStop={() => void session?.stop()}
+    <Screen footer={<Footer state={state} sending={sending} onStart={() => void session?.start(mode)} onStop={() => void session?.stop()}
       onTakeOver={() => { void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); void session?.takeOver(); }}
       onCancel={() => void session?.stop()} ready={!!session} />}>
-      <Stack.Screen options={{headerShown: false}} />
       <View style={st.top}>
-        <IconButton symbol={symbols.close} label="Close" onPress={() => router.back()} />
+        <IconButton icon={'close'} label="Close" onPress={() => router.back()} />
         {state === 'live' ? <LiveBadge elapsed={elapsed} /> : <StatusPill tone={status.tone} label={state === 'reconnecting' && snap ? `${status.label} (${snap.attempt})` : status.label} />}
       </View>
-      {thermal && <Notice tone="warning" symbol={symbols.thermometer}>{thermal}</Notice>}
+      {thermal && <Notice tone="warning" icon={'thermometer'}>{thermal}</Notice>}
 
       <View style={st.previews}>
         {roles.map((role, i) => (
@@ -82,8 +78,8 @@ function Camera({client}: {client: DeviceClient}) {
               ? <CameraPreview camera={role} mirrored={role === 'front'} style={StyleSheet.absoluteFill} />
               : <Footnote>No {role} camera</Footnote>}
             <View style={st.label}>
-              <Caption tone="primary">{role === 'rear' ? 'Presenter · rear' : 'Audience · front'}</Caption>
-              {sending && snap?.degraded && role === 'front' && <Caption tone="warning"> · paused</Caption>}
+              <Overline tone="primary">{role === 'rear' ? 'Presenter · rear' : 'Audience · front'}</Overline>
+              {sending && snap?.degraded && role === 'front' && <Overline tone="warning"> · paused</Overline>}
             </View>
           </View>
         ))}
@@ -101,7 +97,7 @@ function Camera({client}: {client: DeviceClient}) {
         {message !== '' && <Notice tone={state === 'error' ? 'warning' : 'neutral'}>{message}</Notice>}
         {!sending && message === '' && <Footnote style={{textAlign: 'center'}}>Hold the phone sideways: the T3Box receives a landscape picture.</Footnote>}
       </View>
-    </ImmersiveScreen>
+    </Screen>
   );
 }
 
@@ -123,7 +119,7 @@ function Footer({state, sending, ready, onStart, onStop, onTakeOver, onCancel}: 
   }
   return sending
     ? <DestructiveButton title="Stop sending" onPress={onStop} />
-    : <PrimaryButton title="Go live" symbol={symbols.broadcast} disabled={!ready} onPress={onStart} />;
+    : <PrimaryButton title="Go live" icon={'broadcast'} disabled={!ready} onPress={onStart} />;
 }
 
 const st = StyleSheet.create({

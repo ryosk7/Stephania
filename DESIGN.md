@@ -62,43 +62,55 @@ Guidelines: Apple HIG — hit targets at least 44×44 pt
 5. **Degrade visibly.** When quality is reduced (thermal plan, front
    camera off, reconnecting) the screen says so in words next to the thing
    affected.
-6. **Native first.** System font (SF Pro), SF Symbols, system haptics,
-   standard navigation; nothing that fights iOS conventions.
+6. **Platform-neutral.** iPhone and Android get the same components,
+   drawn by T3Box: a bundled font (Inter, JetBrains Mono for addresses),
+   one icon set (Lucide), our own top bar, switch, segmented control,
+   sheets and confirmations — no SF Symbols, Material icons, system
+   switches, native navigation headers or system alert dialogs. The
+   research above supplies *patterns* (where things go, what states
+   exist), not platform styling. What stays native is what only the system
+   can do: keyboard, permission prompts, the share sheet, haptics, the
+   status bar.
 
 ## 4. Tokens (`apps/mobile/src/shared/ui/tokens.ts`)
 
-Colours are iOS dark-appearance system colours so the app sits naturally on
-iOS; names are semantic so Android can map them to its own palette.
+T3Box's own palette — neutral greys and four state colours — identical on
+both platforms.
 
 | Token | Value | Use |
 |---|---|---|
-| `bg` | `#000000` | screen background, camera letterbox |
-| `surface` | `#1C1C1E` | cards, grouped list rows, bars |
-| `surfaceRaised` | `#2C2C2E` | inputs on a sheet, pressed rows |
-| `fill` | `rgba(118,118,128,0.24)` | iOS tertiary fill: secondary buttons, icon buttons, pills, segmented track |
-| `segment` | `#636366` | selected segment (iOS dark segmented control) |
-| `separator` | `rgba(84,84,88,0.65)` | hairlines, inset to the text column |
-| `text` | `#FFFFFF` | primary text |
-| `textSecondary` | `#EBEBF5` @ 60 % | secondary text |
-| `textTertiary` | `#EBEBF5` @ 30 % | placeholders, disabled |
-| `live` | `#FF453A` | LIVE badge, stop, on-air dot |
-| `warning` | `#FFD60A` | degraded, take-over prompt |
-| `success` | `#30D158` | connected, done |
-| `info` | `#0A84FF` | in progress, links |
-| `onPrimary` | `#000000` | text on the white primary button |
+| `bg` | `#0B0B0C` | screen background, camera letterbox |
+| `surface` | `#161618` | cards, lists, sheets |
+| `surfaceRaised` | `#1F1F23` | pressed rows |
+| `fill` | `rgba(255,255,255,0.08)` | secondary and icon buttons, pills, toggle track (off) |
+| `border` / `separator` | `rgba(255,255,255,0.08)` | 1 px card borders and row separators |
+| `text` | `#F4F4F5` | primary text, primary button, toggle track (on), selected segment |
+| `textSecondary` | `#A1A1AA` | secondary text |
+| `textTertiary` | `#71717A` | disabled, placeholders |
+| `live` | `#F04438` | LIVE badge, stop, on-air ring |
+| `warning` | `#F5B300` | degraded, take-over |
+| `success` | `#22C55E` | done, connected |
+| `info` | `#3B82F6` | in progress |
+| `onPrimary` | `#0B0B0C` | text on the primary button |
 
-Type (points, iOS text styles): `largeTitle` 34/41 bold · `title` 22/28
-bold · `headline` 17/22 semibold · `body` 17/22 · `callout` 16/21 ·
-`subheadline` 15/20 · `footnote` 13/18 · `caption` 12/16 · `mono` 13/18 Menlo (fingerprints,
-URLs). Text scales with Dynamic Type (`allowFontScaling` stays on).
+Type (Inter, bundled; weights are separate font files so Android does not
+synthesise them): `display` 32/38 bold −0.6 · `title` 22/28 semibold ·
+`headline` 16/22 semibold · `body` 16/22 · `label` 14/20 medium ·
+`footnote` 13/18 · `overline` 11/14 semibold uppercase +0.8 (section
+labels) · `mono` 13/18 JetBrains Mono (URLs, fingerprints). Text scales
+with the system font size setting.
 
 Spacing on a 4-pt grid: `xs 4 · s 8 · m 12 · l 16 · xl 24 · xxl 32`.
-Screen padding 16. Radius: `card 16`, `group 12`, `tile 12`, `control 12`, `segment 8`, `sheet 28`, `pill 999`.
-Primary button height 54. Minimum hit target 44.
+Screen padding 16. Radius: `card 16`, `button 14`, `control 12`,
+`tile 12`, `sheet 24`, `pill 999` (pills and badges only). Buttons are
+rounded rectangles 52 high; minimum hit target 44.
 
-Motion: state changes cross-fade 150 ms; nothing animates while live except
-the on-air dot. Haptics: `success` notification when going live,
-`warning` on take-over, light impact on segment change.
+Icons: Lucide, 2 px stroke on a 24 grid, 16–20 in controls.
+
+Motion: state changes cross-fade 150 ms; the toggle knob slides 150 ms;
+nothing animates while live except the on-air dot. Haptics (both
+platforms): `success` when going live, `warning` on take-over, `selection`
+on toggles and segments.
 
 ## 5. Components (`apps/mobile/src/shared/ui`)
 
@@ -107,20 +119,21 @@ instead of boolean modes.
 
 | Component | API | Notes |
 |---|---|---|
-| `Screen` | `<Screen scroll? footer={…}>` | dark background, safe areas; `footer` holds the bottom actions |
-| `ImmersiveScreen` | `<ImmersiveScreen footer={…}>` | variant without a navigation header (camera) |
-| Text | `<Title>`, `<LargeTitle>`, `<Headline>`, `<Body>`, `<Footnote>`, `<Caption>`, `<Mono>` | one component per text style, `tone="secondary"\|"live"\|…` |
-| Buttons | `<PrimaryButton>`, `<SecondaryButton>`, `<DestructiveButton>`, `<TextButton>`, `<IconButton symbol>`, `<InlineIconButton symbol>` | variants are separate components; capsule 54 pt; icon buttons are round on `fill`; the inline one (beside a title) is drawn 36 pt with a 44 pt hit area |
-| `List` | `<List.Section title footer>` `<List.Row title value? detail? leading? onPress? accessory?>`, `<ListIcon symbol>` | dark inset grouped list (GoPro preferences, Muse devices): radius 12, rows ≥ 52 pt, separators inset to the text column, leading symbols on a neutral 30 pt rounded tile (iOS Settings), selection as a blue checkmark |
-| `Toggle` | `<Toggle value onChange label>` | the system switch, green when on; never a checkbox |
-| `Segmented` | `<Segmented value onChange locked?><Segmented.Item value label unavailable?/></Segmented>` | compound; shared state through context; iOS dark look: `fill` track, raised `segment` thumb, 38 pt items |
-| `StatusPill` | `<StatusPill tone label pulse?>` | coloured dot + label on `fill`, 28 pt high (GoPro "Busy", Tesla status) |
-| `LiveBadge` | `<LiveBadge elapsed?>` | red "LIVE" + time |
-| `StatusView` | `<StatusView symbol title body tone>{actions}</StatusView>` | centred single-purpose state (Alexa setup steps, empty states) |
-| `Card` | `<Card>`, `<Card.Header title action?>`, `<Card.Body>` | surface with radius 16 |
-| `Notice` | `<Notice tone>` | inline sentence with a symbol: degradation, errors |
-| `Field` | `<Field label secure? …TextInput props>` | filled input, label above |
-| `Symbol` | `<Symbol name={{ios, android}} size tone>` | wraps `expo-symbols` with token colours |
+| `Screen` | `<Screen header={<TopBar …/>} scroll? footer={…}>` | dark background, safe areas; `footer` holds the bottom actions |
+| `TopBar` | `<TopBar onBack? backIcon? title? trailing?>` | app-drawn top bar with a round back/close button; native navigation headers are off |
+| Text | `<Display>`, `<Title>`, `<Headline>`, `<Body>`, `<Label>`, `<Footnote>`, `<Overline>`, `<Mono>` | one component per text style, `tone="secondary"\|"live"\|…` |
+| Buttons | `<PrimaryButton>`, `<SecondaryButton>`, `<DestructiveButton>`, `<TextButton>`, `<IconButton icon>`, `<InlineIconButton icon>` | variants are separate components; 52 high, radius 14; icon buttons round on `fill` with a 1 px border; the inline one (beside a title) is drawn 36 with a 44 hit area |
+| `List` | `<List.Section title footer>` `<List.Row title value? detail? leading? onPress? accessory?>`, `<ListIcon icon>` | rows (≥ 56) in a bordered card, full-width 1 px separators, leading icons on a neutral 32 rounded square, selection as a check |
+| `Toggle` | `<Toggle value onChange label>` | drawn by T3Box (not the system switch): 48×28, light track and dark knob when on |
+| `Segmented` | `<Segmented value onChange locked?><Segmented.Item value label unavailable?/></Segmented>` | compound; bordered track, selected item filled with `text` |
+| `StatusPill` | `<StatusPill tone label pulse?>` | coloured dot + label on `fill`, 28 high |
+| `LiveBadge` | `<LiveBadge elapsed?>` | red "LIVE" tag + tabular time |
+| `StatusView` | `<StatusView icon title body tone>{actions}</StatusView>` | centred state: icon in a 64 ring, title, sentence, actions |
+| `Card` | `<Card outlined?>`, `<Card.Header title>`, `<Card.Body>` | surface, radius 16, 1 px border |
+| `Sheet` | `<Sheet visible title onClose>{…}</Sheet>` | app-drawn bottom sheet: rename, stop confirmation (no system alerts) |
+| `Notice` | `<Notice tone icon?>` | sentence with an icon in a tinted, bordered box |
+| `Field` | `<Field label secure? …TextInput props>` | bordered input, label above |
+| `Icon` | `<Icon name size tone? tint?>` | Lucide icons by name (`icons` in `icon.tsx`) |
 
 ## 6. Screens (Connect)
 
@@ -152,7 +165,7 @@ instead of boolean modes.
   (an editing detail, kept in the Studio). The fade switch sits on the
   section header. Audio as a `List` with switches; footer:
   `PrimaryButton` "Start stream" or `DestructiveButton` "Stop stream"
-  (confirmed with a system alert, since stopping is public).
+  (confirmed in a `Sheet`, since stopping is public).
 - **Camera** (`device/[id]/camera`, full-screen modal) — GoPro/live-app pattern: previews on black;
   top: close, `StatusPill` (Ready / Connecting / Live / Reconnecting (n) /
   Paused) and thermal `Notice`; previews labelled "Presenter · rear" /
@@ -208,14 +221,14 @@ next to the file they test (`session.ts` + `session.test.ts`). Code moves
 to `shared` only when a second feature needs it.
 
 **Android.** Features talk to native code only through platform contracts
-(`modules/t3box-camera/src/T3BoxCamera.types.ts`, the pinned fetch);
-symbols name both platforms (`{ios, android}`); tokens are semantic. The
-Android port implements the contracts and maps the tokens; screens and
-features do not change.
+(`modules/t3box-camera/src/T3BoxCamera.types.ts`, the pinned fetch), and
+every visible component is drawn by `shared/ui` with bundled fonts and
+icons. The Android port implements the contracts; screens, features and
+components do not change, and both platforms look the same.
 
 ## 8. Accessibility and copy
 
-- Every control ≥ 44×44 pt; icon-only buttons have `accessibilityLabel`.
+- Every control is drawn ≥ 44 and has a hit area ≥ 48 (`hitSlop` where drawn smaller), which covers Apple's 44 pt and Android's 48 dp guidance; icon-only buttons have `accessibilityLabel`; app-drawn controls set `accessibilityRole` (`switch`, `radio`, `button`) and their state.
 - State is never colour-only: pills and badges always carry a word.
 - Text respects Dynamic Type; layouts wrap instead of truncating labels.
 - Copy: English, sentence case, verbs on buttons ("Go live", "Join"),
