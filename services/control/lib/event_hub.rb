@@ -105,9 +105,13 @@ class EventHub
   class EnginePoller
     attr_reader :last
 
-    def initialize(hub, engine_provider, interval: 1.0)
+    # `on_connected` is called with the status whenever an engine appears or
+    # restarts, so the control plane can re-apply state the engine does not
+    # persist (audio configuration).
+    def initialize(hub, engine_provider, interval: 1.0, on_connected: nil)
       @hub = hub
       @engine_provider = engine_provider
+      @on_connected = on_connected
       @interval = interval
       @last = nil
       @polled = false
@@ -158,6 +162,11 @@ class EventHub
       # back as a new process is reported as restarted, not merely connected.
       seen = @instance_id
       @instance_id = status["instance_id"]
+      begin
+        @on_connected&.call(status) if previous.nil? || seen != @instance_id
+      rescue StandardError => e
+        warn "event poller: on_connected: #{e.class}: #{e.message}"
+      end
       if seen && seen != @instance_id
         return @hub.publish("engine.restarted", status) if previous.nil?
 
@@ -168,6 +177,47 @@ class EventHub
       keys = %w[state streaming_requested native_worker_running last_error]
       @hub.publish("stream.state_changed", status.slice(*keys)) if previous.slice(*keys) != status.slice(*keys)
       @hub.publish("program.changed", status["program"]) if status["program"] && previous["program"] != status["program"]
+    end
+  end
+
+  # Program audio meters while streaming: `audio.levels` at ~4 Hz, only
+  # when someone is listening (docs/AUDIO.md).
+  class LevelPoller
+    def initialize(hub, engine_provider, interval: 0.25)
+      @hub = hub
+      @engine_provider = engine_provider
+      @interval = interval
+      @mutex = Mutex.new
+    end
+
+    def start
+      @mutex.synchronize do
+        @thread ||= Thread.new do
+          Thread.current.name = "t3box-levels"
+          loop do
+            tick if @hub.subscriber_count.positive?
+            sleep @interval
+          end
+        end
+      end
+      self
+    end
+
+    def stop
+      @mutex.synchronize do
+        @thread&.kill
+        @thread = nil
+      end
+    end
+
+    def tick
+      status = @engine_provider.call.call("audio.status")
+      return unless status["running"]
+
+      inputs = status["inputs"].map { |i| i.slice("id", "state", "levels", "muted", "gain_db") }
+      @hub.publish("audio.levels", {inputs: inputs, master: status["master"]})
+    rescue EngineClient::Unavailable, EngineClient::RemoteError
+      nil
     end
   end
 end

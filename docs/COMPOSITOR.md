@@ -1,8 +1,8 @@
 # Reference compositor (Phase 3 start)
 
-`src/compositor.rs` is the deterministic CPU reference. `src/composition.rs` puts it in the live media path, **opt-in with `T3BOX_COMPOSITOR=1`**:
+`src/compositor.rs` is the deterministic CPU reference. `src/composition.rs` puts it in the live media path, **on by default** (`T3BOX_COMPOSITOR=0` removes the stage, diagnostics only):
 
-- After capture conversion, each frame passes through the composition stage. If the applied Program is "HDMI full screen" (the default), the converted capture goes to x264 unchanged. This is the **HDMI fast path**: no composition and no copy. Without `T3BOX_COMPOSITOR=1` the stage does not exist at all.
+- After capture conversion, each frame passes through the composition stage. If the applied Program is "HDMI full screen" (the default), the converted capture goes to x264 unchanged. This is the **HDMI fast path**: no composition and no copy. With `T3BOX_COMPOSITOR=0` the stage does not exist at all.
 - Scenes are drawn on the 1920×1080 canvas and scaled to the encoder size, with layers aligned to even pixels.
 - IPC `scene.apply {scene, scene_id, revision}` works like this:
   1. It hands an immutable Program to the media thread.

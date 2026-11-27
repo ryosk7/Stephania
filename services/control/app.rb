@@ -9,6 +9,7 @@ require_relative "lib/engine_client"
 require_relative "lib/scene_validator"
 require_relative "lib/event_hub"
 require_relative "lib/lan_access"
+require_relative "lib/audio_settings"
 
 # T3Box management plane. Contract: contracts/openapi.yaml.
 #
@@ -51,7 +52,7 @@ class Control < Sinatra::Base
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
-    attr_accessor :db, :token, :engine, :events, :poller, :lan, :phone
+    attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone
     # Camera credential id that opened the current phone session (nil when
     # the owner opened it); revoking that credential ends the session.
     attr_accessor :phone_session_owner
@@ -94,7 +95,18 @@ class Control < Sinatra::Base
       poller&.stop
       events&.close_all
       self.events = EventHub.new
-      self.poller = EventHub::EnginePoller.new(events, -> { Control.engine }, interval: interval)
+      self.poller = EventHub::EnginePoller.new(events, -> { Control.engine }, interval: interval,
+        on_connected: ->(_status) { Control.apply_audio })
+      levels&.stop
+      self.levels = EventHub::LevelPoller.new(events, -> { Control.engine })
+    end
+
+    # Pushes the stored audio configuration to the engine (which does not
+    # persist it). Returns the engine's audio.status, or nil if nothing is
+    # stored. Raises EngineClient errors to the caller.
+    def apply_audio
+      params = AudioSettings.params(AudioSettings.load(db))
+      params && engine.call("audio.configure", params)
     end
   end
 
@@ -223,6 +235,7 @@ class Control < Sinatra::Base
   get "/api/v1/events" do
     hub = settings.events
     settings.poller.start
+    settings.levels.start
     snapshot = {engine: settings.poller.last, scenes: settings.db[:scenes].order(:id).select(:id, :revision).all}
     sub = hub.subscribe
     fail_with 429, "too_many_streams", "at most #{EventHub::MAX_CLIENTS} event streams" unless sub
@@ -401,6 +414,51 @@ class Control < Sinatra::Base
     end
     status 204
     ""
+  end
+
+  # Program audio inputs (docs/AUDIO.md): stored configuration plus the
+  # engine's live health and levels.
+  get "/api/v1/audio" do
+    stored = AudioSettings.load(settings.db)
+    live = begin
+      settings.engine.call("audio.status", nil, request_id: request_id)
+    rescue EngineClient::Unavailable, EngineClient::RemoteError
+      nil
+    end
+    json_reply({stored: stored.values, engine: live})
+  end
+
+  # Partial update ({inputs: [{id, ...changed fields}]}). Saved first, then
+  # applied live; if the engine is down the configuration is applied when
+  # it reconnects (EnginePoller on_connected).
+  put "/api/v1/audio" do
+    db = settings.db
+    input = read_json
+    base = AudioSettings.load(db)
+    # Inputs never configured here start from the engine's current settings
+    # (its built-in defaults), so a partial update keeps e.g. the HDMI device.
+    if base.size < AudioSettings::IDS.size
+      begin
+        live = settings.engine.call("audio.status", nil, request_id: request_id)
+        Array(live["inputs"]).each do |i|
+          base[i["id"]] ||= i.slice(*AudioSettings::FIELDS) if AudioSettings::IDS.include?(i["id"])
+        end
+      rescue EngineClient::Unavailable, EngineClient::RemoteError
+        nil
+      end
+    end
+    merged, error = AudioSettings.validate(input, base)
+    fail_with 422, "invalid_audio", error if error
+    applied = begin
+      settings.engine.call("audio.configure", AudioSettings.params(merged), request_id: request_id)
+    rescue EngineClient::RemoteError => e
+      fail_with 422, "invalid_audio", e.message
+    rescue EngineClient::Unavailable
+      nil
+    end
+    AudioSettings.save(db, merged)
+    settings.events.publish("audio.configured", {inputs: merged.values})
+    json_reply({stored: merged.values, engine: applied, applied: !applied.nil?})
   end
 
   get "/" do

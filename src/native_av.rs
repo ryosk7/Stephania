@@ -1,10 +1,10 @@
 //! Shared native A/V publisher used by the CLI and controller.
 use std::{env, io, thread, time::{Duration, Instant}};
 use crate::{
-    av_clock::AudioClock, media_core::PixelFormat,
+    media_core::PixelFormat,
     native_aac::{AacBackend, AacPacket},
     native_capture::{timestamp_us, AlsaAudioSource, CaptureSettings, V4lVideoSource},
-    native_video::{NativeVideoPipeline, NativeVideoEncoder, NativeMediaSink}, pcm_framer::PcmFramer, reconnect, rtmps_tls,
+    native_video::{NativeVideoPipeline, NativeVideoEncoder, NativeMediaSink}, reconnect, rtmps_tls,
 };
 
 // Limit raw video age to three frame periods (100 ms at 30 fps).
@@ -43,130 +43,163 @@ pub struct Settings {
     pub max_frames: u32,
 }
 
+/// Video source plus the audio inputs of `crate::audio::control()`.
 enum Sources {
-    Hardware(V4lVideoSource, AlsaAudioSource),
-    Mixed(V4lVideoSource, [AlsaAudioSource; 2], [i32; 2], u32),
+    Hardware(V4lVideoSource, [Option<AlsaAudioSource>; 2]),
     #[cfg(feature = "ci-virtual")]
     Virtual(VirtualCapture),
 }
+
+/// ALSA settings for one mix input. Short periods and a 16-period queue
+/// keep mix latency low without dropping audio under scheduling jitter.
+fn input_settings(capture: &CaptureSettings, cfg: &crate::audio::InputConfig) -> CaptureSettings {
+    let mut c = capture.clone();
+    c.audio_device = cfg.device.clone();
+    c.audio_channels = cfg.channels;
+    c.audio_period_frames = 512;
+    c.frame_queue = 16;
+    c
+}
+
 impl Sources {
     fn open(s: &Settings) -> io::Result<Self> {
         #[cfg(feature = "ci-virtual")]
         if env::var_os("T3BOX_CI_VIRTUAL").is_some() {
             return Ok(Self::Virtual(VirtualCapture {
-                origin: timestamp_us(), video_index: 0, audio_index: 0,
+                origin: timestamp_us(), video_index: 0, audio_index: [0, 0],
                 width: s.capture.width, height: s.capture.height, fps: s.fps,
                 fixture: VirtualFixture::open(s)?,
             }));
         }
-        match env::var("T3BOX_AUDIO_MODE").as_deref() {
-            Ok("mix") => {
-                let mut hdmi = s.capture.clone();
-                let mut mic = s.capture.clone();
-                hdmi.audio_device = env::var("T3BOX_AUDIO_HDMI").map_err(|_| invalid("HDMI audio device required"))?;
-                mic.audio_device = env::var("T3BOX_AUDIO_MIC").map_err(|_| invalid("microphone device required"))?;
-                if hdmi.audio_device.is_empty() || mic.audio_device.is_empty() || hdmi.audio_device == mic.audio_device {
-                    return Err(invalid("distinct audio devices required"));
-                }
-                hdmi.audio_channels = 2;
-                mic.audio_channels = match number("T3BOX_AUDIO_MIC_CHANNELS", 1)? {
-                    1 => 1, 2 => 2, _ => return Err(invalid("invalid microphone channels")),
-                };
-                hdmi.audio_period_frames = 512;
-                mic.audio_period_frames = 512;
-                hdmi.frame_queue = 16;
-                mic.frame_queue = 16;
-                let latency = number("T3BOX_AUDIO_LATENCY_MS", 40)?;
-                if !(20..=100).contains(&latency) { return Err(invalid("invalid mixer latency")); }
-                let gains = [mix_gain("T3BOX_AUDIO_HDMI_GAIN_DB", -12.0)?,
-                    mix_gain("T3BOX_AUDIO_MIC_GAIN_DB", -6.0)?];
-                Ok(Self::Mixed(V4lVideoSource::open(s.capture.clone())?,
-                    [AlsaAudioSource::open(hdmi)?, AlsaAudioSource::open(mic)?], gains, latency))
-            }
-            Ok("single") | Err(_) => Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, AlsaAudioSource::open(s.capture.clone())?)),
-            _ => Err(invalid("invalid audio mode")),
-        }
+        Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, [None, None]))
     }
+
+    /// Opens or closes inputs to match the configuration. A closed ALSA
+    /// source stops its capture thread; an open one reopens the device on
+    /// its own after errors (hotplug).
+    fn apply_audio(&mut self, capture: &CaptureSettings, cfg: &[crate::audio::InputConfig; 2]) -> io::Result<()> {
+        match self {
+            Self::Hardware(_, inputs) => {
+                for (slot, c) in inputs.iter_mut().zip(cfg) {
+                    *slot = if c.enabled { Some(AlsaAudioSource::open(input_settings(capture, c))?) } else { None };
+                }
+            }
+            #[cfg(feature = "ci-virtual")]
+            Self::Virtual(v) => {
+                let now = timestamp_us();
+                for (i, c) in cfg.iter().enumerate() {
+                    // Restart the generator at the current time when enabled.
+                    v.audio_index[i] = if c.enabled { now.saturating_sub(v.origin) * 48000 / 1_000_000 / 1024 } else { u64::MAX };
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn video(&mut self, max_age: Duration) -> io::Result<Option<crate::media_core::VideoFrame>> {
         match self {
-            Self::Hardware(v, _) | Self::Mixed(v, _, _, _) => v.try_latest_frame(max_age),
+            Self::Hardware(v, _) => v.try_latest_frame(max_age),
             #[cfg(feature = "ci-virtual")]
             Self::Virtual(v) => v.video(),
         }
     }
-    fn audio(&mut self) -> io::Result<Option<crate::media_core::AudioFrame>> {
+
+    fn audio(&mut self, input: usize) -> io::Result<Option<crate::media_core::AudioFrame>> {
         match self {
-            Self::Hardware(_, a) => a.try_next_frame(),
-            Self::Mixed(_, inputs, _, _) => {
-                for input in inputs { for _ in 0..16 { if !matches!(input.try_next_frame(), Ok(Some(_))) { break; } } }
-                Ok(None)
+            Self::Hardware(_, inputs) => match &inputs[input] {
+                Some(a) => a.try_next_frame(),
+                None => Ok(None),
             },
             #[cfg(feature = "ci-virtual")]
-            Self::Virtual(v) => Ok(v.audio()),
+            Self::Virtual(v) => Ok(v.audio(input)),
+        }
+    }
+
+    /// Discards queued audio (reconnect backoff): never replay stale media.
+    fn drain_audio(&mut self) {
+        for i in 0..2 {
+            for _ in 0..64 { if !matches!(self.audio(i), Ok(Some(_))) { break; } }
         }
     }
 }
-fn mix_gain(key: &str, default: f64) -> io::Result<i32> {
-    let db = match env::var(key) {
-        Ok(v) => v.parse::<f64>().map_err(|_| invalid("invalid audio gain"))?,
-        Err(_) => default,
-    };
-    if !db.is_finite() || !(-60.0..=6.0).contains(&db) { return Err(invalid("audio gain out of range")); }
-    Ok((32768.0 * 10f64.powf(db / 20.0)).round() as i32)
+
+/// Program audio: every input goes through the mixer (docs/AUDIO.md).
+struct AudioPipeline {
+    mixer: crate::audio_mixer::AudioMixer,
+    generation: Option<u64>,
+    mixed: Vec<crate::audio_mixer::MixedBlock>,
 }
 
-struct AudioPipeline {
-    clock: AudioClock,
-    framer: PcmFramer,
-    mixer: Option<crate::audio_mixer::AudioMixer>,
-}
 impl AudioPipeline {
-    fn new(sources: &Sources) -> io::Result<Self> {
-        let mixer = match sources {
-            Sources::Mixed(_, _, gains, delay) => Some(crate::audio_mixer::AudioMixer::new(*gains, *delay)),
-            _ => None,
-        };
-        Ok(Self { clock: AudioClock::default(), framer: PcmFramer::new(48000, 2)?, mixer })
+    fn new() -> io::Result<Self> {
+        let latency = number("T3BOX_AUDIO_LATENCY_MS", 40)?;
+        if !(20..=200).contains(&latency) { return Err(invalid("T3BOX_AUDIO_LATENCY_MS must be 20..200")); }
+        Ok(Self { mixer: crate::audio_mixer::AudioMixer::new(latency), generation: None, mixed: Vec::new() })
     }
-    fn blocks(&mut self, sources: &mut Sources, origin: u64) -> io::Result<Vec<(crate::pcm_framer::PcmBlock, Instant)>> {
-        let mut result = Vec::new();
-        if let (Some(mixer), Sources::Mixed(_, inputs, _, _)) = (&mut self.mixer, &mut *sources) {
-            for (index, input) in inputs.iter().enumerate() {
-                for _ in 0..16 {
-                    match input.try_next_frame() {
-                        Ok(Some(mut frame)) if frame.timestamp_us >= origin => {
-                            frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                            if mixer.ingest(index, &frame).is_err() { mixer.reset_input(index); }
-                        }
-                        Ok(Some(_)) => continue,
-                        Ok(None) => break,
-                        Err(_) => { mixer.reset_input(index); break; }
+
+    fn blocks(&mut self, sources: &mut Sources, capture: &CaptureSettings, origin: u64) -> io::Result<Vec<(crate::pcm_framer::PcmBlock, Instant)>> {
+        let ctl = crate::audio::control();
+        let (cfg, generation) = ctl.config();
+        if self.generation != Some(generation) {
+            sources.apply_audio(capture, &cfg)?;
+            for (i, c) in cfg.iter().enumerate() {
+                self.mixer.reset_input(i);
+                if c.enabled { ctl.input_opened(i); }
+            }
+            self.generation = Some(generation);
+        }
+        let now = Instant::now();
+        for (i, c) in cfg.iter().enumerate() {
+            if !c.enabled { continue; }
+            for _ in 0..16 {
+                match sources.audio(i) {
+                    Ok(Some(mut frame)) => {
+                        ctl.input_frame(i, now);
+                        if frame.timestamp_us < origin { continue; }
+                        frame.timestamp_us = frame.timestamp_us - origin + 100_000;
+                        if self.mixer.ingest(i, &frame).is_err() { self.mixer.reset_input(i); }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        ctl.input_error(i, &e.to_string());
+                        self.mixer.reset_input(i);
+                        break;
                     }
                 }
             }
-            let now = timestamp_us().saturating_sub(origin);
-            for _ in 0..4 {
-                let Some(block) = mixer.poll(now)? else { break; };
-                let capture_us = block.timestamp_us().saturating_sub(100_000);
-                let captured = Instant::now().checked_sub(Duration::from_micros(now.saturating_sub(capture_us))).unwrap_or_else(Instant::now);
-                result.push((block, captured));
-            }
-        } else if let Some(mut frame) = sources.audio()? {
-            if frame.timestamp_us >= origin {
-                let captured = Instant::now().checked_sub(Duration::from_micros(timestamp_us().saturating_sub(frame.timestamp_us))).unwrap_or_else(Instant::now);
-                frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                let corrected = self.clock.correct(&frame)?;
-                result.extend(self.framer.push(&corrected)?.into_iter().map(|block| (block, captured)));
-            }
+        }
+        let targets = [0, 1].map(|i| if cfg[i].enabled && !cfg[i].muted { crate::audio::db_to_gain(cfg[i].gain_db) } else { 0.0 });
+        let now_us = timestamp_us().saturating_sub(origin);
+        self.mixed.clear();
+        if self.mixer.poll(now_us, targets, &mut self.mixed).resynced {
+            ctl.record_resync();
+            eprintln!("audio mixer: publisher stalled for more than 1 s; audio timeline resynchronised");
+        }
+        let mut result = Vec::with_capacity(self.mixed.len());
+        for m in self.mixed.drain(..) {
+            ctl.record_block(m.inputs, m.master, m.clipped, m.limited);
+            let capture_us = m.block.timestamp_us().saturating_sub(100_000);
+            let captured = Instant::now().checked_sub(Duration::from_micros(now_us.saturating_sub(capture_us))).unwrap_or_else(Instant::now);
+            result.push((m.block, captured));
         }
         Ok(result)
     }
+}
+
+/// Marks the audio subsystem running for the lifetime of a publisher run.
+struct AudioRunning;
+impl AudioRunning {
+    fn start() -> Self { crate::audio::control().set_running(true); Self }
+}
+impl Drop for AudioRunning {
+    fn drop(&mut self) { crate::audio::control().set_running(false); }
 }
 #[cfg(feature = "ci-virtual")]
 struct VirtualCapture {
     origin: u64,
     video_index: u64,
-    audio_index: u64,
+    /// Next 1024-sample period per input; u64::MAX = input disabled.
+    audio_index: [u64; 2],
     width: u32,
     height: u32,
     fps: u32,
@@ -235,23 +268,34 @@ impl VirtualCapture {
             width: self.width, height: self.height, row_stride_bytes: self.width as usize * 2,
             format: PixelFormat::Yuyv422, bytes }))
     }
-    fn audio(&mut self) -> Option<crate::media_core::AudioFrame> {
+    /// Input 0 (`hdmi`): the deterministic lab pattern, or a 440 Hz tone with
+    /// `T3BOX_CI_AUDIO_TONES`. Input 1 (`mic`): an 880 Hz mono tone. Tones
+    /// at −12 dBFS let CI verify mixing, gain and mute in the decoded output.
+    fn audio(&mut self, input: usize) -> Option<crate::media_core::AudioFrame> {
+        if self.audio_index[input] == u64::MAX { return None; }
         let now = timestamp_us();
         let available = now.saturating_sub(self.origin) * 48000 / 1_000_000 / 1024;
-        if self.audio_index >= available { return None; }
+        if self.audio_index[input] >= available { return None; }
         // Bound backlog after a blocked network write to four periods.
-        self.audio_index = self.audio_index.max(available.saturating_sub(4));
-        let index = self.audio_index;
-        self.audio_index += 1;
-        let markers = env::var_os("T3BOX_LAB_MARKERS").is_some();
-        let samples = (0..1024).flat_map(|j| {
-            let v = ((((index * 1024 + j) % 109) as i16) - 54) * 200;
-            let v = if markers && (index*1024+j)%48000 < 2400 { v } else if markers {0} else {v};
-            [v,v]
-        }).collect();
+        self.audio_index[input] = self.audio_index[input].max(available.saturating_sub(4));
+        let index = self.audio_index[input];
+        self.audio_index[input] += 1;
+        let tone = |hz: f64, j: u64| ((2.0 * std::f64::consts::PI * hz * ((index * 1024 + j) as f64) / 48000.0).sin() * 8192.0) as i16;
+        let (channels, samples): (u8, Vec<i16>) = if input == 1 {
+            (1, (0..1024).map(|j| tone(880.0, j)).collect())
+        } else if env::var_os("T3BOX_CI_AUDIO_TONES").is_some() {
+            (2, (0..1024).flat_map(|j| { let v = tone(440.0, j); [v, v] }).collect())
+        } else {
+            let markers = env::var_os("T3BOX_LAB_MARKERS").is_some();
+            (2, (0..1024).flat_map(|j| {
+                let v = ((((index * 1024 + j) % 109) as i16) - 54) * 200;
+                let v = if markers && (index*1024+j)%48000 < 2400 { v } else if markers {0} else {v};
+                [v,v]
+            }).collect())
+        };
         Some(crate::media_core::AudioFrame {
             timestamp_us: self.origin + (index * 1024 * 1_000_000).div_ceil(48000),
-            sample_rate: 48000, channels: 2, samples,
+            sample_rate: 48000, channels, samples,
         })
     }
 }
@@ -292,7 +336,7 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     let mut composition = crate::composition::enabled()
         .then(|| crate::composition::CompositionStage::new(s.capture.width as usize, s.capture.height as usize));
     let origin = timestamp_us();
-    let mut audio = AudioPipeline::new(sources)?;
+    let mut audio = AudioPipeline::new()?;
     let mut frames = 0u32;
     let mut last_video = Instant::now();
     let mut last_audio = Instant::now();
@@ -329,7 +373,7 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
             }
         }
         let mut progress = false;
-        for (block, _captured) in stage(audio.blocks(sources, origin), "audio pipeline")? {
+        for (block, _captured) in stage(audio.blocks(sources, &s.capture, origin), "audio pipeline")? {
             progress = true;
             last_audio = Instant::now();
             stage(send_audio(&mut pipeline, stage(aac.encode(&block), "AAC encode")?), "audio send")?;
@@ -388,7 +432,7 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
     let mut composition = crate::composition::enabled()
         .then(|| crate::composition::CompositionStage::new(s.capture.width as usize, s.capture.height as usize));
     let origin = timestamp_us();
-    let mut audio = AudioPipeline::new(sources)?;
+    let mut audio = AudioPipeline::new()?;
     let mut frames = 0u32;
     let mut last_video = Instant::now();
     let mut last_audio = Instant::now();
@@ -426,7 +470,7 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
             }
         }
         let mut progress = false;
-        for (block, captured) in stage(audio.blocks(sources, origin), "audio pipeline")? {
+        for (block, captured) in stage(audio.blocks(sources, &s.capture, origin), "audio pipeline")? {
             progress = true;
             last_audio = Instant::now();
             stage(writer.audio(stage(aac.encode(&block), "AAC encode")?, captured), "audio enqueue")?;
@@ -488,6 +532,7 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
     crate::native_x264::X264Backend::new(s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate, true)?;
     let mut sources = Sources::open(s)?;
+    let _audio_running = AudioRunning::start();
     let mut failures = 0u32;
     let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
     while !cancelled() {
@@ -513,7 +558,7 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
                 let until = Instant::now() + delay;
                 while !cancelled() && Instant::now() < until {
                     let _ = sources.video(video_max_age(s.fps));
-                    let _ = sources.audio();
+                    sources.drain_audio();
                     thread::sleep(Duration::from_millis(5));
                 }
             }

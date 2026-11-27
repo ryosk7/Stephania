@@ -25,3 +25,12 @@ describe('reduceLive', () => {
     expect(reduceLive(initialLive, {event: 'future.event', data: {}})).toBe(initialLive);
   });
 });
+
+describe('audio levels', () => {
+  it('keeps the latest meters and ignores malformed inputs', () => {
+    const s = reduceLive(initialLive, {event: 'audio.levels', data: {inputs: [{id: 'hdmi', state: 'active', levels: {peak_dbfs: -6, rms_dbfs: -12, clipped: false}}, {bad: 1}], master: {peak_dbfs: -6, rms_dbfs: -12, clipped: false}}});
+    expect(s.audio?.inputs).toEqual([{id: 'hdmi', state: 'active', levels: {peak_dbfs: -6, rms_dbfs: -12, clipped: false}}]);
+    expect(s.audio?.master?.peak_dbfs).toBe(-6);
+    expect(reduceLive(initialLive, {event: 'audio.levels', data: {inputs: 'x'}})).toBe(initialLive);
+  });
+});

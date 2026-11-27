@@ -31,13 +31,15 @@ pub const MAX_REQUEST_ID_BYTES: usize = 64;
 /// Methods understood by IPC version 1. `scene.apply` is part of the contract
 /// but fails closed until a real compositor acknowledges frame-boundary
 /// application (docs/STUDIO-ARCHITECTURE.md safety gates).
-pub const METHODS: [&str; 6] = [
+pub const METHODS: [&str; 8] = [
     "engine.status",
     "engine.capabilities",
     "stream.start",
     "stream.stop",
     "scene.validate",
     "scene.apply",
+    "audio.status",
+    "audio.configure",
 ];
 
 /// Error codes. Kept small and stable; callers map them to HTTP statuses.
@@ -300,6 +302,19 @@ pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>
             // Fail closed: success only after a frame-boundary acknowledgement.
             engine.apply_scene(scene_id, revision, scene)
         }
+        // Audio inputs (docs/AUDIO.md): configuration applies live; status
+        // carries per-input health and levels while streaming.
+        "audio.status" => {
+            no_params(params)?;
+            Ok(crate::audio::control().status())
+        }
+        "audio.configure" => {
+            let p = params.ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params required"))?;
+            if p.as_object().is_none_or(|m| m.len() != 1 || !m.contains_key("inputs")) {
+                return Err(ipc_err(code::INVALID_PARAMS, "params must be {inputs}"));
+            }
+            crate::audio::control().configure(p).map_err(|e| ipc_err(code::INVALID_PARAMS, e))
+        }
         _ => Err(ipc_err(code::UNKNOWN_METHOD, "unknown method")),
     }
 }
@@ -498,6 +513,8 @@ mod tests {
     struct Fake {
         calls: Mutex<Vec<&'static str>>,
         fail_start: bool,
+        /// Models T3BOX_COMPOSITOR=0; the default fake is the default engine.
+        compositor_off: bool,
         instance: EngineInstance,
     }
     impl EngineControl for Fake {
@@ -511,6 +528,14 @@ mod tests {
             if self.fail_start { Err("T3BOX_OUTPUT is not configured".into()) } else { Ok(()) }
         }
         fn stop(&self) { self.calls.lock().unwrap().push("stop"); }
+        fn compositor_enabled(&self) -> bool { !self.compositor_off }
+        fn apply_scene(&self, _: &str, _: u64, _: &Value) -> Result<Value, IpcError> {
+            if self.compositor_off {
+                return Err(ipc_err(code::NOT_IMPLEMENTED, "compositor disabled; Program unchanged"));
+            }
+            // Never streaming in the fake: same answer as the idle real engine.
+            Err(ipc_err(code::PROGRAM_INACTIVE, "no stream is running; Program unchanged"))
+        }
     }
 
     fn call(engine: &Fake, req: Value) -> Value {
@@ -588,16 +613,25 @@ mod tests {
 
     #[test]
     fn scene_apply_fails_closed_even_for_valid_scene() {
-        let f = Fake::default();
         let scene = json!({"version":1,"name":"LT","layers":[{"id":"h","source":"hdmi","x":0,"y":0,"width":1920,"height":1080,"visible":true}]});
-        let v = call(&f, json!({"version":1,"request_id":"v","method":"scene.validate","params":{"scene":scene.clone()}}));
+        let apply = json!({"version":1,"request_id":"p","method":"scene.apply","params":{"scene":scene.clone(),"scene_id":"lt","revision":1}});
+        let f = Fake::default();
+        let v = call(&f, json!({"version":1,"request_id":"v","method":"scene.validate","params":{"scene":scene}}));
         assert_eq!(v["result"]["valid"], true);
-        let a = call(&f, json!({"version":1,"request_id":"p","method":"scene.apply","params":{"scene":scene,"scene_id":"lt","revision":1}}));
+        let caps = call(&f, json!({"version":1,"request_id":"c","method":"engine.capabilities"}));
+        assert_eq!(caps["result"]["program_apply"], true);
+        // Default engine, nothing streaming: refused, Program unchanged.
+        let a = call(&f, apply.clone());
         assert_eq!(a["ok"], false);
-        assert_eq!(a["error"]["code"], code::NOT_IMPLEMENTED);
+        assert_eq!(a["error"]["code"], code::PROGRAM_INACTIVE);
+        // Compositor switched off: capabilities and apply both say so.
+        let off = Fake { compositor_off: true, ..Default::default() };
+        assert_eq!(call(&off, json!({"version":1,"request_id":"c","method":"engine.capabilities"}))["result"]["program_apply"], false);
+        assert_eq!(call(&off, apply)["error"]["code"], code::NOT_IMPLEMENTED);
         let bad = call(&f, json!({"version":1,"request_id":"q","method":"scene.validate","params":{"scene":{"version":1}}}));
         assert_eq!(bad["error"]["code"], code::INVALID_SCENE);
     }
+
 
     #[test]
     fn framing_bounds() {
@@ -669,7 +703,7 @@ mod tests {
             s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             // Two sequential requests on one connection.
             assert_eq!(request(&mut s, &format!("c{i}a"))["request_id"], format!("c{i}a"));
-            assert_eq!(request(&mut s, &format!("c{i}b"))["result"]["program_apply"], false);
+            assert_eq!(request(&mut s, &format!("c{i}b"))["result"]["program_apply"], true);
             held.push(s);
         }
         let mut extra = UnixStream::connect(&path).unwrap();
@@ -694,4 +728,24 @@ mod tests {
         assert_eq!(ok.expect("slot released")["result"]["state"], "idle");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn audio_status_and_configure_over_ipc() {
+        let f = Fake::default();
+        let r = call(&f, json!({"version":1,"request_id":"a1","method":"audio.status"}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["inputs"][0]["id"], "hdmi");
+        let r = call(&f, json!({"version":1,"request_id":"a2","method":"audio.configure",
+            "params":{"inputs":[{"id":"hdmi","gain_db":-3.0}]}}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["inputs"][0]["gain_db"], -3.0);
+        let r = call(&f, json!({"version":1,"request_id":"a3","method":"audio.configure",
+            "params":{"inputs":[{"id":"hdmi","gain_db":99}]}}));
+        assert_eq!(r["error"]["code"], "invalid_params");
+        let r = call(&f, json!({"version":1,"request_id":"a4","method":"audio.configure","params":{"inputs":[],"x":1}}));
+        assert_eq!(r["error"]["code"], "invalid_params");
+        // Restore the shared default for other tests.
+        call(&f, json!({"version":1,"request_id":"a5","method":"audio.configure","params":{"inputs":[{"id":"hdmi","gain_db":0.0}]}}));
+    }
+
 }

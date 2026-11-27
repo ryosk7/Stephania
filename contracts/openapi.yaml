@@ -63,7 +63,9 @@ paths:
         reconcile from it on every (re)connect. Then: engine.connected,
         engine.unavailable, engine.restarted, stream.state_changed
         ({state, streaming_requested, native_worker_running, last_error}),
-        program.changed ({scene_id, revision}), scene.updated
+        program.changed ({scene_id, revision}), audio.levels (~4 Hz while
+        streaming: {inputs:[{id,state,levels,muted,gain_db}], master}),
+        audio.configured ({inputs}), scene.updated
         ({id, revision}), scene.deleted ({id}). Comment lines are
         keepalives (every 15 s). Slow consumers are disconnected. Unknown
         event names must be ignored.
@@ -273,6 +275,48 @@ paths:
       responses:
         "204": {description: Revoked}
         default: {$ref: "#/components/responses/Error"}
+  /audio:
+    get:
+      summary: Program audio inputs (stored configuration and live engine status)
+      responses:
+        "200":
+          description: Configuration and status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stored, engine]
+                properties:
+                  stored: {type: array, items: {$ref: "#/components/schemas/AudioInput"}}
+                  engine:
+                    description: ipc.schema.json#/$defs/audio_status, or null when the engine is unreachable
+                    oneOf: [{type: "null"}, {$ref: "ipc.schema.json#/$defs/audio_status"}]
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      summary: Update audio inputs (partial; gain and mute apply live)
+      description: |
+        Omitted fields keep their value. Saved, then applied to the engine;
+        when the engine is unreachable the configuration is applied as soon
+        as it reconnects (`applied: false`). Owner only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "ipc.schema.json#/$defs/audio_configure_params"}
+      responses:
+        "200":
+          description: Saved (and applied when the engine is reachable)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stored, applied]
+                properties:
+                  stored: {type: array, items: {$ref: "#/components/schemas/AudioInput"}}
+                  applied: {type: boolean}
+                  engine:
+                    oneOf: [{type: "null"}, {$ref: "ipc.schema.json#/$defs/audio_status"}]
+        default: {$ref: "#/components/responses/Error"}
   /program/transition:
     post:
       summary: Apply a stored draft revision to Program (IPC scene.apply)
@@ -316,6 +360,16 @@ components:
   securitySchemes:
     bearer: {type: http, scheme: bearer}
   schemas:
+    AudioInput:
+      type: object
+      required: [id, enabled, device, channels, gain_db, muted]
+      properties:
+        id: {enum: [hdmi, mic]}
+        enabled: {type: boolean}
+        device: {type: string}
+        channels: {enum: [1, 2]}
+        gain_db: {type: number, minimum: -60, maximum: 12}
+        muted: {type: boolean}
     CameraCredential:
       type: object
       required: [id, label, created_at_unix, expires_at_unix]
@@ -350,7 +404,7 @@ components:
                 invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403)
+                program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
                 too_many_credentials(409)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.

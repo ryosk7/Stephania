@@ -59,3 +59,34 @@ test('wrong token stops the stream instead of retrying', async ({page}) => {
   await page.getByLabel('管理トークン').fill('x'.repeat(32));
   await expect(page.getByTestId('conn')).toHaveText('再接続待ち');
 });
+
+test('audio inputs are configured, persisted and applied to the engine', async ({page}) => {
+  await open(page);
+  const panel = page.getByTestId('audio');
+  await expect(panel.getByTestId('audio-state-hdmi')).toHaveText('待機（配信停止中）');
+  const mic = panel.getByTestId('audio-mic');
+  await mic.getByLabel('デバイス').fill('plughw:CARD=Mic,DEV=0');
+  await mic.getByLabel('デバイス').blur();
+  await mic.getByLabel('有効').check();
+  await expect(page.getByRole('status')).toHaveText('音声設定を適用しました');
+  await mic.getByLabel('gain mic').fill('-6');
+  await mic.getByRole('button', {name: 'ミュート'}).click();
+  await expect(mic.getByRole('button', {name: 'ミュート解除'})).toBeVisible();
+
+  // The engine holds the applied configuration (controls update before the
+  // debounced/queued saves land, so wait for the engine side)...
+  await expect.poll(async () => {
+    const r = await page.request.get(stack.url + 'api/v1/audio', {headers: {Authorization: 'Bearer ' + TOKEN}});
+    return (await r.json()).engine.inputs.find((i: {id: string}) => i.id === 'mic');
+  }).toMatchObject({enabled: true, device: 'plughw:CARD=Mic,DEV=0', gain_db: -6, muted: true, state: 'idle'});
+  // ...and the control plane persisted it across a reload.
+  await page.reload();
+  await page.getByLabel('管理トークン').fill(TOKEN);
+  await expect(page.getByTestId('audio-mic').getByLabel('有効')).toBeChecked();
+  await expect(page.getByTestId('audio-mic').getByLabel('デバイス')).toHaveValue('plughw:CARD=Mic,DEV=0');
+
+  // Invalid device names are refused with a message, nothing applied.
+  await page.getByTestId('audio-mic').getByLabel('デバイス').fill('hw:0;reboot');
+  await page.getByTestId('audio-mic').getByLabel('デバイス').blur();
+  await expect(page.getByRole('status')).toContainText('invalid_audio');
+});

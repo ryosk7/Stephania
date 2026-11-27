@@ -1,5 +1,5 @@
 //! Live composition stage between capture conversion and the encoder
-//! (docs/COMPOSITOR.md). Opt-in with `T3BOX_COMPOSITOR=1`; without it the
+//! (docs/COMPOSITOR.md). On by default (`T3BOX_COMPOSITOR=0` removes it); without it the
 //! media loop never touches this module.
 //!
 //! - One process-wide [`ProgramSwitch`]: the IPC `scene.apply` handler
@@ -26,8 +26,11 @@ static SWITCH: OnceLock<ProgramSwitch> = OnceLock::new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SOURCES: OnceLock<SourceRegistry> = OnceLock::new();
 
+/// The compositor is part of the media path by default; HDMI-only Programs
+/// take the zero-copy fast path. `T3BOX_COMPOSITOR=0` removes the stage
+/// (diagnostics only).
 pub fn enabled() -> bool {
-    std::env::var("T3BOX_COMPOSITOR").as_deref() == Ok("1")
+    std::env::var("T3BOX_COMPOSITOR").as_deref() != Ok("0")
 }
 
 pub fn switch() -> &'static ProgramSwitch {
