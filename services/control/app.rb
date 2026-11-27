@@ -155,8 +155,8 @@ class Control < Sinatra::Base
       settings.engine.call(method, params, request_id: request_id)
     rescue EngineClient::RemoteError => e
       fail_with ENGINE_STATUS.fetch(e.code, 502), e.code, e.message
-    rescue EngineClient::Unavailable
-      fail_with 503, "engine_unavailable", "media engine is not reachable"
+    rescue EngineClient::Unavailable => e
+      fail_with 503, "engine_unavailable", "media engine is not reachable (#{e.message})"
     end
 
     CAMERA_TOKEN = /\At3c_[0-9a-f]{64}\z/

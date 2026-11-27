@@ -54,7 +54,7 @@ RULES = [
     ("apps/mobile/modules/*", ["mobile", "mobile_native"]), ("apps/mobile/app.json", ["mobile", "mobile_native"]),
     ("apps/mobile/package*.json", ["mobile", "mobile_native"]), ("ci/mobile-*", ["mobile", "mobile_native"]), ("tools/setup-page/*", ["provisioning"]),
     ("src/pki.rs", ["rust", "lan", "os"]), ("src/management_tokens.rs", ["rust", "lan", "provisioning"]), ("src/bin/t3box-pki.rs", ["rust", "lan", "os"]),
-    ("ci/lan*", ["lan"]),
+    ("ci/lan*", ["lan"]), ("ci/control*load*", ["control"]),
     # Control plane and Studio
     ("services/control/*", ["control", "studio", "lan", "phone", "os"]), ("apps/studio/*", ["studio", "os"]),
     ("contracts/openapi.yaml", ["control", "studio"]), ("contracts/ipc.schema.json", ["rust", "control"]),
