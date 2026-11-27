@@ -1,0 +1,202 @@
+openapi: 3.1.0
+info:
+  title: T3Box Control API
+  version: 0.1.0
+  description: |
+    Management plane served by services/control (Sinatra). Loopback-only and
+    bearer-token protected until trusted LAN TLS and authenticated enrollment
+    exist. No media passes through this API. Only the operations below are
+    implemented; the full target surface is in docs/MASTER-ARCHITECTURE.md §18.
+servers:
+  - url: http://127.0.0.1:9292/api/v1
+security:
+  - bearer: []
+paths:
+  /capabilities:
+    get:
+      summary: Management-plane feature flags
+      responses:
+        "200":
+          description: Flags
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [scene_drafts, program_apply, phone_camera, ble]
+                properties:
+                  scene_drafts: {type: boolean}
+                  program_apply: {const: false}
+                  phone_camera: {const: false}
+                  ble: {const: false}
+        default: {$ref: "#/components/responses/Error"}
+  /status:
+    get:
+      summary: Engine status (IPC engine.status)
+      responses:
+        "200":
+          description: |
+            Engine status (ipc.schema.json#/$defs/engine_status) plus engine_restarted,
+            true when instance_id differs from the previous call (clients must re-read
+            state). native_worker_running is worker activity, not ingest confirmation.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: "ipc.schema.json#/$defs/engine_status"}
+                  - type: object
+                    required: [engine_restarted]
+                    properties: {engine_restarted: {type: boolean}}
+        default: {$ref: "#/components/responses/Error"}
+  /engine/capabilities:
+    get:
+      summary: Engine capabilities (IPC engine.capabilities)
+      responses:
+        "200": {description: Engine capabilities, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /stream/start:
+    post:
+      summary: Request stream start (IPC stream.start)
+      responses:
+        "202":
+          description: Request accepted by the engine; not confirmation of ingest.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, streaming_requested, youtube_ingest_confirmed]
+                properties:
+                  accepted: {const: true}
+                  streaming_requested: {const: true}
+                  youtube_ingest_confirmed: {const: false}
+        default: {$ref: "#/components/responses/Error"}
+  /stream/stop:
+    post:
+      summary: Request cooperative stream stop (IPC stream.stop)
+      responses:
+        "200": {description: Stop requested, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes:
+    get:
+      summary: List stored scene drafts
+      responses:
+        "200":
+          description: Drafts ordered by id
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/StoredScene"}}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/Id"}}
+    get:
+      summary: Fetch one scene draft
+      responses:
+        "200": {description: Draft, content: {application/json: {schema: {$ref: "#/components/schemas/StoredScene"}}}}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      summary: Create (revision 0) or update a draft with optimistic concurrency
+      description: Saving a draft never changes Program. 409 when revision is stale.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, document]
+              properties:
+                revision: {type: integer, minimum: 0}
+                document: {$ref: "scene.schema.json"}
+      responses:
+        "200": {description: Saved, content: {application/json: {schema: {$ref: "#/components/schemas/StoredScene"}}}}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete a draft (and its history) at the expected revision
+      parameters:
+        - {name: revision, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        "204": {description: Deleted}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes/{id}/revisions:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/Id"}}
+    get:
+      summary: Bounded draft history, newest first (last 50 revisions)
+      responses:
+        "200":
+          description: Revisions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [revision, created_at_unix, document]
+                  properties:
+                    revision: {type: integer, minimum: 1}
+                    created_at_unix: {type: integer}
+                    document: {$ref: "scene.schema.json"}
+        default: {$ref: "#/components/responses/Error"}
+  /program/transition:
+    post:
+      summary: Apply a stored draft revision to Program (IPC scene.apply)
+      description: |
+        Succeeds only after the engine acknowledges frame-boundary application.
+        Until the compositor exists the engine fails closed and this returns
+        501 not_implemented with Program unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scene_id, revision]
+              properties:
+                scene_id: {$ref: "#/components/schemas/Id"}
+                revision: {type: integer, minimum: 1}
+      responses:
+        "200": {description: Applied and acknowledged by engine}
+        default: {$ref: "#/components/responses/Error"}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  schemas:
+    Id: {type: string, pattern: "^[a-zA-Z0-9_-]{1,64}$"}
+    StoredScene:
+      type: object
+      additionalProperties: false
+      required: [id, revision, document]
+      properties:
+        id: {$ref: "#/components/schemas/Id"}
+        revision: {type: integer, minimum: 1}
+        document: {$ref: "scene.schema.json"}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              description: |
+                unauthorized(401) not_configured(503) forbidden_host(403) invalid_json(400)
+                invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
+                not_found(404) revision_conflict(409) engine_unavailable(503)
+                engine_start_failed(503) busy(503) not_implemented(501) internal_error(500);
+                unrecognised engine codes are passed through with 502.
+            message: {type: string}
+            request_id: {type: string, description: Same value as the X-Request-Id response header and the IPC request_id.}
+  responses:
+    Error:
+      description: Error envelope
+      headers:
+        X-Request-Id: {schema: {type: string}}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}

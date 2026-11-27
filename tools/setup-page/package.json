@@ -1,0 +1,15 @@
+{
+  "name": "t3box-setup-page",
+  "private": true,
+  "type": "module",
+  "description": "Static, offline, single-file page that generates a T3Box setup secret in the browser, shows it as a QR code and downloads t3box-setup.txt for the SD card.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && vitest run"
+  },
+  "devDependencies": {
+    "jsqr": "^1.4.0",
+    "qrcode-generator": "^1.4.4",
+    "vitest": "^3.2.7"
+  }
+}

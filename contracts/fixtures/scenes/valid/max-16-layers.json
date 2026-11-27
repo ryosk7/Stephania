@@ -1,0 +1,150 @@
+{
+ "version": 1,
+ "name": "many",
+ "layers": [
+  {
+   "id": "l0",
+   "source": "hdmi",
+   "x": 0,
+   "y": 0,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l1",
+   "source": "hdmi",
+   "x": 1,
+   "y": 1,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l2",
+   "source": "hdmi",
+   "x": 2,
+   "y": 2,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l3",
+   "source": "hdmi",
+   "x": 3,
+   "y": 3,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l4",
+   "source": "hdmi",
+   "x": 4,
+   "y": 4,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l5",
+   "source": "hdmi",
+   "x": 5,
+   "y": 5,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l6",
+   "source": "hdmi",
+   "x": 6,
+   "y": 6,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l7",
+   "source": "hdmi",
+   "x": 7,
+   "y": 7,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l8",
+   "source": "hdmi",
+   "x": 8,
+   "y": 8,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l9",
+   "source": "hdmi",
+   "x": 9,
+   "y": 9,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l10",
+   "source": "hdmi",
+   "x": 10,
+   "y": 10,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l11",
+   "source": "hdmi",
+   "x": 11,
+   "y": 11,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l12",
+   "source": "hdmi",
+   "x": 12,
+   "y": 12,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l13",
+   "source": "hdmi",
+   "x": 13,
+   "y": 13,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l14",
+   "source": "hdmi",
+   "x": 14,
+   "y": 14,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  },
+  {
+   "id": "l15",
+   "source": "hdmi",
+   "x": 15,
+   "y": 15,
+   "width": 10,
+   "height": 10,
+   "visible": true
+  }
+ ]
+}

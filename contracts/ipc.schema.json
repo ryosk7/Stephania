@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://t3box.invalid/contracts/ipc.schema.json",
+  "title": "T3Box engine control IPC, version 1",
+  "description": "Each frame is a 4-byte big-endian length followed by UTF-8 JSON (max 65536 bytes). See docs/IPC.md. Implemented by src/ipc.rs (server) and services/control/lib/engine_client.rb (client).",
+  "$defs": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+    },
+    "method": {
+      "enum": [
+        "engine.status",
+        "engine.capabilities",
+        "stream.start",
+        "stream.stop",
+        "scene.validate",
+        "scene.apply"
+      ]
+    },
+    "error_code": {
+      "enum": [
+        "invalid_frame",
+        "frame_too_large",
+        "invalid_request",
+        "unsupported_version",
+        "unknown_method",
+        "invalid_params",
+        "invalid_scene",
+        "not_implemented",
+        "engine_start_failed",
+        "busy",
+        "forbidden"
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "request_id",
+        "method"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "method": {
+          "$ref": "#/$defs/method"
+        },
+        "params": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object"
+            }
+          ]
+        }
+      }
+    },
+    "ok_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "request_id",
+        "ok",
+        "result"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "ok": {
+          "const": true
+        },
+        "result": {
+          "type": "object"
+        }
+      }
+    },
+    "error_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "request_id",
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "request_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/request_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/error_code"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "engine_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "uptime_ms",
+        "state",
+        "streaming_requested",
+        "native_worker_running",
+        "youtube_ingest_confirmed",
+        "restart_attempts",
+        "last_error"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "Random per engine process; a change means the engine restarted."
+        },
+        "uptime_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "starting_or_retrying",
+            "native_worker_active",
+            "stopping"
+          ]
+        },
+        "streaming_requested": {
+          "type": "boolean"
+        },
+        "native_worker_running": {
+          "type": "boolean",
+          "description": "Worker activity only; not evidence of ingest."
+        },
+        "youtube_ingest_confirmed": {
+          "const": false
+        },
+        "restart_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_error": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/ok_response"
+    },
+    {
+      "$ref": "#/$defs/error_response"
+    }
+  ]
+}

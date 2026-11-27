@@ -1,0 +1,31 @@
+{
+ "description": "Setup URI: t3box-setup:v1:<32 hex secret>:<first 8 hex of SHA-256(secret)>. Case-insensitive hex, surrounding whitespace ignored. An all-zero secret is rejected.",
+ "valid": [
+  {
+   "uri": "t3box-setup:v1:00112233445566778899aabbccddeeff:a8faed6a",
+   "secret": "00112233445566778899aabbccddeeff"
+  },
+  {
+   "uri": "t3box-setup:v1:fedcba9876543210fedcba9876543210:5df9fb81",
+   "secret": "fedcba9876543210fedcba9876543210"
+  },
+  {
+   "uri": "t3box-setup:v1:00112233445566778899AABBCCDDEEFF:A8FAED6A",
+   "secret": "00112233445566778899aabbccddeeff"
+  },
+  {
+   "uri": "  t3box-setup:v1:fedcba9876543210fedcba9876543210:5df9fb81\r\n",
+   "secret": "fedcba9876543210fedcba9876543210"
+  }
+ ],
+ "invalid": [
+  "t3box-setup:v2:00112233445566778899aabbccddeeff:a8faed6a",
+  "t3box-setup:v1:00112233445566778899aabbccddeeff:a8faed60",
+  "t3box:v1:00112233445566778899aabbccddeeff:a8faed6a",
+  "t3box-setup:v1:0011:2ed34834",
+  "t3box-setup:v1:00112233445566778899aabbccddeeff:a8faed6a:extra",
+  "",
+  "t3box-setup:v1:gggggggggggggggggggggggggggggggg:00000000",
+  "t3box-setup:v1:00000000000000000000000000000000:374708ff"
+ ]
+}

@@ -1,0 +1,147 @@
+name: Studio foundation
+on:
+  pull_request:
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+  push:
+    branches: [main]
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+permissions:
+  contents: read
+concurrency:
+  group: studio-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: control-engine-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # Diagnostics-only engine build: exercises the real IPC server without
+      # native media libraries. Media coverage stays in ci.yml.
+      - name: Build engine for IPC integration
+        run: cargo build --locked --no-default-features --bin t3box
+      - name: Resolved Gemfile.lock (commit this until it is tracked)
+        if: hashFiles('services/control/Gemfile.lock') != ''
+        working-directory: services/control
+        run: |
+          git ls-files --error-unmatch Gemfile.lock >/dev/null 2>&1 && exit 0
+          echo '----- BEGIN Gemfile.lock -----'; cat Gemfile.lock; echo '----- END Gemfile.lock -----'
+      - name: Control unit, storage and contract tests
+        working-directory: services/control
+        run: |
+          bundle exec ruby test/control_test.rb
+          bundle exec ruby test/storage_test.rb
+      - name: Puma production boot smoke test
+        working-directory: services/control
+        shell: bash
+        env:
+          T3BOX_CONTROL_TOKEN: ci-smoke-token-0123456789abcdef0123
+          T3BOX_ENGINE_SOCKET: /tmp/t3box-no-engine.sock
+          T3BOX_CONTROL_DB: /tmp/t3box-smoke.db
+          T3BOX_CONTROL_PORT: '9393'
+        run: |
+          bundle exec puma -C config/puma.rb config.ru > puma.log 2>&1 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          for _ in $(seq 50); do curl -fs -o /dev/null -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9393/api/v1/capabilities && break; sleep 0.2; done
+          curl -fsS -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9393/api/v1/capabilities
+          code=$(curl -s -o body.json -w '%{http_code}' -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9393/api/v1/status)
+          test "$code" = 503 && grep -q engine_unavailable body.json
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9393/api/v1/status)
+          test "$code" = 401
+          v=$(bundle exec ruby -rsequel -e 'print Sequel.sqlite(ARGV[0])[:schema_info].get(:version)' /tmp/t3box-smoke.db)
+          test "$v" = 2 || { cat puma.log; exit 1; }
+      - name: Validate systemd units
+        run: |
+          for u in systemd/*.service; do
+            out=$(systemd-analyze verify "$PWD/$u" 2>&1 | grep -v 'is not executable' || true)
+            if [ -n "$out" ]; then echo "$out"; exit 1; fi
+          done
+      - name: Integration test must not be skipped
+        working-directory: services/control
+        env:
+          T3BOX_ENGINE_BIN: ${{ github.workspace }}/target/debug/t3box
+        shell: bash
+        run: |
+          bundle exec ruby test/engine_integration_test.rb --verbose | tee integration.log
+          if grep -q ' S$\|skipped' integration.log; then echo "integration test skipped" >&2; exit 1; fi
+  studio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Generated API types match contracts/openapi.yaml
+        run: npm run check:api
+      - name: Unit and shared-fixture tests
+        run: npm test
+      - run: npm run build
+  provisioning-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: provision-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build device provisioning service (virtual network backend)
+        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/provisioning-client/package-lock.json
+      - working-directory: packages/provisioning-client
+        run: npm ci --no-audit --no-fund
+      - working-directory: packages/provisioning-client
+        run: npm run typecheck
+      - name: Vectors and TypeScript-to-Rust interop (must not skip)
+        working-directory: packages/provisioning-client
+        shell: bash
+        env:
+          T3BOX_PROVISION_BIN: ${{ github.workspace }}/target/debug/t3box-provision
+        run: |
+          npx vitest run --reporter=verbose | tee vitest.log
+          grep -q 'interop with Rust t3box-provision' vitest.log
+          if grep -qiE 'skipped|↓' vitest.log; then echo "interop test skipped" >&2; exit 1; fi
+  setup-page:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tools/setup-page
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/setup-page/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Build and test the exact shipped page (QR round-trip via jsQR)
+        run: npm test
+      - run: cat dist/SHA256SUMS

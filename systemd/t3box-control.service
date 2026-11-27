@@ -1,0 +1,52 @@
+[Unit]
+Description=T3Box management plane (Sinatra/Puma)
+# Independent of the engine: control may restart or die without affecting
+# media. Wants= (not Requires=) so an engine restart never stops control.
+Wants=t3box.service
+After=t3box.service
+
+[Service]
+Type=simple
+User=t3box-control
+Group=t3box-control
+# Membership of t3box grants access to /run/t3box (0750) and engine.sock (0660).
+SupplementaryGroups=t3box
+WorkingDirectory=/opt/t3box/control
+# Must define T3BOX_CONTROL_TOKEN (>= 32 bytes). Mode 0600, owned by root.
+EnvironmentFile=/etc/t3box/control.env
+Environment=RACK_ENV=production
+Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
+Environment=T3BOX_CONTROL_DB=/var/lib/t3box/control/control.db
+StateDirectory=t3box/control
+StateDirectoryMode=0700
+ExecStart=/usr/bin/bundle exec puma -C config/puma.rb config.ru
+Restart=on-failure
+RestartSec=3
+
+# Initial resource-isolation experiment (§9). Tune with measurements; these
+# are not qualified production limits.
+CPUWeight=20
+CPUQuota=50%
+MemoryHigh=96M
+MemoryMax=128M
+IOWeight=20
+Nice=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
