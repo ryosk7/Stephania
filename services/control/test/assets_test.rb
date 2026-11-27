@@ -118,6 +118,25 @@ class AssetsTest < Minitest::Test
     end
   end
 
+  def test_developer_templates_round_trip_and_are_validated
+    header "Content-Type", "application/json"
+    tpl = {name: "Badge", width: 400, height: 100, svg: %(<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100"><text>{{who}}</text></svg>),
+           vars: [{key: "who", label: "Who", initial: "me"}]}
+    put "/api/v1/templates/badge", JSON.generate(tpl)
+    assert_equal 200, last_response.status, last_response.body
+    get "/api/v1/templates"
+    assert_equal [["badge", "Badge", [{"key" => "who", "label" => "Who", "initial" => "me"}]]], body.map { |t| [t["id"], t["name"], t["vars"]] }
+    put "/api/v1/templates/badge", JSON.generate(tpl.merge(svg: %(<svg><script>x()</script></svg>)))
+    assert_equal 422, last_response.status
+    assert_equal "invalid_template", body.dig("error", "code")
+    put "/api/v1/templates/badge", JSON.generate(tpl.merge(svg: %(<svg><image href="http://evil.example/a.png"/></svg>)))
+    assert_equal 422, last_response.status
+    put "/api/v1/templates/lower-third", JSON.generate(tpl)
+    assert_equal 422, last_response.status, "built-in ids are reserved"
+    delete "/api/v1/templates/badge"
+    assert_equal 204, last_response.status
+  end
+
   def test_operator_can_view_but_not_upload
     Control.throttle = Accounts::Throttle.new
     header "Content-Type", "application/json"

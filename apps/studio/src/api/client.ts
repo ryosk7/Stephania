@@ -14,6 +14,8 @@ export type Role = components['schemas']['Role'];
 export type Me = paths['/auth/me']['get']['responses']['200']['content']['application/json'];
 export type Login = paths['/auth/session']['post']['responses']['201']['content']['application/json'];
 export type SceneExport = components['schemas']['SceneExport'];
+export type Asset = components['schemas']['Asset'];
+export type OverlayTemplate = components['schemas']['OverlayTemplate'];
 export type Capabilities = paths['/capabilities']['get']['responses']['200']['content']['application/json'];
 
 /**
@@ -56,6 +58,18 @@ export function createClient(credentials: () => Credentials, fetcher: Fetch = (i
     }
     return data as T;
   }
+  async function upload(blob: Blob, name: string): Promise<Asset> {
+    const c = credentials();
+    const res = await fetcher('/api/v1/assets?name=' + encodeURIComponent(name), {
+      method: 'POST', credentials: 'same-origin', headers: {...authHeaders(c, 'POST'), 'Content-Type': 'image/png'}, body: blob,
+    });
+    const data: unknown = await res.json().catch(() => undefined);
+    if (!res.ok) {
+      const e = (data as {error?: {code?: string; message?: string; request_id?: string}} | undefined)?.error;
+      throw new ApiError(res.status, e?.code ?? 'http_' + res.status, e?.message ?? res.statusText, e?.request_id);
+    }
+    return data as Asset;
+  }
   const id = (s: string) => encodeURIComponent(s);
   return {
     login: (username: string, password: string) => call<Login>('/auth/session', 'POST', {username, password}),
@@ -79,7 +93,20 @@ export function createClient(credentials: () => Credentials, fetcher: Fetch = (i
     duplicateScene: (s: string) => call<StoredScene>(`/scenes/${id(s)}/duplicate`, 'POST'),
     exportScene: (s: string) => call<SceneExport>(`/scenes/${id(s)}/export`),
     importScene: (e: SceneExport) => call<StoredScene>('/scenes/import', 'POST', e),
-    transition: (scene_id: string, revision: number) => call<unknown>('/program/transition', 'POST', {scene_id, revision}),
+    transition: (scene_id: string, revision: number, transition?: {type: 'cut'} | {type: 'fade'; duration_ms: number}) =>
+      call<unknown>('/program/transition', 'POST', transition ? {scene_id, revision, transition} : {scene_id, revision}),
+    assets: () => call<Asset[]>('/assets'),
+    templates: () => call<OverlayTemplate[]>('/templates'),
+    saveTemplate: (t: OverlayTemplate) => { const {id: tid, ...body} = t; return call<OverlayTemplate>(`/templates/${id(tid)}`, 'PUT', body); },
+    deleteTemplate: (t: string) => call<void>(`/templates/${id(t)}`, 'DELETE'),
+    uploadAsset: upload,
+    deleteAsset: (a: string) => call<void>(`/assets/${id(a)}`, 'DELETE'),
+    /** Asset bytes as a Blob (works with bearer tokens, unlike <img src>). */
+    assetBlob: async (a: string) => {
+      const res = await fetcher(`/api/v1/assets/${id(a)}`, {credentials: 'same-origin', headers: authHeaders(credentials())});
+      if (!res.ok) throw new ApiError(res.status, 'http_' + res.status, 'asset unavailable');
+      return res.blob();
+    },
     audio: () => call<AudioOverview>('/audio'),
     saveAudio: (update: AudioUpdate) => call<AudioOverview & {applied: boolean}>('/audio', 'PUT', update),
   };

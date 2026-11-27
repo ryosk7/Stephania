@@ -13,6 +13,7 @@ require_relative "lib/lan_access"
 require_relative "lib/audio_settings"
 require_relative "lib/accounts"
 require_relative "lib/asset_store"
+require_relative "lib/template_validator"
 
 # T3Box management plane. Contract: contracts/openapi.yaml.
 #
@@ -222,6 +223,10 @@ class Control < Sinatra::Base
       end
       settings.events.publish("scene.updated", {id: id, revision: 1})
       {id: id, revision: 1, document: document}
+    end
+
+    def template_json(row)
+      {id: row[:id], name: row[:name], width: row[:width], height: row[:height], svg: row[:svg], vars: JSON.parse(row[:vars])}
     end
 
     def asset_json(row)
@@ -512,8 +517,8 @@ class Control < Sinatra::Base
     unless input.is_a?(Hash) && (input.keys - %w[name document]).empty? && input["name"].is_a?(String)
       fail_with 422, "invalid_request", "body must be {name, document?}"
     end
-    document = input["document"] || {"version" => 1, "name" => input["name"],
-      "layers" => [{"id" => "hdmi", "source" => "hdmi", "x" => 0, "y" => 0, "width" => 1920, "height" => 1080, "visible" => true}]}
+    document = input["document"] || {"version" => 2, "name" => input["name"],
+      "layers" => [{"id" => "hdmi", "type" => "video", "source" => "hdmi", "x" => 0, "y" => 0, "width" => 1920, "height" => 1080, "visible" => true}]}
     document = document.merge("name" => input["name"]) if document.is_a?(Hash)
     json_reply(create_scene(input["name"], document), 201)
   end
@@ -661,6 +666,36 @@ class Control < Sinatra::Base
     fail_with 409, "asset_in_use", "used by scene #{users.join(", ")}" unless users.empty?
     db[:assets].where(id: id).delete
     File.unlink(AssetStore.path(settings.assets_dir, id)) if File.exist?(AssetStore.path(settings.assets_dir, id))
+    status 204
+    ""
+  end
+
+  # --- Developer overlay templates (docs/SCENE.md) -----------------------
+  get "/api/v1/templates" do
+    json_reply(settings.db[:templates].order(:id).all.map { |r| template_json(r) })
+  end
+
+  put "/api/v1/templates/:id" do
+    id = params[:id]
+    input = read_json
+    if (problem = TemplateValidator.problem(id, input))
+      fail_with 422, "invalid_template", problem
+    end
+    db = settings.db
+    fail_with 409, "too_many_templates", "at most 64 templates" if db[:templates].count >= 64 && db[:templates].where(id: id).count.zero?
+    row = {id: id, name: input["name"], width: input["width"], height: input["height"], svg: input["svg"],
+           vars: JSON.generate(input["vars"]), updated_at_unix: Time.now.to_i}
+    db.transaction do
+      db[:templates].where(id: id).delete
+      db[:templates].insert(row)
+    end
+    json_reply(template_json(row))
+  end
+
+  delete "/api/v1/templates/:id" do
+    id = params[:id]
+    fail_with 400, "invalid_id", "template id must match #{TemplateValidator::ID.source}" unless id.match?(TemplateValidator::ID)
+    fail_with 404, "not_found", "no such template" if settings.db[:templates].where(id: id).delete.zero?
     status 204
     ""
   end

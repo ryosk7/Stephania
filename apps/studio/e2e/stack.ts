@@ -49,7 +49,7 @@ export class Stack {
     if (!bin) throw new Error('T3BOX_ENGINE_BIN must point at a built t3box binary');
     const log = join(this.dir, 'engine.log');
     const fd = openSync(log, 'a');
-    this.engine = spawn(bin, [], {env: {...process.env, T3BOX_ENGINE_SOCKET: this.socket, T3BOX_OUTPUT: ''}, stdio: ['ignore', fd, fd]});
+    this.engine = spawn(bin, [], {env: {...process.env, T3BOX_ENGINE_SOCKET: this.socket, T3BOX_OUTPUT: '', T3BOX_ASSETS_DIR: join(this.dir, 'assets')}, stdio: ['ignore', fd, fd]});
     await waitFor(() => connects({path: this.socket}), 'engine', log);
   }
 
@@ -68,7 +68,7 @@ export class Stack {
     this.control = spawn('bundle', ['exec', 'puma', '-C', 'config/puma.rb', 'config.ru'], {
       cwd: join(ROOT, 'services/control'),
       env: {...process.env, RACK_ENV: 'production', T3BOX_CONTROL_TOKEN: TOKEN, T3BOX_CONTROL_PORT: String(this.port),
-        T3BOX_ENGINE_SOCKET: this.socket, T3BOX_CONTROL_DB: join(this.dir, 'control.db'), T3BOX_CONTROL_POLL_SECONDS: '0.2'},
+        T3BOX_ENGINE_SOCKET: this.socket, T3BOX_CONTROL_DB: join(this.dir, 'control.db'), T3BOX_ASSETS_DIR: join(this.dir, 'assets'), T3BOX_CONTROL_POLL_SECONDS: '0.2'},
       stdio: ['ignore', fd, fd],
     });
     await waitFor(() => connects({port: this.port, host: '127.0.0.1'}), 'control', log);

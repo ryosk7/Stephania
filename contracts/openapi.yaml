@@ -522,6 +522,39 @@ paths:
       responses:
         "204": {description: Deleted}
         default: {$ref: "#/components/responses/Error"}
+  /templates:
+    get:
+      summary: Developer overlay templates (SVG with {{variables}}, rendered to PNG by the Studio)
+      responses:
+        "200": {description: Templates, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/OverlayTemplate"}}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /templates/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z0-9-]{1,32}$"}}
+    put:
+      summary: Create or replace a developer template (admin). Scripts, event handlers and external references are refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, width, height, svg, vars]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                width: {type: integer, minimum: 1, maximum: 1920}
+                height: {type: integer, minimum: 1, maximum: 1080}
+                svg: {type: string, maxLength: 20000}
+                vars: {type: array, maxItems: 16, items: {$ref: "#/components/schemas/TemplateVar"}}
+      responses:
+        "200": {description: Stored, content: {application/json: {schema: {$ref: "#/components/schemas/OverlayTemplate"}}}}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete a developer template
+      responses:
+        "204": {description: Deleted}
+        default: {$ref: "#/components/responses/Error"}
   /program/transition:
     post:
       summary: Apply a stored draft revision to Program (IPC scene.apply)
@@ -570,6 +603,25 @@ components:
     bearer: {type: http, scheme: bearer}
     session: {type: apiKey, in: cookie, name: t3box_session, description: "Studio account session; writes also need X-CSRF-Token"}
   schemas:
+    TemplateVar:
+      type: object
+      additionalProperties: false
+      required: [key, label, initial]
+      properties:
+        key: {type: string, pattern: "^[a-z][a-z0-9_.]{0,31}$"}
+        label: {type: string, minLength: 1, maxLength: 100}
+        initial: {type: string, maxLength: 200}
+    OverlayTemplate:
+      type: object
+      additionalProperties: false
+      required: [id, name, width, height, svg, vars]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        width: {type: integer}
+        height: {type: integer}
+        svg: {type: string}
+        vars: {type: array, items: {$ref: "#/components/schemas/TemplateVar"}}
     Asset:
       type: object
       additionalProperties: false
@@ -650,7 +702,7 @@ components:
                 program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
                 too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
                 weak_password(422) user_exists(409) last_admin(409)
-                unknown_asset(422) invalid_asset(422) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
+                unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}

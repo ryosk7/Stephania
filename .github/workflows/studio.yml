@@ -107,7 +107,7 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9393/api/v1/status)
           test "$code" = 401
           v=$(bundle exec ruby -rsequel -e 'print Sequel.sqlite(ARGV[0])[:schema_info].get(:version)' /tmp/t3box-smoke.db)
-          test "$v" = 6 || { cat puma.log; exit 1; }
+          test "$v" = 7 || { cat puma.log; exit 1; }
       - name: Validate systemd units
         run: |
           for u in systemd/*.service; do

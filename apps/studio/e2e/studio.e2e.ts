@@ -173,3 +173,65 @@ test('accounts: admin edits scenes with undo/redo and resize, operator cannot, s
   await expect(a.getByRole('button', {name: 'サインイン'})).toBeVisible();
   expect((await a.request.get(stack.url + 'api/v1/auth/me')).status()).toBe(401);
 });
+
+// 2×2 opaque red PNG.
+const RED_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=', 'base64');
+
+test('scene v2: convert, colour layer, opacity, PNG asset, rendered template, fade', async ({page}) => {
+  // A legacy v1 draft is converted explicitly.
+  const put = await page.request.put(stack.url + 'api/v1/scenes/brand', {...owner, data: {revision: 0, document:
+    {version: 1, name: 'Brand', layers: [{id: 'hdmi', source: 'hdmi', x: 0, y: 0, width: 1920, height: 1080, visible: true}]}}});
+  expect(put.status()).toBe(200);
+  await open(page, 'studio');
+  await page.getByRole('region', {name: 'scenes'}).getByRole('button', {name: /Brand/}).click();
+  await expect(status(page)).toHaveText('Loaded');
+  await expect(page.getByTestId('v1-banner')).toBeVisible();
+  await expect(page.getByRole('button', {name: '色レイヤー追加'})).toBeDisabled();
+  await page.getByRole('button', {name: 'v2に変換'}).click();
+  await expect(page.getByTestId('v1-banner')).toHaveCount(0);
+
+  await page.getByRole('button', {name: '色レイヤー追加'}).click();
+  await page.getByLabel('opacity').fill('40');
+  await page.getByLabel('rotation').fill('5');
+
+  await page.getByLabel('PNGをアップロード').setInputFiles({name: 'red.png', mimeType: 'image/png', buffer: RED_PNG});
+  await expect(status(page)).toContainText('アップロードしました');
+  await page.getByRole('region', {name: 'assets'}).getByRole('button', {name: 'シーンに追加'}).click();
+  await expect(page.locator('.layer.image img')).toHaveCount(1);
+
+  await page.getByRole('region', {name: 'templates'}).getByLabel('登壇者名').fill('内田 <涼介>');
+  await page.getByRole('button', {name: 'テンプレートを追加'}).click();
+  await expect(status(page)).toHaveText('「ローワーサード」を追加しました');
+  await expect(page.getByLabel('var speaker.name')).toHaveValue('内田 <涼介>');
+
+  await page.getByRole('button', {name: '下書き保存'}).click();
+  await expect(status(page)).toHaveText('Draft saved');
+  const scenes = await (await page.request.get(stack.url + 'api/v1/scenes', owner)).json();
+  const doc = scenes.find((s: {id: string}) => s.id === 'brand').document;
+  expect(doc.version).toBe(2);
+  const types = doc.layers.map((l: {type: string}) => l.type);
+  expect(types).toEqual(['video', 'color', 'image', 'image']);
+  expect(doc.layers[1]).toMatchObject({opacity: 40, rotation: 5});
+  expect(doc.layers[3].template).toEqual({id: 'lower-third', vars: {'speaker.name': '内田 <涼介>', 'speaker.title': '所属・肩書き', 'event.name': 'イベント名'}});
+  // The rendered template is a real PNG of the template's size.
+  const asset = (await (await page.request.get(stack.url + 'api/v1/assets', owner)).json()).find((a: {id: string}) => a.id === doc.layers[3].asset);
+  expect(asset).toMatchObject({width: 1000, height: 160});
+
+  // Re-rendering after a variable change stores a new asset on the layer.
+  await page.getByLabel('var speaker.name').fill('別の登壇者');
+  await page.getByRole('button', {name: '再描画'}).click();
+  await expect(status(page)).toContainText('再描画しました');
+  await page.getByRole('button', {name: '下書き保存'}).click();
+  await expect(status(page)).toHaveText('Draft saved');
+  const after = (await (await page.request.get(stack.url + 'api/v1/scenes/brand', owner)).json()).document;
+  expect(after.layers[3].asset).not.toBe(doc.layers[3].asset);
+  expect(after.layers[3].template.vars['speaker.name']).toBe('別の登壇者');
+
+  // The asset in use cannot be deleted; fade is offered and fails closed without a stream.
+  const del = await page.request.delete(stack.url + 'api/v1/assets/' + after.layers[2].asset, owner);
+  expect(del.status()).toBe(409);
+  await page.getByLabel('transition').selectOption('fade');
+  await page.getByLabel('fade ms').fill('800');
+  await page.getByRole('button', {name: 'Programへ適用'}).click();
+  await expect(status(page)).toContainText('program_inactive');
+});
