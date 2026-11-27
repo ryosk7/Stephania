@@ -164,6 +164,24 @@ public final class SenderPeer: NSObject, RTCPeerConnectionDelegate {
   /// Current encoding of a role (tests, diagnostics).
   public func encoding(_ role: String) -> RTCRtpEncodingParameters? { senders[role]?.parameters.encodings.first }
 
+  /// Encoder-side statistics per track (outbound-rtp): frames encoded and
+  /// sent, size, encoder implementation, quality limitation. For
+  /// diagnostics and tests; values are as libwebrtc reports them.
+  public func outboundStats() async -> [[String: String]] {
+    await withCheckedContinuation { c in
+      pc.statistics { report in
+        let keys = ["mid", "framesEncoded", "framesSent", "frameWidth", "frameHeight", "encoderImplementation", "qualityLimitationReason", "bytesSent", "active"]
+        let rows = report.statistics.values.filter { $0.type == "outbound-rtp" }.map { s in
+          Dictionary(uniqueKeysWithValues: keys.compactMap { k in s.values[k].map { (k, "\($0)") } })
+        }
+        c.resume(returning: rows)
+      }
+    }
+  }
+
+  /// ICE/DTLS state for diagnostics.
+  public var connectionState: String { "\(pc.connectionState.rawValue)/ice \(pc.iceConnectionState.rawValue)" }
+
   public func close() {
     pc?.close()
   }

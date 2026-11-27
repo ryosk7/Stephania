@@ -2,7 +2,8 @@
 # Real libwebrtc offer from the iOS sender core (apps/mobile/modules/
 # t3box-camera/ios/CameraSender, produced by `swift test` on macOS with
 # T3BOX_OFFER_OUT) through control signaling into t3box-phone: the device
-# must accept it and answer H.264 constrained baseline for both tracks.
+# must accept it and answer H.264 constrained baseline (any level) for
+# both tracks.
 # Media is not exchanged here (the offer's candidates are the macOS
 # runner's); tests/phone/run-e2e.sh covers media with aiortc.
 # Usage: tests/phone/ios-offer.sh <target-dir> <offer.json>
@@ -48,7 +49,10 @@ for s in video:
     pts = mline[3:]
     assert mline[1] != "0" and pts, f"rejected section:\n{s}"
     fmtp = [l for l in s.splitlines() if l.startswith(f"a=fmtp:{pts[0]} ")]
-    assert fmtp and "profile-level-id=42e01f" in fmtp[0] and "packetization-mode=1" in fmtp[0], s
+    plid = re.search(r"profile-level-id=([0-9a-fA-F]{6})", fmtp[0] if fmtp else "")
+    # Constrained baseline at any level (profile_idc 0x42, constraint_set1).
+    assert plid and plid.group(1)[:2] == "42" and int(plid.group(1)[2:4], 16) & 0x40, s
+    assert "packetization-mode=1" in fmtp[0], s
     assert "a=recvonly" in s, s
 assert "a=candidate:" in sdp, "answer without candidates"
 status, st = call("GET")

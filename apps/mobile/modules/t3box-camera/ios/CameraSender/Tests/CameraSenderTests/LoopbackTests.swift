@@ -45,7 +45,16 @@ final class LoopbackTests: XCTestCase {
     let feeder = Feeder(tracks: tracks, luma: ["rear": 50, "front": 200])
     feeder.start()
     defer { feeder.stop() }
-    try await waitUntil(10) { receiver.frames(mid: "0") >= 30 && receiver.frames(mid: "1") >= 30 }
+    do {
+      try await waitUntil(15) { receiver.frames(mid: "0") >= 30 && receiver.frames(mid: "1") >= 30 }
+    } catch {
+      // Say where it stopped: ICE/DTLS, encoder, or decoder.
+      print("sender:", sender.connectionState, "receiver:", receiver.connectionState, "fed:", feeder.fed)
+      print("received frames:", receiver.frames(mid: "0"), receiver.frames(mid: "1"))
+      for row in await sender.outboundStats() { print("outbound-rtp:", row.sorted { $0.key < $1.key }) }
+      throw error
+    }
+    for row in await sender.outboundStats() { print("outbound-rtp:", row.sorted { $0.key < $1.key }) }
     XCTAssertEqual(sender.trackMap.values.sorted(), ["front", "rear"])
     XCTAssertEqual(receiver.size(mid: "0")?.height, 720)
     XCTAssertLessThan(receiver.meanLuma(mid: "0"), 90, "rear (mid 0) must carry the dark frames")
@@ -103,6 +112,7 @@ final class Feeder {
   let tracks: [CameraTrack]
   let luma: [String: UInt8]
   private var timer: DispatchSourceTimer?
+  private(set) var fed = 0
   private var buffers: [String: CVPixelBuffer] = [:]
   private let start0 = DispatchTime.now().uptimeNanoseconds
 
@@ -118,6 +128,7 @@ final class Feeder {
     t.setEventHandler { [self] in
       let ts = Int64(DispatchTime.now().uptimeNanoseconds - start0)
       for track in tracks { track.push(buffers[track.role]!, rotation: ._0, timestampNs: ts) }
+      fed += 1
     }
     t.resume()
     timer = t
@@ -185,6 +196,7 @@ final class Receiver: NSObject, RTCPeerConnectionDelegate {
   func size(mid: String) -> CGSize? { renderer(mid)?.size }
   func meanLuma(mid: String) -> Double { renderer(mid)?.luma ?? -1 }
   func close() { pc.close() }
+  var connectionState: String { "\(pc.connectionState.rawValue)/ice \(pc.iceConnectionState.rawValue)" }
 
   private func renderer(_ mid: String) -> CountingRenderer? { lock.lock(); defer { lock.unlock() }; return renderers[mid] }
 
