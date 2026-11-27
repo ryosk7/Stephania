@@ -434,6 +434,67 @@
           }
         }
       }
+    },
+    "transition": {
+      "description": "scene.apply params.transition (optional; default cut). The ack names the first frame showing any of the new Program.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "cut"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "duration_ms"
+          ],
+          "properties": {
+            "type": {
+              "const": "fade"
+            },
+            "duration_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
+            }
+          }
+        }
+      ]
+    },
+    "scene_apply_params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene",
+        "scene_id",
+        "revision"
+      ],
+      "properties": {
+        "scene": {
+          "$ref": "scene.schema.json"
+        },
+        "scene_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transition": {
+          "$ref": "#/$defs/transition"
+        }
+      },
+      "description": "Image assets are loaded from T3BOX_ASSETS_DIR/<id>.png (hash-checked); a missing one fails with invalid_scene (asset_unavailable) and Program is unchanged."
     }
   },
   "oneOf": [

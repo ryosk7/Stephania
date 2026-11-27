@@ -21,11 +21,11 @@ T3BOX_CI_SESSIONS=1 T3BOX_CI_FIRST_LIMIT=1000000 python3 ci/rtmps-test-server.py
 for _ in $(seq 50); do [[ -f "$cert/ready" ]] && break; sleep 0.1; done
 test -f "$cert/ready"
 w=640; h=360
-T3BOX_CI_VIRTUAL=1 T3BOX_CI_VIRTUAL_PHONE=1 T3BOX_CI_CA_DER="$cert/ca.der" \
+T3BOX_ASSETS_DIR="$cert/assets" T3BOX_CI_VIRTUAL=1 T3BOX_CI_VIRTUAL_PHONE=1 T3BOX_CI_CA_DER="$cert/ca.der" \
   T3BOX_OUTPUT=rtmps://t3box-ci.test:19443/live/test T3BOX_WIDTH=$w T3BOX_HEIGHT=$h T3BOX_FPS=30 T3BOX_BITRATE_KBPS=1500 \
   T3BOX_ENGINE_SOCKET="$cert/engine.sock" "$bin" > "$out/engine.log" 2>&1 & pids+=($!)
 for _ in $(seq 100); do [[ -S "$cert/engine.sock" ]] && break; sleep 0.1; done
-python3 ci/composition_ipc.py "$cert/engine.sock" "$out/acks.json" || { cat "$out/engine.log"; exit 1; }
+python3 ci/composition_ipc.py "$cert/engine.sock" "$out/acks.json" "$cert/assets" || { cat "$out/engine.log"; exit 1; }
 for _ in $(seq 100); do ls "$cert"/session-1.flv >/dev/null 2>&1 && ! kill -0 "$server" 2>/dev/null && break; sleep 0.1; done
 cp "$cert"/session-1.* "$out/" 2>/dev/null || true
 test -s "$out/session-1.flv" || { echo "no recording"; cat "$out/server.log" "$out/engine.log"; exit 1; }

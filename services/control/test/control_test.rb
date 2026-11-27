@@ -214,7 +214,12 @@ class SceneFixtureConformanceTest < Minitest::Test
   end
 
   def test_invalid_fixtures
-    fixtures("invalid").each { |name, doc| refute_nil SceneValidator.validate(doc), name }
+    reasons = JSON.parse(File.read(File.join(FIXTURES, "scenes", "invalid-reasons.json")))
+    fixtures("invalid").each do |name, doc|
+      result = SceneValidator.validate(doc)
+      refute_nil result, name
+      assert_equal reasons.fetch(name), result[1], name
+    end
   end
 end
 

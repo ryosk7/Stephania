@@ -1202,6 +1202,146 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List image assets */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Assets */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Asset"][];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Upload a PNG (raw body, Content-Type image/png); content-addressed
+         * @description id = first 16 hex digits of the file's SHA-256. Uploading identical
+         *     content returns the existing asset with 200. At most 8 MiB, 1..4096
+         *     pixels per side, 256 assets.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    name?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "image/png": string;
+                };
+            };
+            responses: {
+                /** @description Already stored */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Asset"];
+                    };
+                };
+                /** @description Stored */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Asset"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** The PNG itself (immutable, cacheable) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description PNG */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        /** Delete an asset no scene references (409 asset_in_use otherwise) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/program/transition": {
         parameters: {
             query?: never;
@@ -1216,7 +1356,9 @@ export interface paths {
          * @description Succeeds only after the engine acknowledges frame-boundary application
          *     (response `engine.first_frame_index`). Program is unchanged on 501
          *     not_implemented (compositor disabled), 409 program_inactive (no stream
-         *     running) or 503 program_timeout.
+         *     running), 503 program_timeout, or 422 invalid_scene when an image
+         *     asset cannot be loaded. With a fade the acknowledged frame is the
+         *     first one showing any of the new Program.
          */
         post: {
             parameters: {
@@ -1230,6 +1372,7 @@ export interface paths {
                     "application/json": {
                         scene_id: components["schemas"]["Id"];
                         revision: number;
+                        transition?: components["schemas"]["transition"];
                     };
                 };
             };
@@ -1249,6 +1392,7 @@ export interface paths {
                                 scene_id: string;
                                 revision: number;
                                 first_frame_index: number;
+                                transition?: components["schemas"]["transition"];
                             };
                         };
                     };
@@ -1266,6 +1410,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Asset: {
+            id: string;
+            name: string;
+            width: number;
+            height: number;
+            bytes: number;
+            created_at_unix: number;
+        };
         /**
          * @description operator may start/stop, switch Program and change audio; it cannot edit scenes or manage accounts and credentials.
          * @enum {unknown}
@@ -1318,6 +1470,7 @@ export interface components {
                  *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
                  *     too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
                  *     weak_password(422) user_exists(409) last_admin(409)
+                 *     unknown_asset(422) invalid_asset(422) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */
@@ -1356,7 +1509,7 @@ export interface components {
                 mean_luma: number;
             }[];
         };
-        "scene.schema": {
+        v1: {
             /** @constant */
             version: 1;
             name: string;
@@ -1371,6 +1524,178 @@ export interface components {
                 visible: boolean;
             }[];
         };
+        v2: {
+            /** @constant */
+            version: 2;
+            name: string;
+            canvas?: {
+                background: string;
+            };
+            layers: ({
+                id: string;
+                x: number;
+                y: number;
+                width: number;
+                height: number;
+                visible: boolean;
+                /** @description Percent; default 100 */
+                opacity?: number;
+                /** @description Degrees clockwise about the layer centre; default 0 */
+                rotation?: number;
+                /** @constant */
+                type: "video";
+                /** @enum {unknown} */
+                source: "hdmi" | "phone:rear" | "phone:front";
+                /**
+                 * @description Default stretch
+                 * @enum {unknown}
+                 */
+                fit?: "stretch" | "contain" | "cover";
+                /** @description 1/10000 of the source per side; left+right and top+bottom at most 9000 */
+                crop?: {
+                    left: number;
+                    top: number;
+                    right: number;
+                    bottom: number;
+                };
+            } | {
+                id: string;
+                x: number;
+                y: number;
+                width: number;
+                height: number;
+                visible: boolean;
+                /** @description Percent; default 100 */
+                opacity?: number;
+                /** @description Degrees clockwise about the layer centre; default 0 */
+                rotation?: number;
+                /** @constant */
+                type: "image";
+                asset: string;
+                /**
+                 * @description Default stretch
+                 * @enum {unknown}
+                 */
+                fit?: "stretch" | "contain" | "cover";
+                /** @description Studio template the image was rendered from (engine ignores it) */
+                template?: {
+                    id: string;
+                    vars: {
+                        [key: string]: string;
+                    };
+                };
+            } | {
+                id: string;
+                x: number;
+                y: number;
+                width: number;
+                height: number;
+                visible: boolean;
+                /** @description Percent; default 100 */
+                opacity?: number;
+                /** @description Degrees clockwise about the layer centre; default 0 */
+                rotation?: number;
+                /** @constant */
+                type: "color";
+                color: string;
+            })[];
+        };
+        /** @description Scene document. Version 1 (legacy drafts) and version 2 (typed layers). Semantic rules a schema cannot express — unique layer ids, layers inside the 1920x1080 canvas, crop sums — are enforced by src/scene.rs, services/control/lib/scene_validator.rb and apps/studio/src/scene.ts against contracts/fixtures/scenes. See docs/SCENE.md. */
+        "scene.schema": {
+            $defs: {
+                v1: {
+                    /** @constant */
+                    version: 1;
+                    name: string;
+                    layers: {
+                        id: string;
+                        /** @enum {unknown} */
+                        source: "hdmi" | "phone:rear" | "phone:front";
+                        x: number;
+                        y: number;
+                        width: number;
+                        height: number;
+                        visible: boolean;
+                    }[];
+                };
+                v2: {
+                    /** @constant */
+                    version: 2;
+                    name: string;
+                    canvas?: {
+                        background: string;
+                    };
+                    layers: ({
+                        id: string;
+                        x: number;
+                        y: number;
+                        width: number;
+                        height: number;
+                        visible: boolean;
+                        /** @description Percent; default 100 */
+                        opacity?: number;
+                        /** @description Degrees clockwise about the layer centre; default 0 */
+                        rotation?: number;
+                        /** @constant */
+                        type: "video";
+                        /** @enum {unknown} */
+                        source: "hdmi" | "phone:rear" | "phone:front";
+                        /**
+                         * @description Default stretch
+                         * @enum {unknown}
+                         */
+                        fit?: "stretch" | "contain" | "cover";
+                        /** @description 1/10000 of the source per side; left+right and top+bottom at most 9000 */
+                        crop?: {
+                            left: number;
+                            top: number;
+                            right: number;
+                            bottom: number;
+                        };
+                    } | {
+                        id: string;
+                        x: number;
+                        y: number;
+                        width: number;
+                        height: number;
+                        visible: boolean;
+                        /** @description Percent; default 100 */
+                        opacity?: number;
+                        /** @description Degrees clockwise about the layer centre; default 0 */
+                        rotation?: number;
+                        /** @constant */
+                        type: "image";
+                        asset: string;
+                        /**
+                         * @description Default stretch
+                         * @enum {unknown}
+                         */
+                        fit?: "stretch" | "contain" | "cover";
+                        /** @description Studio template the image was rendered from (engine ignores it) */
+                        template?: {
+                            id: string;
+                            vars: {
+                                [key: string]: string;
+                            };
+                        };
+                    } | {
+                        id: string;
+                        x: number;
+                        y: number;
+                        width: number;
+                        height: number;
+                        visible: boolean;
+                        /** @description Percent; default 100 */
+                        opacity?: number;
+                        /** @description Degrees clockwise about the layer centre; default 0 */
+                        rotation?: number;
+                        /** @constant */
+                        type: "color";
+                        color: string;
+                    })[];
+                };
+            };
+        } & (components["schemas"]["v1"] | components["schemas"]["v2"]);
         /** @description audio.status result (docs/AUDIO.md). levels/master only while running. */
         audio_status: {
             running: boolean;
@@ -1411,6 +1736,15 @@ export interface components {
                 gain_db?: number;
                 muted?: boolean;
             }[];
+        };
+        /** @description scene.apply params.transition (optional; default cut). The ack names the first frame showing any of the new Program. */
+        transition: {
+            /** @constant */
+            type: "cut";
+        } | {
+            /** @constant */
+            type: "fade";
+            duration_ms: number;
         };
     };
     responses: {

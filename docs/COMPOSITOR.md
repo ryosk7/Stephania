@@ -1,4 +1,4 @@
-# Reference compositor (Phase 3 start)
+# Reference compositor
 
 `src/compositor.rs` is the deterministic CPU reference. `src/composition.rs` puts it in the live media path, **on by default** (`T3BOX_COMPOSITOR=0` removes the stage, diagnostics only):
 
@@ -20,4 +20,12 @@
 - `ProgramSwitch`: validated immutable Program snapshots, swapped only at a frame boundary; the ack names the first frame that used the new Program. A superseded pending request's waiter observes failure, never false success.
 - Golden FNV-1a hashes of a three-input pattern lock the reference output. Optimised NEON/libyuv/GPU paths must reproduce them exactly.
 
-Not yet: alpha/opacity, crop, rotate, fit modes, images/text, transitions, bilinear/filtered scaling, integration with capture/encoder threads, HDMI fast-path bypass selection, and any performance measurement (none has been taken on a Pi 5; do not quote numbers).
+Scene v2 (docs/SCENE.md):
+
+- Opacity, rotation (integer degrees, Q16 sine table), fit (stretch/contain/cover) and crop go through one integer-only mapping (Q8 positions) with nearest-neighbour sampling and straight-alpha blending; no floating point, so x86 and Arm frames are identical. Plain video layers keep the original path and its golden hashes; a second golden hash locks the v2 path.
+- Image (PNG asset, straight alpha) and colour layers are static: rendered into an `Overlay` (Y/U/V + luma and chroma alpha) once per output size — on the IPC thread before the request reaches the media thread — and only blended per frame. RGB→YCbCr is BT.709 limited range in integers.
+- Canvas background colour; a missing video source is still drawn black (signal loss stays visible).
+- Fade transitions: `ProgramSwitch::request_with(program, Transition::Fade{duration_us})`; the stage composes the outgoing Program into a second buffer and cross-fades by frame timestamps. The ack is the first frame showing any of the new Program.
+- CI `arm64-composition` additionally fades in a v2 scene with an image asset and checks, after H.264 decoding, that the region is grey before the ack, rises monotonically over the 15 fade frames and is the asset's colour afterwards; a scene with a missing asset is refused with Program unchanged.
+
+Not yet: bilinear/filtered scaling and NEON/libyuv optimisation of the generic path, and any performance measurement on a Pi 5 (none has been taken; do not quote numbers).

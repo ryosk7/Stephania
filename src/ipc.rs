@@ -121,7 +121,7 @@ pub trait EngineControl: Send + Sync {
     fn stop(&self);
     /// Apply a validated scene to Program and return only after the media
     /// thread acknowledged frame-boundary application. Default: fail closed.
-    fn apply_scene(&self, _scene_id: &str, _revision: u64, _scene: &Value) -> Result<Value, IpcError> {
+    fn apply_scene(&self, _scene_id: &str, _revision: u64, _scene: &Value, _transition: crate::compositor::Transition) -> Result<Value, IpcError> {
         Err(ipc_err(code::NOT_IMPLEMENTED, "compositor is not enabled; Program unchanged"))
     }
     /// Program on air (scene_id, revision); revision 0 = built-in HDMI only.
@@ -244,6 +244,22 @@ fn no_params(params: Option<&Value>) -> Result<(), IpcError> {
     }
 }
 
+/// `{"type":"cut"}` (default) or `{"type":"fade","duration_ms":1..=5000}`.
+pub fn parse_transition(v: Option<&Value>) -> Result<crate::compositor::Transition, IpcError> {
+    use crate::compositor::{Transition, MAX_FADE_MS};
+    let bad = || ipc_err(code::INVALID_PARAMS, "transition must be {type: cut} or {type: fade, duration_ms: 1..=5000}");
+    let Some(v) = v else { return Ok(Transition::Cut) };
+    let m = v.as_object().ok_or_else(bad)?;
+    match m.get("type").and_then(Value::as_str) {
+        Some("cut") if m.len() == 1 => Ok(Transition::Cut),
+        Some("fade") if m.len() == 2 => {
+            let ms = m.get("duration_ms").and_then(Value::as_u64).filter(|d| (1..=MAX_FADE_MS).contains(d)).ok_or_else(bad)?;
+            Ok(Transition::Fade { duration_us: ms * 1000 })
+        }
+        _ => Err(bad()),
+    }
+}
+
 fn scene_param(params: Option<&Value>) -> Result<&Value, IpcError> {
     let m = params_object(params)?.ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.scene required"))?;
     if m.len() != 1 {
@@ -282,25 +298,26 @@ pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>
         }
         "scene.validate" => {
             let scene = scene_param(params)?;
-            crate::scene::validate_draft_v1(scene)
+            crate::scene::validate(scene)
                 .map_err(|e| ipc_err(code::INVALID_SCENE, e.to_string()))?;
-            Ok(json!({"valid": true, "version": 1}))
+            Ok(json!({"valid": true, "version": scene["version"].clone()}))
         }
         "scene.apply" => {
             let m = params_object(params)?.ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params required"))?;
-            if m.len() != 3 {
-                return Err(ipc_err(code::INVALID_PARAMS, "params must be {scene, scene_id, revision}"));
+            if !(3..=4).contains(&m.len()) || (m.len() == 4 && !m.contains_key("transition")) {
+                return Err(ipc_err(code::INVALID_PARAMS, "params must be {scene, scene_id, revision, transition?}"));
             }
+            let transition = parse_transition(m.get("transition"))?;
             let scene = m.get("scene").ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.scene required"))?;
             let scene_id = m.get("scene_id").and_then(Value::as_str)
                 .filter(|s| (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
                 .ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.scene_id invalid"))?;
             let revision = m.get("revision").and_then(Value::as_u64).filter(|r| *r >= 1)
                 .ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.revision must be >= 1"))?;
-            crate::scene::validate_draft_v1(scene)
+            crate::scene::validate(scene)
                 .map_err(|e| ipc_err(code::INVALID_SCENE, e.to_string()))?;
             // Fail closed: success only after a frame-boundary acknowledgement.
-            engine.apply_scene(scene_id, revision, scene)
+            engine.apply_scene(scene_id, revision, scene, transition)
         }
         // Audio inputs (docs/AUDIO.md): configuration applies live; status
         // carries per-input health and levels while streaming.
@@ -529,7 +546,7 @@ mod tests {
         }
         fn stop(&self) { self.calls.lock().unwrap().push("stop"); }
         fn compositor_enabled(&self) -> bool { !self.compositor_off }
-        fn apply_scene(&self, _: &str, _: u64, _: &Value) -> Result<Value, IpcError> {
+        fn apply_scene(&self, _: &str, _: u64, _: &Value, _: crate::compositor::Transition) -> Result<Value, IpcError> {
             if self.compositor_off {
                 return Err(ipc_err(code::NOT_IMPLEMENTED, "compositor disabled; Program unchanged"));
             }

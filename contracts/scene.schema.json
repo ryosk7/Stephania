@@ -1,70 +1,387 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "version",
-    "name",
-    "layers"
+  "description": "Scene document. Version 1 (legacy drafts) and version 2 (typed layers). Semantic rules a schema cannot express — unique layer ids, layers inside the 1920x1080 canvas, crop sums — are enforced by src/scene.rs, services/control/lib/scene_validator.rb and apps/studio/src/scene.ts against contracts/fixtures/scenes. See docs/SCENE.md.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/v1"
+    },
+    {
+      "$ref": "#/$defs/v2"
+    }
   ],
-  "properties": {
-    "version": {
-      "const": 1
+  "$defs": {
+    "v1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "name",
+        "layers"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "source",
+              "x",
+              "y",
+              "width",
+              "height",
+              "visible"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+              },
+              "source": {
+                "enum": [
+                  "hdmi",
+                  "phone:rear",
+                  "phone:front"
+                ]
+              },
+              "x": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1919
+              },
+              "y": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1079
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1920
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1080
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
     },
-    "name": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 100
-    },
-    "layers": {
-      "type": "array",
-      "maxItems": 16,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "source",
-          "x",
-          "y",
-          "width",
-          "height",
-          "visible"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "pattern": "^[a-zA-Z0-9_-]{1,64}$"
-          },
-          "source": {
-            "enum": [
-              "hdmi",
-              "phone:rear",
-              "phone:front"
+    "v2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "name",
+        "layers"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "canvas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background"
+          ],
+          "properties": {
+            "background": {
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$"
+            }
+          }
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "type",
+                  "x",
+                  "y",
+                  "width",
+                  "height",
+                  "visible",
+                  "source"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                  },
+                  "x": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1919
+                  },
+                  "y": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1079
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1920
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1080
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  },
+                  "opacity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Percent; default 100"
+                  },
+                  "rotation": {
+                    "type": "integer",
+                    "minimum": -180,
+                    "maximum": 180,
+                    "description": "Degrees clockwise about the layer centre; default 0"
+                  },
+                  "type": {
+                    "const": "video"
+                  },
+                  "source": {
+                    "enum": [
+                      "hdmi",
+                      "phone:rear",
+                      "phone:front"
+                    ]
+                  },
+                  "fit": {
+                    "enum": [
+                      "stretch",
+                      "contain",
+                      "cover"
+                    ],
+                    "description": "Default stretch"
+                  },
+                  "crop": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "left",
+                      "top",
+                      "right",
+                      "bottom"
+                    ],
+                    "description": "1/10000 of the source per side; left+right and top+bottom at most 9000",
+                    "properties": {
+                      "left": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9000
+                      },
+                      "top": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9000
+                      },
+                      "right": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9000
+                      },
+                      "bottom": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9000
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "type",
+                  "x",
+                  "y",
+                  "width",
+                  "height",
+                  "visible",
+                  "asset"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                  },
+                  "x": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1919
+                  },
+                  "y": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1079
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1920
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1080
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  },
+                  "opacity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Percent; default 100"
+                  },
+                  "rotation": {
+                    "type": "integer",
+                    "minimum": -180,
+                    "maximum": 180,
+                    "description": "Degrees clockwise about the layer centre; default 0"
+                  },
+                  "type": {
+                    "const": "image"
+                  },
+                  "asset": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{16}$"
+                  },
+                  "fit": {
+                    "enum": [
+                      "stretch",
+                      "contain",
+                      "cover"
+                    ],
+                    "description": "Default stretch"
+                  },
+                  "template": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "vars"
+                    ],
+                    "description": "Studio template the image was rendered from (engine ignores it)",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9-]{1,32}$"
+                      },
+                      "vars": {
+                        "type": "object",
+                        "maxProperties": 16,
+                        "propertyNames": {
+                          "pattern": "^[a-z][a-z0-9_.]{0,31}$"
+                        },
+                        "additionalProperties": {
+                          "type": "string",
+                          "maxLength": 200
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "type",
+                  "x",
+                  "y",
+                  "width",
+                  "height",
+                  "visible",
+                  "color"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                  },
+                  "x": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1919
+                  },
+                  "y": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1079
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1920
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1080
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  },
+                  "opacity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Percent; default 100"
+                  },
+                  "rotation": {
+                    "type": "integer",
+                    "minimum": -180,
+                    "maximum": 180,
+                    "description": "Degrees clockwise about the layer centre; default 0"
+                  },
+                  "type": {
+                    "const": "color"
+                  },
+                  "color": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  }
+                }
+              }
             ]
-          },
-          "x": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1919
-          },
-          "y": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1079
-          },
-          "width": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1920
-          },
-          "height": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1080
-          },
-          "visible": {
-            "type": "boolean"
           }
         }
       }

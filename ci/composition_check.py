@@ -55,3 +55,21 @@ if on[0] != acks["pip_frame"] or on[-1] != acks["full_frame"] - 1:
 if on[0] == 0 or on[-1] == len(frames) - 1:
     sys.exit("FAIL expected HDMI-only frames before and after the PIP section")
 print("PASS composed Program matches acknowledgements frame-accurately; HDMI before/after (fast path)")
+
+# Scene v2 image layer (opaque blue, BT.709 limited U=240 V=118) faded in over
+# 500 ms in the top-left quadrant: grey before the ack, rising during the
+# fade, blue after it.
+tx0, ty0, tx1, ty1 = 8, 8, w // 2 - 8, h // 2 - 8
+b, fade = acks["brand_frame"], acks["fade_frames"]
+tl = [chroma_mean(f, tx0, ty0, tx1, ty1)[0] for f in frames]
+if not all(abs(u - 128) < 8 for u in tl[:b]):
+    sys.exit("FAIL top-left changed before the v2 scene was acknowledged")
+after = tl[b + fade + 1:]
+if not after or not all(abs(u - 240) < 10 for u in after):
+    sys.exit(f"FAIL image layer not shown after the fade: {[round(u) for u in after[:5]]}")
+ramp = tl[b:b + fade]
+# The acknowledged frame carries the smallest non-zero weight (1/255), so the
+# rise is visible from the next frame on.
+if not (tl[b + 1] > tl[b] + 3 and all(y >= x - 3 for x, y in zip(ramp, ramp[1:])) and 150 < ramp[len(ramp) // 2] < 220):
+    sys.exit(f"FAIL fade is not a gradual rise from the acknowledged frame: {[round(u) for u in ramp]}")
+print(f"PASS v2 image asset faded in from frame {b} over {fade} frames: {[round(u) for u in ramp]}")

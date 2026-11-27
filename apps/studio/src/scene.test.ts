@@ -13,5 +13,8 @@ describe('shared scene fixtures (same suite as Rust and Ruby)', () => {
     expect(fixtures('invalid').length).toBeGreaterThan(0);
   });
   it.each(fixtures('valid'))('accepts %s', (_, text) => expect(validateSceneText(text).violation).toBeNull());
-  it.each(fixtures('invalid'))('rejects %s', (_, text) => expect(validateSceneText(text).violation).not.toBeNull());
+  const reasons = JSON.parse(readFileSync(join(dir, 'invalid-reasons.json'), 'utf8')) as Record<string, string>;
+  it.each(fixtures('invalid'))('rejects %s with the shared reason', (name, text) => {
+    expect(validateSceneText(text).violation?.reason).toBe(reasons[name]);
+  });
 });

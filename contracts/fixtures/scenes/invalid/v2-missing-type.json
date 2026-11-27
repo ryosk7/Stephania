@@ -1,0 +1,78 @@
+{
+ "version": 2,
+ "name": "Keynote v2",
+ "canvas": {
+  "background": "#102030"
+ },
+ "layers": [
+  {
+   "id": "bg",
+   "color": "#1A2B3C",
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 1080,
+   "visible": true
+  },
+  {
+   "id": "slides",
+   "type": "video",
+   "source": "hdmi",
+   "x": 0,
+   "y": 0,
+   "width": 1440,
+   "height": 1080,
+   "visible": true,
+   "fit": "contain",
+   "crop": {
+    "left": 0,
+    "top": 500,
+    "right": 0,
+    "bottom": 500
+   }
+  },
+  {
+   "id": "rear",
+   "type": "video",
+   "source": "phone:rear",
+   "x": 1440,
+   "y": 0,
+   "width": 480,
+   "height": 540,
+   "visible": true,
+   "fit": "cover",
+   "opacity": 90,
+   "rotation": -15
+  },
+  {
+   "id": "logo",
+   "type": "image",
+   "asset": "0123456789abcdef",
+   "x": 1700,
+   "y": 960,
+   "width": 200,
+   "height": 100,
+   "visible": true,
+   "opacity": 80
+  },
+  {
+   "id": "lower",
+   "type": "image",
+   "asset": "fedcba9876543210",
+   "x": 80,
+   "y": 880,
+   "width": 1000,
+   "height": 160,
+   "visible": true,
+   "fit": "stretch",
+   "template": {
+    "id": "lower-third",
+    "vars": {
+     "speaker.name": "内田 涼介",
+     "speaker.title": "T3Box",
+     "event.name": "LT Night"
+    }
+   }
+  }
+ ]
+}
