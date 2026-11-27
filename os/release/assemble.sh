@@ -32,7 +32,8 @@ openssl pkeyutl -verify -pubin -inkey "$dist/release-signing.pub" -rawin \
 cp "$inst/stephania-os.zip" "$dist/$name.zip"
 
 # Raw image for recovery flashing.
-xz -T0 -9 -c --keep "$img/stephania.img" >"$dist/$name.img.xz"
+# STEPHANIA_RELEASE_XZ_LEVEL lowers the level for CI checks only (default 9).
+xz -T0 "-${STEPHANIA_RELEASE_XZ_LEVEL:-9}" -c --keep "$img/stephania.img" >"$dist/$name.img.xz"
 
 # Signed verity update bundle (os/rauc/system.conf, docs/UPDATE.md).
 b=$(mktemp -d)

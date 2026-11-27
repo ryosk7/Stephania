@@ -4,11 +4,16 @@
 # disks; refusal when the target is ambiguous; power cuts after every stage
 # with resume or a clear recovery instruction; then the installed card boots
 # and passes the image smoke test.
-# Usage (root): ci/installer-e2e.sh <image-out-dir> <installer-out-dir>
+# Usage (root): ci/installer-e2e.sh <image-out-dir> <installer-out-dir> [group]
+#   group: all (default), or one of installer-refuse (ambiguous target,
+#   cuts before any write), installer-staged, installer-written (cut, resume,
+#   then the installed card boots) for parallel CI jobs.
 set -Eeuo pipefail
 img=$(cd "$1" && pwd)
 inst=$(cd "$2" && pwd)
 zip="$inst/zip"
+group=${3:-all}
+want() { [ "$group" = all ] || [ "$group" = "installer-$1" ]; }
 work=$(mktemp -d)
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; for l in "$work"/*.log; do echo "--- $l"; tail -40 "$l"; done; exit 1; }
@@ -37,6 +42,9 @@ run_installer() { # log extra-cmdline disks...
 }
 digest() { sha256sum "$1" | cut -d' ' -f1; }
 
+decoy "$work/usb.img"; hu=$(digest "$work/usb.img")
+
+if want refuse; then
 # 1. Ambiguous: two cards with the same ZIP. Nothing may be written.
 card "$work/a.img" 4096; card "$work/b.img" 4096
 ha=$(digest "$work/a.img"); hb=$(digest "$work/b.img")
@@ -46,8 +54,8 @@ grep -aq "expected exactly one Stephania install medium, found 2" "$work/ambiguo
 pass "two candidate media: refused, both unchanged"
 
 # 2. Power cut after verify (before any write): card unchanged, then a normal run works.
-card "$work/c.img" 4096; decoy "$work/usb.img"
-hc=$(digest "$work/c.img"); hu=$(digest "$work/usb.img")
+card "$work/c.img" 4096
+hc=$(digest "$work/c.img")
 run_installer "$work/verify.log" "stephania.install_fail_at=verify" "$work/usb.img" "$work/c.img"
 grep -aq "TEST power cut after stage verify" "$work/verify.log" || fail "no power cut after verify"
 [ "$(digest "$work/c.img")" = "$hc" ] || fail "card changed before the destructive stage"
@@ -59,9 +67,11 @@ grep -aq "stage partition" "$work/partition.log" || fail "partition stage not re
 run_installer "$work/partition-resume.log" "" "$work/usb.img" "$work/c.img"
 grep -aq "RECOVERY: power was lost before the installation files were saved" "$work/partition-resume.log" || fail "no recovery instruction after a cut in the unsafe window"
 pass "power cut in the partition window: installer boots again and asks for the ZIP to be copied again"
+fi
 
 # 4/5. Power cuts after staging and after writing: the next boot resumes and completes.
 for stage in staged written; do
+  want "$stage" || continue
   card "$work/c.img" 4096
   run_installer "$work/$stage.log" "stephania.install_fail_at=$stage" "$work/usb.img" "$work/c.img"
   grep -aq "TEST power cut after stage $stage" "$work/$stage.log" || fail "no power cut after $stage"
@@ -74,6 +84,7 @@ done
 pass "unrelated USB disk never touched"
 
 # 6. The installed card: layout, selector content, and it boots.
+if want written; then
 sfdisk -J "$work/c.img" | python3 -c '
 import json,sys; p=json.load(sys.stdin)["partitiontable"]
 assert p["label"]=="gpt", p["label"]
@@ -88,4 +99,5 @@ pass "GPT A/B layout; selector holds autoboot.txt and the install record"
 mkdir -p "$work/boot"; cp "$img/vmlinuz" "$img/initrd.img" "$work/boot/"; cp "$work/c.img" "$work/boot/stephania.img"
 ci/qemu-smoke.sh "$work/boot" amd64 || fail "installed card does not boot"
 pass "installed card boots and passes the image smoke test"
-echo "installer end-to-end: passed"
+fi
+echo "installer end-to-end ($group): passed"

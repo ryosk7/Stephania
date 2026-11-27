@@ -1,11 +1,16 @@
 name: Mobile iOS build
 # Full simulator build of Stephania Connect with its native modules
-# (pinned-fetch, camera). macOS runners are billed at a multiple of Linux
-# minutes on private repositories, so this runs only when the native iOS
-# side or its dependencies change, and on demand.
+# (accessory setup, pinned-fetch, camera): about 15 minutes on a macOS
+# runner, so it is not a pull-request check (those stay within about three
+# minutes). It runs on main when the native iOS side or its dependencies
+# change, weekly, and on demand. Swift-only cores are still tested on pull
+# requests (studio.yml: mobile-ios-trust, mobile-ios-camera).
 on:
   workflow_dispatch:
-  pull_request:
+  schedule:
+    - cron: '41 19 * * 0'
+  push:
+    branches: [main]
     paths:
       - apps/mobile/modules/*/ios/**
       - apps/mobile/app.json
@@ -13,12 +18,19 @@ on:
       - .github/workflows/mobile-ios-build.yml
 permissions:
   contents: read
+defaults:
+  run:
+    # Explicit bash: -o pipefail, so `xcodebuild … | tail` fails with xcodebuild.
+    shell: bash
 jobs:
   ios:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      # Expo SDK 58's Swift packages need a current Xcode 26: older 26.x
+      # compilers reject expo-modules-jsi (a data-race diagnostic).
+      - run: xcodebuild -version
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -26,11 +38,27 @@ jobs:
         working-directory: packages/provisioning-client
       - run: npm ci --no-audit --no-fund
         working-directory: apps/mobile
-      - name: Prebuild and build for the simulator
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json') }}
+          restore-keys: ios-pods-
+      - name: Prebuild
         working-directory: apps/mobile
         env:
           CI: '1'
+        run: npx expo prebuild --platform ios --clean
+      - name: Build (arm64 simulator)
+        working-directory: apps/mobile
         run: |
-          npx expo prebuild --platform ios --clean
           xcodebuild -workspace ios/StephaniaConnect.xcworkspace -scheme StephaniaConnect -configuration Debug \
-            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -50
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build >"$RUNNER_TEMP/xcodebuild.log" 2>&1 \
+            || { grep -nE "error|Error|failed" "$RUNNER_TEMP/xcodebuild.log" | grep -v "warning" | head -80; tail -60 "$RUNNER_TEMP/xcodebuild.log"; exit 1; }
+          tail -5 "$RUNNER_TEMP/xcodebuild.log"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          retention-days: 7
