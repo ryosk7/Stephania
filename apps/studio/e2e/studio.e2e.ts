@@ -73,11 +73,12 @@ test('audio inputs are configured, persisted and applied to the engine', async (
   await mic.getByRole('button', {name: 'ミュート'}).click();
   await expect(mic.getByRole('button', {name: 'ミュート解除'})).toBeVisible();
 
-  // The engine holds the applied configuration...
-  const r = await page.request.get(stack.url + 'api/v1/audio', {headers: {Authorization: 'Bearer ' + TOKEN}});
-  const body = await r.json();
-  const engineMic = body.engine.inputs.find((i: {id: string}) => i.id === 'mic');
-  expect(engineMic).toMatchObject({enabled: true, device: 'plughw:CARD=Mic,DEV=0', gain_db: -6, muted: true, state: 'idle'});
+  // The engine holds the applied configuration (controls update before the
+  // debounced/queued saves land, so wait for the engine side)...
+  await expect.poll(async () => {
+    const r = await page.request.get(stack.url + 'api/v1/audio', {headers: {Authorization: 'Bearer ' + TOKEN}});
+    return (await r.json()).engine.inputs.find((i: {id: string}) => i.id === 'mic');
+  }).toMatchObject({enabled: true, device: 'plughw:CARD=Mic,DEV=0', gain_db: -6, muted: true, state: 'idle'});
   // ...and the control plane persisted it across a reload.
   await page.reload();
   await page.getByLabel('管理トークン').fill(TOKEN);
