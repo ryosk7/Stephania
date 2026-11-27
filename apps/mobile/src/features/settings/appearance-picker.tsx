@@ -34,12 +34,12 @@ export function AppearancePicker() {
         return (
           <Pressable key={a} accessibilityRole="radio" accessibilityLabel={appearanceLabel[a]} accessibilityState={{selected}}
             onPress={() => pick(a)} className="flex-1 items-center gap-2.5 active:opacity-80">
-            <View className={`aspect-[3/4] w-full flex-row overflow-hidden rounded-[14px] ${selected ? 'border-2 border-text' : 'border border-border'}`}>
+            <View className={`aspect-[3/4] w-full flex-row overflow-hidden rounded-[14px] ${selected ? 'border-2 border-live' : 'border border-border'}`}>
               {a === 'dark' ? <Half p={look.dark} /> : <Half p={look.light} />}
               {a === 'system' && <Half p={look.dark} />}
               {selected && (
-                <View className="absolute right-1.5 top-1.5 h-5 w-5 items-center justify-center rounded-full bg-text">
-                  <Icon name="check" size={12} strokeWidth={3} color="on-primary" />
+                <View className="absolute right-1.5 top-1.5 h-5 w-5 items-center justify-center rounded-full bg-live">
+                  <Icon name="check" size={12} strokeWidth={3} color="white" />
                 </View>
               )}
             </View>

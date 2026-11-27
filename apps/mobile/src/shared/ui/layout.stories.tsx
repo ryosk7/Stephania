@@ -63,8 +63,8 @@ function SheetDemo() {
   return (
     <>
       <SecondaryButton title="Open sheet" onPress={() => setOpen(true)} />
-      <Sheet visible={open} title="Stop the stream?" icon="stop" onClose={() => setOpen(false)}>
-        <Footnote>Viewers will see the stream end.</Footnote>
+      <Sheet visible={open} title="Stop the stream?" subtitle="Viewers will see the stream end." icon="stop" onClose={() => setOpen(false)}>
+        <SecondaryButton title="Keep" onPress={() => setOpen(false)} />
       </Sheet>
     </>
   );

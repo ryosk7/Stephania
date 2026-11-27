@@ -8,7 +8,7 @@ and a screen disagree, change the screen or change this file with a reason.
 
 ## 1. What the interfaces are for
 
-- **Connect** sets a Stephania up (QR, Bluetooth, Wi-Fi), operates a show
+- **Connect** sets a Stephania up (one tap over Bluetooth, then Wi-Fi), operates a show
   (start/stop, scenes, audio) and turns the phone into one or two cameras.
   It is used standing next to a stage, often in a dark room, with one hand,
   while something is live. A mistake is public.
@@ -81,7 +81,7 @@ Guidelines: Apple HIG — hit targets at least 44×44 pt
    press. Words stay on the one primary action and on anything that cannot
    be undone (icon plus one word: "Control", "Stop", "Join"), on names
    and addresses, and on errors. Explanations shrink to a short line or a
-   picture (PC → QR) rather than a paragraph.
+   picture rather than a paragraph.
 
 ## 4. Tokens (`apps/mobile/src/global.css`)
 
@@ -120,7 +120,7 @@ with the system font size setting.
 
 Spacing on Tailwind's 4-pt scale (`gap-2` = 8, `p-4` = 16).
 Screen padding 16. Radius: `rounded-card` 16, `rounded-button` 14,
-`rounded-control` 12, `rounded-tile` 12, `rounded-sheet` 24,
+`rounded-control` 12, `rounded-tile` 12, `rounded-sheet` 32,
 `rounded-full` (chips and badges only). Buttons are
 rounded rectangles 52 high; minimum hit target 44.
 
@@ -153,7 +153,7 @@ instead of boolean modes.
 | `LiveBadge` | `<LiveBadge elapsed?>` | red "LIVE" tag + tabular time |
 | `StatusView` | `<StatusView icon title body tone>{actions}</StatusView>` | centred state: icon in a 64 ring, title, sentence, actions |
 | `Card` | `<Card outlined?>`, `<Card.Header title>`, `<Card.Body>` | surface, radius 16, 1 px border |
-| `Sheet` | `<Sheet visible title icon? onClose>{…}</Sheet>` | app-drawn bottom sheet: rename, stop confirmation (no system alerts) |
+| `Sheet` | `<Sheet visible title? icon? onClose>{…}</Sheet>` | app-drawn floating bottom sheet with a grabber and no close button (swipe down, tap outside, Android back): device setup, Wi-Fi password, rename, stop confirmation (no system alerts) |
 | `Notice` | `<Notice tone icon?>` | short line with an icon in a tinted, bordered box |
 | `Field` | `<Field label icon? secure? …TextInput props>` | with `icon` the icon replaces the visible label (the label is spoken) |
 | `Icon` | `<Icon name size tone? color?>` | Lucide icons by name; `tone` for state, `color` for any other token |
@@ -168,20 +168,28 @@ both themes (§7).
   `Card` per enrolled device: name, `StatusChip` (broadcast icon + on-air
   time; Wi-Fi-off in amber when unreachable, with "Same Wi-Fi as this
   Stephania?"), a square camera button and `PrimaryButton` "Control". Empty
-  state: card "Set up a Stephania device" with the PC → QR picture and "Scan".
+  state: a card "Looking for a Stephania device…" with the Bluetooth icon;
+  an unclaimed device nearby opens the setup sheet by itself.
 - **Settings** (`settings`) — Appearance: three preview tiles (system,
   light, dark, each a miniature screen in that theme) with the theme's
-  icon under it; default is the system. About: Licences (every package that
+  icon under it; the chosen tile has the same 2 px `live` outline and
+  check badge as the on-air layout tile; default is the system. About: Licences (every package that
   ships in the app with its licence text, `scripts/notices.mjs`) and the
   version.
-- **Setup** (stack, Alexa sequence; routes `setup/scan`, `setup/nearby`,
-  `setup/wifi`): *Scan* — dark viewfinder with corner
-  brackets, the PC → QR picture and one line, `SecondaryButton`
-  "Nearby"; *Nearby* — `List` of devices with signal bars, rescan and
-  scan-code icons in the top bar; *Wi-Fi* — `List` of networks with lock
-  and signal icons, rescan in the top bar, password `Field` with a lock
-  icon, `PrimaryButton` "Join →", then progress states (joining, issuing
-  access); *Done* — `StatusView` with a check, `PrimaryButton` "Control".
+- **Setup** — no QR, no codes, no choices before the first tap. The first
+  phone to claim an unclaimed device owns it (contracts/ble-protocol.md).
+  *Sheet* — on iOS 18 the system AccessorySetupKit sheet (device picture,
+  name, "Set up"; no Bluetooth permission prompt); elsewhere our own bottom
+  sheet with the same content. Several devices: the same full-size card,
+  paged sideways, the selected card centred with the next one peeking in,
+  dots under it — never a "Choose a device" list. Sheets have a grabber
+  and no close button; swipe down or tap outside to dismiss. *Wi-Fi*
+  (route `setup/wifi`) — skipped when the device reports a LAN cable.
+  Otherwise the networks the **device** sees, strongest first, with lock
+  and signal icons and rescan in the top bar (the phone's own Wi-Fi is not
+  read, so no location permission); tapping one opens a password sheet
+  (`Field` with a lock icon, `PrimaryButton` "Join"). Then straight to
+  Control.
 - **Control** (`device/[id]`) — Tesla header: device name as large title
   with a rename button (the name lives on this phone only: host name,
   certificate and mDNS name stay, so nothing is set up again; rename is a

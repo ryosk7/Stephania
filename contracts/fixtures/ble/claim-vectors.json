@@ -1,0 +1,35 @@
+{
+ "description": "Protocol v3 claim vectors computed with Python cryptography: shared = X25519(device, phone); owner_key = MAC(shared, 'stephania-owner-key-v2', nonce, owner_id, device_key, phone_key); confirm = MAC(owner_key, 'stephania-claim-confirm-v1', nonce); MAC fields are u32-BE length prefixed.",
+ "vectors": [
+  {
+   "device_private": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "device_key": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f",
+   "phone_private": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+   "phone_key": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+   "nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+   "owner_id": "iphone-1",
+   "shared": "9663aa1da97e848a914a436d04163dfbb89178f107f1b5b77ed3854203382854",
+   "owner_key": "488c5367f1511d937263e36e79dac66be340036ec7f33832e562823bccaa1814",
+   "confirm": "a27a314858d51b933941233e6a66e780f6b362e0f69345bb527e09a115e47673",
+   "operation": "wifi.configure",
+   "operation_nonce": "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+   "payload_hex": "7b2273736964223a224c54222c227365637572697479223a226f70656e227d",
+   "operation_proof": "822c8805f0c30a63f0e84650fb6732794f86d93a5729545ec8f9911e3221217f"
+  },
+  {
+   "device_private": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "device_key": "b0d08f35b4683381489afb32825e59152d47d19bc9e050d6d5a954984c9d1e2c",
+   "phone_private": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+   "phone_key": "5fef13fc76023a9ee6ded987b6aa93958cdc2097ef9fc845d5319c9ca100d35e",
+   "nonce": "1111111111111111111111111111111111111111111111111111111111111111",
+   "owner_id": "pixel.8_a-B",
+   "shared": "8931ef9cc61c9ee4cf257f793d9f1527d0926a0adefd86775b0330e8733ec039",
+   "owner_key": "9a2666a9817a0fd6890209f4f204f7c7bbd93aefae891ce8fbb65f3ddc4aca3e",
+   "confirm": "69b9d6c39c040e028021a9805929b4fdcf3085df9ba4ed988a94cd552fc1ffb9",
+   "operation": "wifi.scan",
+   "operation_nonce": "2222222222222222222222222222222222222222222222222222222222222222",
+   "payload_hex": "",
+   "operation_proof": "201949657e92510a8b70371a0b31ad8ef47f66f0cedad3a29ae471931cb11ada"
+  }
+ ]
+}

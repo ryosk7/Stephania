@@ -13,7 +13,13 @@
         "NSLocalNetworkUsageDescription": "Uses the local network to control a Stephania device on the same Wi-Fi.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
-        }
+        },
+        "NSAccessorySetupKitSupports": [
+          "Bluetooth"
+        ],
+        "NSAccessorySetupBluetoothServices": [
+          "7C3B0200-5D1E-4A6F-9B0E-3A1F2C4D5E60"
+        ]
       }
     },
     "android": {
@@ -32,10 +38,10 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Uses the camera to read the Stephania setup QR code and to send your camera picture to your Stephania device.",
+          "cameraPermission": "Uses the camera to send your camera picture to your Stephania device.",
           "microphonePermission": false,
           "recordAudioAndroid": false,
-          "barcodeScannerEnabled": true
+          "barcodeScannerEnabled": false
         }
       ],
       [

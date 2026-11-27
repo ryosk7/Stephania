@@ -14,7 +14,7 @@ export function DeviceGate({handle, children}: {handle: DeviceHandle; children: 
   if (handle.state === 'loading') return <Screen header={<TopBar onBack={() => router.back()} />}><StatusView icon={'broadcast'} title="Opening…"><ActivityIndicator color={spinner} /></StatusView></Screen>;
   if (handle.state === 'missing') {
     return <Screen header={<TopBar onBack={() => router.back()} />}><StatusView icon={'warning'} tone="warning" title="No access to this Stephania device" body="Set it up again over Bluetooth to give this phone access.">
-      <PrimaryButton title="Nearby" icon="bluetooth" accessibilityLabel="Find the Stephania device nearby" onPress={() => router.replace('/setup/nearby')} />
+      <PrimaryButton title="Set up" icon="bluetooth" accessibilityLabel="Set it up again next to the device" onPress={() => router.replace('/')} />
     </StatusView></Screen>;
   }
   return <>{children}</>;

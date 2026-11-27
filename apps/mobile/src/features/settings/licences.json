@@ -733,6 +733,12 @@
    "text": "f36671a5487c9c50"
   },
   {
+   "name": "@noble/curves",
+   "version": "1.9.7",
+   "license": "MIT",
+   "text": "4f221aee6e072336"
+  },
+  {
    "name": "@noble/hashes",
    "version": "1.8.0",
    "license": "MIT",
@@ -1761,6 +1767,12 @@
   {
    "name": "expo-asset",
    "version": "58.0.21",
+   "license": "MIT",
+   "text": "371567d5d8999eef"
+  },
+  {
+   "name": "expo-blur",
+   "version": "58.0.6",
    "license": "MIT",
    "text": "371567d5d8999eef"
   },

@@ -32,7 +32,7 @@ mod unix {
     use std::time::Instant;
     use stephania::ipc::{self, PeerPolicy};
     use stephania::nm::{NetworkManagerBackend, Nmcli};
-    use stephania::provisioning::{hex, import_setup_file, load_or_create_setup_secret, OwnershipManager, SetupImport};
+    use stephania::provisioning::{hex, OwnershipManager};
     use stephania::management_tokens::TokenStore;
     use stephania::provisioning_gatt::{FileOwnershipStore, Management, NetworkBackend, OwnershipStore, RpcService, ScanResult};
 
@@ -51,6 +51,9 @@ mod unix {
         fn connect(&mut self, config: &stephania::provisioning::WifiConfiguration) -> Result<(), String> {
             if config.ssid == b"virtual-lab" { Ok(()) } else { Err("not found".into()) }
         }
+        fn wired(&mut self) -> bool {
+            std::env::var("STEPHANIA_VIRTUAL_WIRED").is_ok_and(|v| v == "1")
+        }
     }
 
     pub fn run() -> Result<(), String> {
@@ -59,18 +62,9 @@ mod unix {
         let policy = PeerPolicy::from_env()?;
         let store = FileOwnershipStore { path: credentials.join("ownership.json") };
         let state = store.load();
-        // First boot: adopt the browser-generated secret copied to the boot
-        // partition (contracts/ble-protocol.md "Setup secret delivery").
-        let setup_file = env_path("STEPHANIA_SETUP_FILE", "/boot/selector/stephania-setup.txt");
-        let secret_path = credentials.join("setup-secret");
-        match import_setup_file(&setup_file, &secret_path, &state).map_err(|e| format!("setup file import: {e}"))? {
-            SetupImport::Absent => {}
-            SetupImport::Imported => eprintln!("stephania-provision: setup secret imported from boot partition"),
-            SetupImport::IgnoredClaimed => eprintln!("stephania-provision: setup file ignored (device already owned) and removed"),
-            SetupImport::Invalid => eprintln!("stephania-provision: invalid setup file removed"),
-        }
-        let secret = load_or_create_setup_secret(&secret_path).map_err(|e| format!("setup secret: {e}"))?;
-        let ownership = OwnershipManager::new(secret, state);
+        // The first phone to claim an unclaimed device owns it (protocol v3);
+        // re-flashing the card is what resets ownership.
+        let ownership = OwnershipManager::new(state);
         eprintln!("stephania-provision: ownership {}", ownership.reported_state());
         // LAN enrollment (management.enroll): endpoint from stephania-pki, token
         // hashes shared with the control plane. Missing PKI fails closed.

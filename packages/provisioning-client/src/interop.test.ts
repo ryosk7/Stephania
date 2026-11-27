@@ -1,6 +1,7 @@
-// TypeScript phone client (protocol v2) against the real Rust stephania-provision
+// TypeScript phone client (protocol v3) against the real Rust stephania-provision
 // binary. Enabled when STEPHANIA_PROVISION_BIN points at a ci-virtual build.
 import {spawn, type ChildProcess} from 'node:child_process';
+import {randomBytes} from 'node:crypto';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {connect, type Socket} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -52,12 +53,12 @@ class SocketTransport implements BleTransport {
   }
 }
 
-describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v2)', () => {
+describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () => {
   let dir: string, child: ChildProcess, sock: Socket;
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'stephania-ts-'));
     child = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(dir, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: dir,
-      STEPHANIA_SETUP_FILE: join(dir, 'none'), STEPHANIA_NETWORK_BACKEND: 'virtual', STEPHANIA_PKI_DIR: join(dir, 'pki'),
+      STEPHANIA_NETWORK_BACKEND: 'virtual', STEPHANIA_PKI_DIR: join(dir, 'pki'),
       STEPHANIA_MANAGEMENT_TOKENS: join(dir, 'tokens.json')}, stdio: 'ignore'});
     for (let i = 0; i < 100 && !existsSync(join(dir, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
     sock = await new Promise<Socket>((resolve, reject) => { const s = connect(join(dir, 'p.sock'), () => resolve(s)); s.on('error', reject); });
@@ -67,16 +68,16 @@ describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v2)', () 
   it('claims, scans and joins with sealed credentials; lost responses are replayed', async () => {
     const t = new SocketTransport(sock, 'AA:00:00:00:00:01');
     const session = new ProvisioningSession(t);
-    expect((await session.deviceInformation()).protocol).toBe(2);
-    const secret = fromHex(readFileSync(join(dir, 'setup-secret'), 'utf8').trim());
-    await expect(session.claim(new Uint8Array(16), 'ts-phone')).rejects.toMatchObject({code: 'bad_proof'});
+    expect((await session.deviceInformation()).protocol).toBe(3);
+    expect(await session.wired()).toBe(false);
+    const key32 = () => randomBytes(32);
 
     // The claim succeeds on the device but its response is lost (request #1
     // after the challenge). The session reconnects and resends the identical
     // request; the device replays CLAIMED instead of answering not_claimable.
     let before = t.requests.length;
     t.loseResponseOf(1);
-    const key = await session.claim(secret, 'ts-phone');
+    const key = await session.claim('ts-phone', key32());
     expect(key.length).toBe(32);
     let ids = t.requests.slice(before);
     expect(ids).toHaveLength(3);
@@ -91,7 +92,7 @@ describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v2)', () 
     expect(ids[1]).toBe(ids[2]);
 
     expect((await session.deviceInformation()).ownership).toBe('CLAIMED');
-    await expect(session.claim(secret, 'intruder')).rejects.toMatchObject({code: 'already_claimed'});
+    await expect(session.claim('intruder', key32())).rejects.toMatchObject({code: 'already_claimed'});
     expect(await session.configureWifi({ssid: 'elsewhere', security: 'wpa-psk', psk: 'password1'})).toBe('FAILED');
     expect((await session.networkStatus()).last_error).toBe('join_failed');
     t.loseResponseOf(1);

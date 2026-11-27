@@ -217,6 +217,16 @@ impl NetworkBackend for NetworkManagerDbus {
             Err(e) => { self.delete(&added); Err(e) }
         }
     }
+    fn wired(&mut self) -> bool {
+        const DEVICE_TYPE_ETHERNET: u32 = 1;
+        const DEVICE_STATE_ACTIVATED: u32 = 100;
+        let Ok(nm) = proxy(&self.conn, NM_PATH, NM) else { return false };
+        let Ok(devices): Result<Vec<OwnedObjectPath>, _> = nm.call("GetDevices", &()) else { return false };
+        devices.iter().any(|d| proxy(&self.conn, d.as_str(), "org.freedesktop.NetworkManager.Device").is_ok_and(|dev| {
+            dev.get_property::<u32>("DeviceType").unwrap_or_default() == DEVICE_TYPE_ETHERNET
+                && dev.get_property::<u32>("State").unwrap_or_default() == DEVICE_STATE_ACTIVATED
+        }))
+    }
 }
 
 #[cfg(test)]

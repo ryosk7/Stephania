@@ -28,10 +28,7 @@ pass "PKI issued once, public address excluded"
 openssl verify -CAfile "$work/pki/ca.pem" -verify_hostname stephania-ci.local <(awk '/BEGIN/{n++} n==1' "$work/pki/server.pem") >/dev/null || fail "openssl chain"
 pass "openssl verifies leaf for stephania-ci.local"
 
-secret=$(python3 -c 'import secrets;print(secrets.token_hex(16))')
-uri="stephania-setup:v1:${secret}:$(python3 -c "import hashlib,sys;print(hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8])" "$secret")"
-printf '%s\n' "$uri" >"$work/stephania-setup.txt"
-STEPHANIA_PROVISION_SOCKET="$work/p.sock" STEPHANIA_CREDENTIALS_DIR="$work/cred" STEPHANIA_SETUP_FILE="$work/stephania-setup.txt" \
+STEPHANIA_PROVISION_SOCKET="$work/p.sock" STEPHANIA_CREDENTIALS_DIR="$work/cred" \
   STEPHANIA_NETWORK_BACKEND=virtual STEPHANIA_MANAGEMENT_TOKENS="$work/tokens/tokens.json" \
   "$target/stephania-provision" >"$work/provision.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do [ -S "$work/p.sock" ] && break; sleep 0.1; done
@@ -42,7 +39,7 @@ for _ in $(seq 50); do [ -S "$work/p.sock" ] && break; sleep 0.1; done
   bundle exec puma -C config/puma.rb config.ru >"$work/puma.log" 2>&1) & pids+=($!)
 for _ in $(seq 100); do curl -s -o /dev/null "http://127.0.0.1:$loop/" && break; sleep 0.2; done
 
-python3 "$root/ci/lan_enroll.py" "$work/p.sock" "$uri" "$port" "$work" || fail "enrollment"
+python3 "$root/ci/lan_enroll.py" "$work/p.sock" "$port" "$work" || fail "enrollment"
 token=$(cat "$work/token")
 [ "$(cat "$work/pinned-ca.sha256")" = "$(openssl x509 -in "$work/pki/ca.pem" -outform der | sha256sum | cut -d' ' -f1)" ] || fail "pin mismatch"
 pass "pin delivered over BLE equals the device CA"

@@ -70,7 +70,7 @@
   --radius-button: 14px;
   --radius-control: 12px;
   --radius-tile: 12px;
-  --radius-sheet: 24px;
+  --radius-sheet: 32px;
 }
 
 @layer theme {

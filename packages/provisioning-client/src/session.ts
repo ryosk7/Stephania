@@ -1,16 +1,16 @@
-// Phone-side provisioning flow, protocol v2 (contracts/ble-protocol.md).
+// Phone-side provisioning flow, protocol v3 (contracts/ble-protocol.md).
 // One request/response channel; the transport carries a complete request
 // message and returns the complete response (fragmentation, indications and
 // reassembly are the transport's job).
-import {claimProof, deriveOwnerKey, fromHex, open, operationProof, OWNER_ID, seal, toHex} from './crypto';
+import {claimConfirmation, deriveOwnerKey, fromHex, open, operationProof, OWNER_ID, seal, toHex, x25519PublicKey, x25519Shared} from './crypto';
 
 export const UUID = {
-  service: '7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60',
-  info: '7c3b0101-5d1e-4a6f-9b0e-3a1f2c4d5e60',
-  rpc: '7c3b0102-5d1e-4a6f-9b0e-3a1f2c4d5e60',
+  service: '7c3b0200-5d1e-4a6f-9b0e-3a1f2c4d5e60',
+  info: '7c3b0201-5d1e-4a6f-9b0e-3a1f2c4d5e60',
+  rpc: '7c3b0202-5d1e-4a6f-9b0e-3a1f2c4d5e60',
 } as const;
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Implemented by react-native-ble-plx in the app and by a socket in tests. */
 export interface BleTransport {
@@ -84,21 +84,30 @@ export class ProvisioningSession {
   networkStatus() { return this.call({op: 'network.status'}); }
 
   /**
-   * Claim with the setup secret (from the setup QR). Returns the owner key,
-   * which the app must keep in secure storage; it is never transmitted.
+   * Become the owner of an unclaimed device: the first claim wins. An X25519
+   * exchange gives both sides the owner key without sending it; the app
+   * keeps it in secure storage. `privateKey` is 32 fresh random bytes (the
+   * caller supplies them so React Native can use its native random source).
    */
-  async claim(setupSecret: Uint8Array, ownerId: string): Promise<Uint8Array> {
-    if (setupSecret.length !== 16) throw new ProvisioningError('invalid_setup_secret');
+  async claim(ownerId: string, privateKey: Uint8Array): Promise<Uint8Array> {
     if (!OWNER_ID.test(ownerId)) throw new ProvisioningError('invalid_owner_id');
+    if (privateKey.length !== 32) throw new ProvisioningError('invalid_key');
     const challenge = await this.call({op: 'pairing.challenge'});
-    if (challenge.state !== 'PAIRING' || typeof challenge.nonce !== 'string') {
+    if (challenge.state !== 'PAIRING' || typeof challenge.nonce !== 'string' || typeof challenge.device_key !== 'string') {
       throw new ProvisioningError(challenge.state === 'CLAIMED' ? 'already_claimed' : 'not_claimable');
     }
-    const nonce = fromHex(challenge.nonce);
-    const r = await this.call({op: 'pairing.claim', owner_id: ownerId, proof: toHex(claimProof(setupSecret, nonce, ownerId))});
-    if (r.state !== 'CLAIMED') throw new ProvisioningError('claim_failed');
-    this.ownerKey = deriveOwnerKey(setupSecret, nonce, ownerId);
-    return this.ownerKey;
+    const nonce = fromHex(challenge.nonce), deviceKey = fromHex(challenge.device_key);
+    const phoneKey = x25519PublicKey(privateKey);
+    const ownerKey = deriveOwnerKey(x25519Shared(privateKey, deviceKey), nonce, ownerId, deviceKey, phoneKey);
+    const r = await this.call({op: 'pairing.claim', owner_id: ownerId, phone_key: toHex(phoneKey)});
+    if (r.state !== 'CLAIMED' || r.confirm !== toHex(claimConfirmation(ownerKey, nonce))) throw new ProvisioningError('claim_failed');
+    this.ownerKey = ownerKey;
+    return ownerKey;
+  }
+
+  /** Whether the device has a working cable connection (Wi-Fi setup can be skipped). */
+  async wired(): Promise<boolean> {
+    return (await this.networkStatus()).wired === true;
   }
 
   private async operationNonce(): Promise<Uint8Array> {

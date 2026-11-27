@@ -45,7 +45,7 @@ async function link(deviceId: string): Promise<number> {
 }
 
 /**
- * Connect and return a v2 transport. No BLE pairing/bonding is requested:
+ * Connect and return a v3 transport. No BLE pairing/bonding is requested:
  * the protocol authenticates and seals at the application layer, which
  * avoids the most common BlueZ/phone interoperability failures.
  */

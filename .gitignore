@@ -7,8 +7,6 @@ services/control/.bundle/
 apps/studio/node_modules/
 apps/studio/dist/
 packages/*/node_modules/
-tools/setup-page/node_modules/
-tools/setup-page/dist/
 apps/studio/playwright-report/
 apps/studio/test-results/
 __pycache__/

@@ -19,9 +19,6 @@ card() { # path size-MiB: MBR + one FAT32 partition with the ZIP contents
   printf 'label: dos\nstart=2048, type=c\n' | sfdisk -q "$1"
   mkfs.fat -F 32 -n STEPHANIA --offset 2048 "$1" >/dev/null
   (cd "$zip" && find . -mindepth 1 -maxdepth 1 -exec mcopy -s -i "$1@@1M" {} ::/ \;)
-  # A setup secret from tools/setup-page, to check it survives the install.
-  printf 'stephania-setup-v1\n%s\n' "$(openssl rand -hex 16)" >"$work/setup.txt"
-  mcopy -i "$1@@1M" "$work/setup.txt" ::/stephania-setup.txt
 }
 decoy() { # an unrelated USB stick: FAT32 with files, no Stephania manifest
   rm -f "$1"; truncate -s 64M "$1"
@@ -76,7 +73,7 @@ done
 [ "$(digest "$work/usb.img")" = "$hu" ] || fail "the unrelated USB disk was modified"
 pass "unrelated USB disk never touched"
 
-# 6. The installed card: layout, selector content, setup secret kept, and it boots.
+# 6. The installed card: layout, selector content, and it boots.
 sfdisk -J "$work/c.img" | python3 -c '
 import json,sys; p=json.load(sys.stdin)["partitiontable"]
 assert p["label"]=="gpt", p["label"]
@@ -84,11 +81,10 @@ names=[x.get("name") for x in p["partitions"]]
 assert names==["selector","boot-a","boot-b","rootfs-a","rootfs-b","data"], names' || fail "unexpected partition table"
 off=$(( $(sfdisk -J "$work/c.img" | python3 -c 'import json,sys;print(json.load(sys.stdin)["partitiontable"]["partitions"][0]["start"])') * 512 ))
 mdir -b -i "$work/c.img@@$off" ::/ >"$work/selector.txt"
-grep -qx '::/autoboot.txt' "$work/selector.txt" && grep -qx '::/stephania-setup.txt' "$work/selector.txt" && ! grep -q 'installer.cpio.gz' "$work/selector.txt" \
+grep -qx '::/autoboot.txt' "$work/selector.txt" && ! grep -q 'installer.cpio.gz' "$work/selector.txt" \
   || { cat "$work/selector.txt"; fail "selector content"; }
 mtype -i "$work/c.img@@$off" ::/stephania-install/state | grep -qx 'stage=done' || fail "install state not done"
-cmp -s <(mtype -i "$work/c.img@@$off" ::/stephania-setup.txt) "$work/setup.txt" || fail "setup secret not preserved"
-pass "GPT A/B layout; selector holds autoboot.txt, the install record and the setup secret"
+pass "GPT A/B layout; selector holds autoboot.txt and the install record"
 mkdir -p "$work/boot"; cp "$img/vmlinuz" "$img/initrd.img" "$work/boot/"; cp "$work/c.img" "$work/boot/stephania.img"
 ci/qemu-smoke.sh "$work/boot" amd64 || fail "installed card does not boot"
 pass "installed card boots and passes the image smoke test"

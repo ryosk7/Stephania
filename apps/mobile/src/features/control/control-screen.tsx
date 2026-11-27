@@ -98,8 +98,7 @@ function Control({deviceId, name: initialName, host, client}: {deviceId: string;
         })}
       </List.Section>
 
-      <Sheet visible={confirmStop} title="Stop the stream?" icon="stop" onClose={() => setConfirmStop(false)}>
-        <Footnote>Viewers will see the stream end.</Footnote>
+      <Sheet visible={confirmStop} title="Stop the stream?" subtitle="Viewers will see the stream end." icon="stop" onClose={() => setConfirmStop(false)}>
         <ButtonRow>
           <SecondaryButton title="Keep" accessibilityLabel="Keep streaming" onPress={() => setConfirmStop(false)} />
           <DestructiveButton title="Stop" icon="stop" accessibilityLabel="Stop stream" onPress={() => { setConfirmStop(false); void run('stream', () => client.stop()); }} />

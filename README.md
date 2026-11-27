@@ -24,17 +24,17 @@ The name comes from the plant genus *Stephania* and stands for
 1. **Install.** Download the release ZIP, extract it onto a FAT32 microSD
    card and power the Pi on. A RAM installer verifies the signed payload and
    lays out an A/B system ([docs/INSTALL.md](docs/INSTALL.md)).
-2. **Own it.** The [setup page](https://ryosk7.github.io/Stephania/) creates
-   a secret in the browser; it goes onto the card as `stephania-setup.txt`
-   and is shown as a QR code.
-3. **Connect.** The **Stephania Connect** app scans the QR code, registers
-   the phone as owner over Bluetooth LE, puts the device on Wi-Fi and
-   receives a pinned TLS certificate for the LAN
+2. **Connect.** Open **Stephania Connect** near the device and tap
+   **Set up**. The first phone to claim a new device owns it (an X25519 key
+   exchange over Bluetooth LE; on iOS 18 a system sheet, no permission
+   prompts). With a LAN cable the device is ready at once; otherwise pick
+   its Wi-Fi from the list and enter the password. The phone receives a
+   pinned TLS certificate for the LAN
    ([contracts/ble-protocol.md](contracts/ble-protocol.md)).
-4. **Produce.** **Stephania Studio** (in any browser on the LAN) edits
+3. **Produce.** **Stephania Studio** (in any browser on the LAN) edits
    layouts of HDMI, phone cameras, images and text; Connect switches
    layouts, mutes audio and sends the phone's front and rear cameras.
-5. **Go live.** The Rust engine composes Program, encodes H.264/AAC and
+4. **Go live.** The Rust engine composes Program, encodes H.264/AAC and
    publishes over RTMPS. Updates arrive as signed RAUC bundles with
    automatic rollback ([docs/UPDATE.md](docs/UPDATE.md)).
 
@@ -59,7 +59,6 @@ failure never stops a healthy HDMI broadcast.
 | `apps/studio` | Stephania Studio (React, Vite, Tailwind CSS, TanStack Router) |
 | `apps/mobile` | Stephania Connect (Expo, React Native, Uniwind, native camera and pinned-TLS modules) |
 | `packages/provisioning-client` | TypeScript BLE provisioning client |
-| `tools/setup-page` | Offline setup-QR page, published on GitHub Pages |
 | `os/` | Debian 13 / Raspberry Pi OS image, RAM installer, RAUC, systemd units |
 | `contracts/` | OpenAPI, IPC and scene schemas, BLE protocol, shared test fixtures |
 | `ci/`, `tests/` | CI scripts, QEMU and virtual-lab tests, end-to-end suites |

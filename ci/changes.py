@@ -52,7 +52,7 @@ RULES = [
     ("packages/*", ["provisioning", "mobile"]), ("apps/mobile/*", ["mobile"]),
     # Native code and anything that changes the native projects (prebuild).
     ("apps/mobile/modules/*", ["mobile", "mobile_native"]), ("apps/mobile/app.json", ["mobile", "mobile_native"]),
-    ("apps/mobile/package*.json", ["mobile", "mobile_native"]), ("ci/mobile-*", ["mobile", "mobile_native"]), ("tools/setup-page/*", ["provisioning"]),
+    ("apps/mobile/package*.json", ["mobile", "mobile_native"]), ("ci/mobile-*", ["mobile", "mobile_native"]),
     ("src/pki.rs", ["rust", "lan", "os"]), ("src/management_tokens.rs", ["rust", "lan", "provisioning"]), ("src/bin/stephania-pki.rs", ["rust", "lan", "os"]),
     ("ci/lan*", ["lan"]), ("ci/control*load*", ["control"]),
     # Control plane and Studio

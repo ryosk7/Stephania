@@ -50,7 +50,7 @@ interruptions across failure points in total (Q-BOOT + Q-POWER).
 
 ### Q-BLE: provisioning radio
 For each controller (on-board CYW43455, external dongle):
-1. Fresh device, setup QR from the setup page; claim with iOS and Android
+1. Fresh device; one-tap claim with iOS (AccessorySetupKit and fallback) and Android
    app builds; scan; join WPA2 network; enroll LAN access.
 2. Repeat 30 times per phone, alternating app restart and Bluetooth
    toggle mid-operation (must recover via replay; no duplicate tokens in

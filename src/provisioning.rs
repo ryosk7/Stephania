@@ -7,13 +7,13 @@
 //! implemented yet; everything here is exercised with virtual clocks and
 //! in-memory transports.
 //!
-//! Security status: proof-of-concept. Ownership is proven with an HMAC
-//! challenge-response over a 128-bit per-device setup secret (no shared
-//! default credential, no secret ever transmitted). How that secret reaches
-//! the owner without a monitor or keyboard (printed label / QR) is an open
-//! security PoC (risk R02); until it is resolved this must not be described
-//! as production-grade enrollment.
+//! Ownership (protocol v3): the first phone to claim an unclaimed device
+//! becomes its owner. The claim is an X25519 key agreement between a fresh
+//! device key and a fresh phone key, so the owner key is never transmitted
+//! and a passive listener cannot learn it. Physical access (re-flashing the
+//! microSD card) is what resets ownership; see contracts/ble-protocol.md.
 
+use ring::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519};
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
@@ -123,15 +123,16 @@ impl Reassembler {
 
 // -------------------------------------------------------------- ownership
 
-pub const SETUP_SECRET_BYTES: usize = 16;
 pub const NONCE_BYTES: usize = 32;
+/// X25519 public keys and the derived owner key.
+pub const KEY_BYTES: usize = 32;
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 pub const MAX_FAILED_ATTEMPTS: u32 = 5;
 pub const LOCKOUT: Duration = Duration::from_secs(300);
 pub const MAX_OWNER_ID_BYTES: usize = 64;
 
-const CLAIM_CONTEXT: &[u8] = b"stephania-claim-v1";
-const OWNER_KEY_CONTEXT: &[u8] = b"stephania-owner-key-v1";
+const OWNER_KEY_CONTEXT: &[u8] = b"stephania-owner-key-v2";
+const CONFIRM_CONTEXT: &[u8] = b"stephania-claim-confirm-v1";
 const OPERATION_CONTEXT: &[u8] = b"stephania-operation-v1";
 const SEAL_CONTEXT: &[u8] = b"stephania-seal-v1";
 
@@ -194,6 +195,8 @@ pub enum ClaimError {
     LockedOut,
     InvalidOwnerId,
     BadProof,
+    /// The phone's key-agreement public key was malformed or degenerate.
+    BadKey,
     NotOwner,
     PhysicalConfirmationRequired,
     Random,
@@ -202,12 +205,21 @@ pub enum ClaimError {
 struct Pairing {
     nonce: [u8; NONCE_BYTES],
     issued: Instant,
+    /// Fresh per challenge; consumed by the claim.
+    private: EphemeralPrivateKey,
+    public: [u8; KEY_BYTES],
+}
+
+/// What `pairing.challenge` hands the phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairingChallenge {
+    pub nonce: [u8; NONCE_BYTES],
+    pub device_key: [u8; KEY_BYTES],
 }
 
 /// Ownership state machine. Time is injected so lockouts and expiry are
 /// testable without sleeping.
 pub struct OwnershipManager {
-    setup_secret: [u8; SETUP_SECRET_BYTES],
     state: Ownership,
     pairing: Option<Pairing>,
     operation_nonce: Option<([u8; NONCE_BYTES], Instant)>,
@@ -243,14 +255,28 @@ fn verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> bool {
     hmac::verify(&hmac::Key::new(hmac::HMAC_SHA256, key), &encode(parts), tag).is_ok()
 }
 
-/// Client side of the claim proof (used by the phone app and by tests).
-pub fn claim_proof(setup_secret: &[u8], nonce: &[u8], owner_id: &str) -> [u8; 32] {
-    mac(setup_secret, &[CLAIM_CONTEXT, nonce, owner_id.as_bytes()])
+/// Owner key both sides derive from the X25519 shared secret, bound to the
+/// challenge nonce, the owner id and both public keys; never transmitted.
+pub fn derive_owner_key(shared: &[u8], nonce: &[u8], owner_id: &str, device_key: &[u8], phone_key: &[u8]) -> [u8; KEY_BYTES] {
+    mac(shared, &[OWNER_KEY_CONTEXT, nonce, owner_id.as_bytes(), device_key, phone_key])
 }
 
-/// Owner key both sides derive after a successful claim; never transmitted.
-pub fn derive_owner_key(setup_secret: &[u8], nonce: &[u8], owner_id: &str) -> [u8; 32] {
-    mac(setup_secret, &[OWNER_KEY_CONTEXT, nonce, owner_id.as_bytes()])
+/// Returned by the device after a claim so the phone can check that both
+/// sides derived the same owner key.
+pub fn claim_confirmation(owner_key: &[u8], nonce: &[u8]) -> [u8; 32] {
+    mac(owner_key, &[CONFIRM_CONTEXT, nonce])
+}
+
+/// Phone side of a claim (Rust clients and tests): a fresh key pair, the
+/// public key to send, and the owner key.
+pub fn client_claim(challenge: &PairingChallenge, owner_id: &str) -> Result<([u8; KEY_BYTES], [u8; KEY_BYTES]), ClaimError> {
+    let rng = SystemRandom::new();
+    let private = EphemeralPrivateKey::generate(&X25519, &rng).map_err(|_| ClaimError::Random)?;
+    let mut public = [0u8; KEY_BYTES];
+    public.copy_from_slice(private.compute_public_key().map_err(|_| ClaimError::Random)?.as_ref());
+    let shared = agreement::agree_ephemeral(private, &UnparsedPublicKey::new(&X25519, challenge.device_key), |s| s.to_vec())
+        .map_err(|_| ClaimError::BadKey)?;
+    Ok((public, derive_owner_key(&shared, &challenge.nonce, owner_id, &challenge.device_key, &public)))
 }
 
 /// Client side of an authenticated operation (Wi-Fi config, reset request…).
@@ -259,8 +285,8 @@ pub fn operation_proof(owner_key: &[u8], nonce: &[u8], operation: &str, payload:
 }
 
 impl OwnershipManager {
-    pub fn new(setup_secret: [u8; SETUP_SECRET_BYTES], state: Ownership) -> Self {
-        Self { setup_secret, state, pairing: None, operation_nonce: None, failures: 0, locked_until: None, rng: SystemRandom::new() }
+    pub fn new(state: Ownership) -> Self {
+        Self { state, pairing: None, operation_nonce: None, failures: 0, locked_until: None, rng: SystemRandom::new() }
     }
 
     pub fn state(&self) -> &Ownership {
@@ -303,21 +329,26 @@ impl OwnershipManager {
         }
     }
 
-    /// Start a claim. Only an unclaimed device can be claimed over BLE;
-    /// a claimed or recovery-required device needs factory reset first.
-    pub fn begin_pairing(&mut self, now: Instant) -> Result<[u8; NONCE_BYTES], ClaimError> {
+    /// Start a claim: a fresh nonce and a fresh X25519 key. Only an
+    /// unclaimed device can be claimed over BLE; an owned device is reset by
+    /// re-flashing its card (or `factory_reset` with physical confirmation).
+    pub fn begin_pairing(&mut self, now: Instant) -> Result<PairingChallenge, ClaimError> {
         self.check_lockout(now)?;
         if self.state != Ownership::Unclaimed {
             return Err(ClaimError::NotClaimable);
         }
         let nonce = self.nonce()?;
-        self.pairing = Some(Pairing { nonce, issued: now });
-        Ok(nonce)
+        let private = EphemeralPrivateKey::generate(&X25519, &self.rng).map_err(|_| ClaimError::Random)?;
+        let mut public = [0u8; KEY_BYTES];
+        public.copy_from_slice(private.compute_public_key().map_err(|_| ClaimError::Random)?.as_ref());
+        self.pairing = Some(Pairing { nonce, issued: now, private, public });
+        Ok(PairingChallenge { nonce, device_key: public })
     }
 
-    /// Complete a claim. On success returns the new persisted state, which
-    /// the caller must write durably before acknowledging over BLE.
-    pub fn complete_pairing(&mut self, owner_id: &str, proof: &[u8], now: Instant) -> Result<&Ownership, ClaimError> {
+    /// Complete a claim with the phone's public key: the first valid claim
+    /// wins. On success the new state (see `state()`) must be written durably
+    /// before the returned confirmation is sent over BLE.
+    pub fn complete_pairing(&mut self, owner_id: &str, phone_key: &[u8], now: Instant) -> Result<[u8; 32], ClaimError> {
         self.check_lockout(now)?;
         if self.state != Ownership::Unclaimed {
             return Err(ClaimError::NotClaimable);
@@ -330,15 +361,28 @@ impl OwnershipManager {
         if !valid_owner_id(owner_id) {
             return Err(ClaimError::InvalidOwnerId);
         }
-        let nonce = pairing.nonce;
-        if !verify(&self.setup_secret, &[CLAIM_CONTEXT, &nonce, owner_id.as_bytes()], proof) {
+        if phone_key.len() != KEY_BYTES {
             self.record_failure(now);
-            return Err(ClaimError::BadProof);
+            return Err(ClaimError::BadKey);
         }
-        self.pairing = None;
+        let pairing = self.pairing.take().expect("checked above");
+        let device_key = pairing.public;
+        // ring rejects the all-zero shared secret (low-order points).
+        let Ok(shared) = agreement::agree_ephemeral(pairing.private, &UnparsedPublicKey::new(&X25519, phone_key), |s| s.to_vec()) else {
+            self.record_failure(now);
+            return Err(ClaimError::BadKey);
+        };
+        let owner_key = derive_owner_key(&shared, &pairing.nonce, owner_id, &device_key, phone_key);
         self.failures = 0;
-        self.state = Ownership::Claimed { owner_id: owner_id.to_owned(), owner_key: derive_owner_key(&self.setup_secret, &nonce, owner_id) };
-        Ok(&self.state)
+        self.state = Ownership::Claimed { owner_id: owner_id.to_owned(), owner_key };
+        Ok(claim_confirmation(&owner_key, &pairing.nonce))
+    }
+
+    /// Roll back a claim that could not be persisted, so a retry works.
+    pub fn abandon_claim(&mut self) {
+        if matches!(self.state, Ownership::Claimed { .. }) {
+            self.state = Ownership::Unclaimed;
+        }
     }
 
     /// Issue a single-use nonce for an owner-authenticated operation.
@@ -406,111 +450,6 @@ pub fn open(owner_key: &[u8], op_nonce: &[u8; NONCE_BYTES], operation: &str, sea
     let mut buf = sealed.to_vec();
     let plain = key.open_in_place(nonce, Aad::from(operation.as_bytes()), &mut buf).ok()?;
     Some(plain.to_vec())
-}
-
-/// Create the per-device setup secret on first boot (0600, never
-/// overwritten). Returns the existing secret on later boots.
-#[cfg(unix)]
-pub fn load_or_create_setup_secret(path: &std::path::Path) -> std::io::Result<[u8; SETUP_SECRET_BYTES]> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Ok(text) = std::fs::read_to_string(path) {
-        return unhex::<SETUP_SECRET_BYTES>(text.trim())
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "corrupt setup secret"));
-    }
-    let mut secret = [0u8; SETUP_SECRET_BYTES];
-    SystemRandom::new().fill(&mut secret).map_err(|_| std::io::Error::other("random source unavailable"))?;
-    let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-    f.write_all(hex(&secret).as_bytes())?;
-    f.sync_all()?;
-    // hard_link fails if another process created the secret meanwhile.
-    std::fs::hard_link(&tmp, path)?;
-    std::fs::remove_file(&tmp)?;
-    Ok(secret)
-}
-
-// ------------------------------------------------------------ setup file
-
-/// Setup URI carried by the QR code and by the boot-partition setup file:
-/// `stephania-setup:v1:<32 hex secret>:<first 8 hex of SHA-256(secret)>`.
-/// The secret is generated in the owner's browser by the static setup page
-/// (tools/setup-page); the device imports it on first boot.
-pub fn parse_setup_uri(text: &str) -> Option<[u8; SETUP_SECRET_BYTES]> {
-    let lower = text.trim().to_ascii_lowercase();
-    let rest = lower.strip_prefix("stephania-setup:v1:")?;
-    let (secret_hex, check) = rest.split_once(':')?;
-    let secret = unhex::<SETUP_SECRET_BYTES>(secret_hex)?;
-    if secret.iter().all(|&b| b == 0) || check.len() != 8 {
-        return None;
-    }
-    let digest = ring::digest::digest(&ring::digest::SHA256, &secret);
-    (hex(&digest.as_ref()[..4]) == check).then_some(secret)
-}
-
-pub fn setup_uri(secret: &[u8; SETUP_SECRET_BYTES]) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, secret);
-    format!("stephania-setup:v1:{}:{}", hex(secret), hex(&digest.as_ref()[..4]))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetupImport {
-    /// No setup file present.
-    Absent,
-    /// Secret replaced (device was UNCLAIMED).
-    Imported,
-    /// Device already has an owner; file discarded, secret unchanged.
-    IgnoredClaimed,
-    /// File unreadable or malformed; discarded.
-    Invalid,
-}
-
-/// Import the boot-partition setup file. Only an UNCLAIMED device accepts a
-/// new secret, so re-inserting an SD card can never re-key an owned device.
-/// The file is overwritten and removed in every case it exists (best effort:
-/// FAT32 provides no secure deletion; documented as residual risk).
-#[cfg(unix)]
-pub fn import_setup_file(setup_file: &std::path::Path, secret_path: &std::path::Path, ownership: &Ownership) -> std::io::Result<SetupImport> {
-    let text = match std::fs::read(setup_file) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SetupImport::Absent),
-        Err(_) => { discard(setup_file); return Ok(SetupImport::Invalid) }
-    };
-    let parsed = (text.len() <= 256).then(|| std::str::from_utf8(&text).ok()).flatten().and_then(parse_setup_uri);
-    let outcome = match parsed {
-        None => SetupImport::Invalid,
-        Some(_) if *ownership != Ownership::Unclaimed => SetupImport::IgnoredClaimed,
-        Some(secret) => { store_setup_secret(secret_path, &secret)?; SetupImport::Imported }
-    };
-    discard(setup_file);
-    Ok(outcome)
-}
-
-#[cfg(unix)]
-fn discard(path: &std::path::Path) {
-    use std::io::Write;
-    if let Ok(len) = std::fs::metadata(path).map(|m| m.len() as usize) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
-            let _ = f.write_all(&vec![0u8; len]);
-            let _ = f.sync_all();
-        }
-    }
-    let _ = std::fs::remove_file(path);
-}
-
-/// Atomically replace the setup secret (0600, fsync, rename).
-#[cfg(unix)]
-pub fn store_setup_secret(path: &std::path::Path, secret: &[u8; SETUP_SECRET_BYTES]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension("import");
-    let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-    f.write_all(hex(secret).as_bytes())?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)?;
-    if let Some(dir) = path.parent() { std::fs::File::open(dir)?.sync_all()?; }
-    Ok(())
 }
 
 // --------------------------------------------------------------- network
@@ -590,7 +529,6 @@ pub fn unhex_vec(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    const SECRET: [u8; 16] = *b"0123456789abcdef";
 
     #[test]
     fn fragmentation_round_trips_at_minimum_and_large_mtu() {
@@ -648,16 +586,17 @@ mod tests {
     }
 
     fn claimed(m: &mut OwnershipManager, now: Instant) -> [u8; 32] {
-        let nonce = m.begin_pairing(now).unwrap();
-        let proof = claim_proof(&SECRET, &nonce, "iphone-1");
-        m.complete_pairing("iphone-1", &proof, now).unwrap();
-        derive_owner_key(&SECRET, &nonce, "iphone-1")
+        let challenge = m.begin_pairing(now).unwrap();
+        let (phone_key, owner_key) = client_claim(&challenge, "iphone-1").unwrap();
+        let confirm = m.complete_pairing("iphone-1", &phone_key, now).unwrap();
+        assert_eq!(confirm, claim_confirmation(&owner_key, &challenge.nonce), "both sides derive the same key");
+        owner_key
     }
 
     #[test]
-    fn claim_with_setup_secret_and_authorize_operations() {
+    fn first_claim_wins_and_authorizes_operations() {
         let now = Instant::now();
-        let mut m = OwnershipManager::new(SECRET, Ownership::Unclaimed);
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
         assert_eq!(m.reported_state(), "UNCLAIMED");
         let key = claimed(&mut m, now);
         assert_eq!(m.reported_state(), "CLAIMED");
@@ -680,42 +619,57 @@ mod tests {
     }
 
     #[test]
-    fn wrong_secret_locks_out_after_repeated_failures() {
+    fn bad_keys_are_refused_and_lock_out() {
         let now = Instant::now();
-        let mut m = OwnershipManager::new(SECRET, Ownership::Unclaimed);
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
         for _ in 0..MAX_FAILED_ATTEMPTS {
-            let nonce = m.begin_pairing(now).unwrap();
-            let proof = claim_proof(b"wrong-secret-xxx", &nonce, "attacker");
-            assert_eq!(m.complete_pairing("attacker", &proof, now), Err(ClaimError::BadProof));
+            m.begin_pairing(now).unwrap();
+            // All-zero is a low-order point: the shared secret would be zero.
+            assert_eq!(m.complete_pairing("attacker", &[0; 32], now), Err(ClaimError::BadKey));
         }
         assert_eq!(m.begin_pairing(now), Err(ClaimError::LockedOut));
         assert_eq!(*m.state(), Ownership::Unclaimed);
-        // Lockout expires; the legitimate owner can then claim.
         claimed(&mut m, now + LOCKOUT);
         assert_eq!(m.reported_state(), "CLAIMED");
     }
 
     #[test]
-    fn pairing_expires_and_proof_is_bound_to_nonce_and_owner() {
+    fn claim_is_bound_to_the_latest_challenge_and_expires() {
         let now = Instant::now();
-        let mut m = OwnershipManager::new(SECRET, Ownership::Unclaimed);
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
         let old = m.begin_pairing(now).unwrap();
         let fresh = m.begin_pairing(now).unwrap();
-        assert_ne!(old, fresh);
-        assert_eq!(m.complete_pairing("p", &claim_proof(&SECRET, &old, "p"), now), Err(ClaimError::BadProof));
-        let n = m.begin_pairing(now).unwrap();
-        assert_eq!(m.complete_pairing("q", &claim_proof(&SECRET, &n, "p"), now), Err(ClaimError::BadProof));
-        let n = m.begin_pairing(now).unwrap();
-        assert_eq!(m.complete_pairing("p", &claim_proof(&SECRET, &n, "p"), now + PAIRING_TIMEOUT), Err(ClaimError::PairingExpired));
-        assert_eq!(m.complete_pairing("p", &[0; 32], now), Err(ClaimError::NoPairingInProgress));
-        let n = m.begin_pairing(now).unwrap();
-        assert_eq!(m.complete_pairing("bad id", &claim_proof(&SECRET, &n, "bad id"), now), Err(ClaimError::InvalidOwnerId));
+        assert_ne!(old.nonce, fresh.nonce);
+        assert_ne!(old.device_key, fresh.device_key, "a fresh device key per challenge");
+        // A phone that answered the old challenge derives a different key.
+        let (phone_key, stale_key) = client_claim(&old, "p").unwrap();
+        let confirm = m.complete_pairing("p", &phone_key, now).unwrap();
+        assert_ne!(confirm, claim_confirmation(&stale_key, &old.nonce));
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
+        let c = m.begin_pairing(now).unwrap();
+        let (k, _) = client_claim(&c, "p").unwrap();
+        assert_eq!(m.complete_pairing("p", &k, now + PAIRING_TIMEOUT), Err(ClaimError::PairingExpired));
+        assert_eq!(m.complete_pairing("p", &k, now), Err(ClaimError::NoPairingInProgress));
+        let c = m.begin_pairing(now).unwrap();
+        let (k, _) = client_claim(&c, "bad id").unwrap();
+        assert_eq!(m.complete_pairing("bad id", &k, now), Err(ClaimError::InvalidOwnerId));
+        assert_eq!(m.complete_pairing("p", &k[..31], now), Err(ClaimError::BadKey));
+    }
+
+    #[test]
+    fn unpersisted_claim_can_be_abandoned() {
+        let now = Instant::now();
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
+        claimed(&mut m, now);
+        m.abandon_claim();
+        assert_eq!(*m.state(), Ownership::Unclaimed);
+        claimed(&mut m, now);
     }
 
     #[test]
     fn reset_requires_physical_confirmation_and_network_failure_keeps_owner() {
         let now = Instant::now();
-        let mut m = OwnershipManager::new(SECRET, Ownership::Unclaimed);
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
         claimed(&mut m, now);
         // Network state is a separate machine; nothing here touches ownership.
         let _network = NetworkState::Failed;
@@ -723,7 +677,7 @@ mod tests {
         assert_eq!(m.factory_reset(false), Err(ClaimError::PhysicalConfirmationRequired));
         assert_eq!(m.reported_state(), "CLAIMED");
         assert_eq!(m.factory_reset(true).unwrap(), &Ownership::Unclaimed);
-        let mut r = OwnershipManager::new(SECRET, Ownership::RecoveryRequired);
+        let mut r = OwnershipManager::new(Ownership::RecoveryRequired);
         assert_eq!(r.begin_pairing(now), Err(ClaimError::NotClaimable));
         assert_eq!(r.operation_challenge(now), Err(ClaimError::NotOwner));
     }
@@ -737,23 +691,6 @@ mod tests {
                     r#"{"version":1,"state":"CLAIMED","owner_id":"x","owner_key":"zz"}"#, r#"{"version":1,"state":"PAIRING"}"#] {
             assert_eq!(Ownership::from_json(bad), Ownership::RecoveryRequired, "{bad}");
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn setup_secret_is_created_once_with_private_mode() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("stephania-secret-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("setup-secret");
-        let a = load_or_create_setup_secret(&path).unwrap();
-        let b = load_or_create_setup_secret(&path).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        std::fs::write(&path, "nothex").unwrap();
-        assert!(load_or_create_setup_secret(&path).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -801,62 +738,6 @@ mod tests {
 }
 
 #[cfg(test)]
-mod setup_tests {
-    use super::*;
-
-    fn fixtures() -> serde_json::Value {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/fixtures/ble/setup-uris.json");
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn shared_setup_uri_fixtures() {
-        let f = fixtures();
-        for v in f["valid"].as_array().unwrap() {
-            let secret = parse_setup_uri(v["uri"].as_str().unwrap()).unwrap_or_else(|| panic!("{v}"));
-            assert_eq!(hex(&secret), v["secret"]);
-            assert_eq!(parse_setup_uri(&setup_uri(&secret)), Some(secret));
-        }
-        for v in f["invalid"].as_array().unwrap() {
-            assert_eq!(parse_setup_uri(v.as_str().unwrap()), None, "{v}");
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn import_only_when_unclaimed_and_always_discards_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("stephania-setup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let (file, secret_path) = (dir.join("stephania-setup.txt"), dir.join("setup-secret"));
-        let original = load_or_create_setup_secret(&secret_path).unwrap();
-        let new = *b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10";
-        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Absent);
-
-        let claimed = Ownership::Claimed { owner_id: "o".into(), owner_key: [1; 32] };
-        std::fs::write(&file, setup_uri(&new)).unwrap();
-        assert_eq!(import_setup_file(&file, &secret_path, &claimed).unwrap(), SetupImport::IgnoredClaimed);
-        assert!(!file.exists());
-        assert_eq!(load_or_create_setup_secret(&secret_path).unwrap(), original, "owned device is never re-keyed");
-
-        std::fs::write(&file, setup_uri(&new)).unwrap();
-        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::RecoveryRequired).unwrap(), SetupImport::IgnoredClaimed);
-
-        std::fs::write(&file, "stephania-setup:v1:garbage").unwrap();
-        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Invalid);
-        assert!(!file.exists());
-
-        std::fs::write(&file, format!("{}\n", setup_uri(&new))).unwrap();
-        assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Imported);
-        assert!(!file.exists());
-        assert_eq!(load_or_create_setup_secret(&secret_path).unwrap(), new);
-        assert_eq!(std::fs::metadata(&secret_path).unwrap().permissions().mode() & 0o777, 0o600);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[cfg(test)]
 mod interop {
     use super::*;
 
@@ -879,18 +760,28 @@ mod interop {
         }
     }
 
-    /// Vectors computed by an independent implementation (Python hmac).
+    /// X25519 claim and HMAC vectors computed independently in Python
+    /// (contracts/fixtures/ble/generate.py). The device side is replayed with
+    /// the vector's private key through ring's fixed-randomness test source.
     #[test]
-    fn hmac_vectors_match_independent_implementation() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/fixtures/ble/hmac-vectors.json");
+    #[allow(deprecated)]
+    fn claim_vectors_match_independent_implementation() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts/fixtures/ble/claim-vectors.json");
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let vectors = doc["vectors"].as_array().unwrap();
         assert!(vectors.len() >= 2);
         for v in vectors {
-            let (secret, nonce, owner) = (bytes(&v["setup_secret"]), bytes(&v["nonce"]), v["owner_id"].as_str().unwrap());
-            assert_eq!(hex(&claim_proof(&secret, &nonce, owner)), v["claim_proof"]);
-            let key = derive_owner_key(&secret, &nonce, owner);
+            let device_private = bytes(&v["device_private"]);
+            let rng = ring::test::rand::FixedSliceRandom { bytes: &device_private };
+            let private = EphemeralPrivateKey::generate(&X25519, &rng).unwrap();
+            assert_eq!(hex(private.compute_public_key().unwrap().as_ref()), v["device_key"]);
+            let phone_key = bytes(&v["phone_key"]);
+            let shared = agreement::agree_ephemeral(private, &UnparsedPublicKey::new(&X25519, &phone_key), |s| s.to_vec()).unwrap();
+            assert_eq!(hex(&shared), v["shared"]);
+            let (nonce, owner) = (bytes(&v["nonce"]), v["owner_id"].as_str().unwrap());
+            let key = derive_owner_key(&shared, &nonce, owner, &bytes(&v["device_key"]), &phone_key);
             assert_eq!(hex(&key), v["owner_key"]);
+            assert_eq!(hex(&claim_confirmation(&key, &nonce)), v["confirm"]);
             let proof = operation_proof(&key, &bytes(&v["operation_nonce"]), v["operation"].as_str().unwrap(), &bytes(&v["payload_hex"]));
             assert_eq!(hex(&proof), v["operation_proof"]);
         }

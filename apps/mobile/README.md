@@ -2,15 +2,16 @@
 
 Phone app for BLE ownership enrollment and Wi-Fi setup (Phase 5). iOS first; Android shares the code.
 
-Flow: scan the setup QR from the setup page (`tools/setup-page`) → find nearby Stephania over BLE (service `7c3b0001-…`) → claim with the setup secret → owner key stored in Keychain/Keystore (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`) → scan Wi-Fi → join.
+Flow (one tap, contracts/ble-protocol.md v3): the setup sheet finds an unclaimed Stephania over BLE (service `7c3b0200-…`; on iOS 18 Apple's AccessorySetupKit sheet, no Bluetooth prompt) → the first phone to claim it owns it (X25519; owner key in Keychain/Keystore, `WHEN_UNLOCKED_THIS_DEVICE_ONLY`) → with a LAN cable straight to LAN access, otherwise pick the device's Wi-Fi (strongest first, no location permission) and enter its password in a sheet → Control.
 
 - Protocol logic: `packages/provisioning-client` (shared, tested against the Rust device core).
 Layout and UI rules: [DESIGN.md](../../DESIGN.md) (feature-based: `src/app` routes only → `src/features/*` → `src/shared/*`, enforced by `src/architecture.test.ts`).
 
 - `src/features/setup/ble/transport.ts`: react-native-ble-plx transport. It fragments writes to the negotiated ATT payload, subscribes before writing, and reassembles notified responses under the request's message id. Timeouts are 15 s by default, 20 s for scan and 45 s for join.
-- `src/app/`: Expo Router routes only (`index`, `setup/{scan,nearby,wifi}`, `device/[id]/{index,camera,pc}`); each renders a feature screen.
+- `src/app/`: Expo Router routes only (`index`, `setup/wifi`, `device/[id]/{index,camera,pc}`); each renders a feature screen.
 - `src/features/`: `home`, `setup`, `control`, `camera` (phone sender, docs/PHONE.md), `pc-access`.
 - `src/shared/ui`: design tokens and components (DESIGN.md §4–5); `src/shared/device`: LAN client, enrollment storage, broadcast state.
+- `modules/stephania-accessory-setup`: local Expo module (Swift) for the iOS 18 AccessorySetupKit picker; `supported` is false elsewhere and the app draws the same sheet itself.
 - `modules/stephania-pinned-fetch`: local Expo module (Swift/Kotlin) for HTTPS that trusts only the enrolled device CA (docs/AUTH.md). Trust logic: `ios/PinnedTrust` (SwiftPM, `swift test`) and `android/.../PinnedHttp.kt` (JUnit against a TLS server using real `stephania-pki` certificates).
 - `src/shared/device/client.ts`: management API client over the pinned module (URL fallback, error envelope). The control screen shows status, starts/stops the stream, switches scenes (cut or 0.5 s fade) and mutes audio inputs.
 
