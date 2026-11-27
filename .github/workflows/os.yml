@@ -41,11 +41,13 @@ jobs:
         run: |
           git clone -q --depth 1 --branch v1.15 https://github.com/rauc/rauc /tmp/rauc
           git -C /tmp/rauc log -1 --format='RAUC source %H'
-          grep -rn -B12 -A3 "Unexpected dm-verity status" /tmp/rauc/src || true
           meson setup /tmp/rauc/build /tmp/rauc --prefix=/usr/local >/tmp/rauc-meson.log || { cat /tmp/rauc-meson.log; exit 1; }
           ninja -C /tmp/rauc/build >/dev/null
+          # Replace the packaged binary too, so D-Bus activation and every
+          # PATH lookup run the same pinned build.
           sudo install -m 0755 /tmp/rauc/build/rauc /usr/local/bin/rauc
-          /usr/local/bin/rauc --version
+          sudo install -m 0755 /tmp/rauc/build/rauc /usr/bin/rauc
+          rauc --version; sudo rauc --version
       - name: Boot-control unit tests
         run: cargo test --locked --no-default-features --lib bootctl
       - run: cargo build --locked --no-default-features --bin t3box-bootctl

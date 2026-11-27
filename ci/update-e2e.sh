@@ -21,6 +21,7 @@ trap cleanup EXIT
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; for f in "$w"/*.log; do echo "--- $f"; tail -40 "$f"; done; exit 1; }
 
+echo "using $(command -v rauc): $(rauc --version)"
 mkdir -p "$w/dt" "$w/data" "$w/selector" "$w/mnt" "$w/rauc-data"
 for s in boot-a boot-b rootfs-a rootfs-b; do
   truncate -s 64M "$w/$s.img"
