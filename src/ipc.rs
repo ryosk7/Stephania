@@ -205,8 +205,10 @@ fn status_result(s: &EngineStatus, instance: &EngineInstance) -> Value {
     })
 }
 
+/// `program` is the stored scene on air, or null when none was applied in
+/// this engine process (HDMI passthrough default).
 fn with_program(mut status: Value, program: (String, u64)) -> Value {
-    status["program"] = json!({"scene_id": program.0, "revision": program.1});
+    status["program"] = if program.0.is_empty() { Value::Null } else { json!({"scene_id": program.0, "revision": program.1}) };
     status
 }
 
@@ -519,6 +521,7 @@ mod tests {
         assert_eq!(r["result"]["last_error"], "x\"y");
         assert_eq!(r["result"]["instance_id"].as_str().unwrap().len(), 16);
         assert!(r["result"]["uptime_ms"].is_u64());
+        assert!(r["result"]["program"].is_null(), "no scene applied: program must be null");
     }
 
     #[test]
