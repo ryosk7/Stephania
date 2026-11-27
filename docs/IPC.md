@@ -9,7 +9,7 @@ Shared conformance fixtures: `contracts/fixtures/ipc/` and `contracts/fixtures/s
 - Linux peer credentials (SO_PEERCRED) are checked on accept: root, the engine's own uid and uids listed in `T3BOX_IPC_ALLOWED_UIDS` (comma separated) are allowed; others receive `forbidden` and are closed. If credentials cannot be read on Linux the connection is refused. An invalid `T3BOX_IPC_ALLOWED_UIDS` disables the socket (engine keeps running).
 - A pre-existing socket at the path is treated as stale and replaced. Any other file type makes binding fail; nothing else is deleted.
 - Bind failure is logged and the engine keeps running (media plane never depends on management).
-- The loopback HTTP API on `127.0.0.1:8787` remains as a transitional interface and must never be exposed to the LAN.
+- The transitional loopback HTTP API is off unless `T3BOX_LEGACY_HTTP` names a loopback address (`127.0.0.1:8787` in the Virtual Lab); production units never set it, and a non-loopback address is refused at start.
 
 ## Framing
 `u32` big-endian length, then that many bytes of UTF-8 JSON. Length 0 or > 65536 is a framing error: the server answers once with `request_id: null` and closes the connection. Several requests may be sent sequentially on one connection; each receives exactly one response with the same `request_id`.
