@@ -46,6 +46,7 @@ pub mod aac_adts;
 pub mod av_clock;
 pub mod audio_mixer;
 pub mod assets;
+pub mod simd;
 pub mod audio;
 pub mod reconnect;
 pub mod rate_control;

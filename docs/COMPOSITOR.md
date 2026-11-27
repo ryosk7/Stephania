@@ -28,4 +28,6 @@ Scene v2 (docs/SCENE.md):
 - Fade transitions: `ProgramSwitch::request_with(program, Transition::Fade{duration_us})`; the stage composes the outgoing Program into a second buffer and cross-fades by frame timestamps. The ack is the first frame showing any of the new Program.
 - CI `arm64-composition` additionally fades in a v2 scene with an image asset and checks, after H.264 decoding, that the region is grey before the ack, rises monotonically over the 15 fade frames and is the asset's colour afterwards; a scene with a missing asset is refused with Program unchanged.
 
-Not yet: bilinear/filtered scaling and NEON/libyuv optimisation of the generic path, and any performance measurement on a Pi 5 (none has been taken; do not quote numbers).
+Optimised kernels (`src/simd.rs`): alpha blending of overlays and the fade cross-mix use AArch64 NEON (16 pixels per step, exact integer division by 255, proven exhaustively in the unit tests and checked against the scalar reference on random rows); the plain video path copies whole rows when the horizontal scale is 1:1. Output is byte-identical to the reference, and the golden hashes run on x86_64 and on arm64 (`arm64-logical`).
+
+Not yet: bilinear/filtered scaling, NEON for the nearest-neighbour gather and the rotation/crop mapping, and any performance measurement on a Pi 5 (none has been taken; do not quote numbers).

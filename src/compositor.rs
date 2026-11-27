@@ -248,9 +248,7 @@ pub struct Overlay {
 }
 
 fn blend(dst: u8, src: u8, a: u8) -> u8 {
-    if a == 255 { return src; }
-    if a == 0 { return dst; }
-    ((u32::from(src) * u32::from(a) + u32::from(dst) * (255 - u32::from(a)) + 127) / 255) as u8
+    crate::simd::blend_px(dst, src, a)
 }
 
 fn opacity_alpha(opacity: u8) -> u32 {
@@ -317,19 +315,15 @@ impl Overlay {
         let (cw, ch) = (w / 2, h / 2);
         for row in 0..self.h {
             let d = (self.y + row) * w + self.x;
-            for col in 0..self.w {
-                let a = self.alpha[row * self.w + col];
-                out.bytes[d + col] = blend(out.bytes[d + col], self.luma[row * self.w + col], a);
-            }
+            let r = row * self.w..(row + 1) * self.w;
+            crate::simd::blend_row(&mut out.bytes[d..d + self.w], &self.luma[r.clone()], &self.alpha[r]);
         }
         for (plane, src) in [&self.u, &self.v].into_iter().enumerate() {
             let base = n + plane * cw * ch;
             for row in 0..self.ch {
                 let d = base + (self.cy + row) * cw + self.cx;
-                for col in 0..self.cw {
-                    let a = self.calpha[row * self.cw + col];
-                    out.bytes[d + col] = blend(out.bytes[d + col], src[row * self.cw + col], a);
-                }
+                let r = row * self.cw..(row + 1) * self.cw;
+                crate::simd::blend_row(&mut out.bytes[d..d + self.cw], &src[r.clone()], &self.calpha[r]);
             }
         }
     }
@@ -628,6 +622,11 @@ impl Compositor {
             let sy = Self::sample(dy, layer.height, sh);
             let srow = &src_y[sy * sw..sy * sw + sw];
             let drow = &mut dst[(layer.y + dy) * w + layer.x..(layer.y + dy) * w + layer.x + layer.width];
+            if layer.width == sw {
+                // 1:1 horizontally: the centre-sampled map is the identity.
+                drow.copy_from_slice(srow);
+                continue;
+            }
             for (d, &sx) in drow.iter_mut().zip(self.x_map.iter()) {
                 *d = srow[sx];
             }
@@ -645,6 +644,10 @@ impl Compositor {
                 let sy = Self::sample(dy, dch, sch);
                 let srow = &src_plane[sy * scw..sy * scw + scw];
                 let start = base + (cy0 + dy) * cw + cx0;
+                if dcw == scw {
+                    self.output.bytes[start..start + dcw].copy_from_slice(srow);
+                    continue;
+                }
                 for (d, &sx) in self.output.bytes[start..start + dcw].iter_mut().zip(self.x_map.iter()) {
                     *d = srow[sx];
                 }
@@ -655,9 +658,8 @@ impl Compositor {
 
 /// Mix `from` into `out`: out = out·mix + from·(255 − mix), per plane.
 pub fn crossfade(out: &mut I420Frame, from: &I420Frame, mix: u8) {
-    for (d, &s) in out.bytes.iter_mut().zip(from.bytes.iter()) {
-        *d = blend(s, *d, mix);
-    }
+    // new·mix + old·(255 − mix) is blend(dst = new, src = old, a = 255 − mix).
+    crate::simd::blend_row_const(&mut out.bytes, &from.bytes, 255 - mix);
 }
 
 /// How a new Program replaces the current one.
