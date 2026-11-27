@@ -46,6 +46,16 @@ class LanAccessTest < Minitest::Test
     [last_response.status, (JSON.parse(last_response.body).dig("error", "code") rescue nil)]
   end
 
+  def test_ca_certificate_is_served_without_credentials_over_lan_tls_only
+    File.write(File.join(@dir, "ca.pem"), "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+    get "/ca.pem", {}, {"HTTP_HOST" => "t3box-ab12.local", "HTTPS" => "on", "rack.url_scheme" => "https"}
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "BEGIN CERTIFICATE"
+    assert_match(/attachment/, last_response.headers["Content-Disposition"])
+    get "/ca.pem", {}, {"HTTP_HOST" => "t3box-ab12.local"}
+    assert_equal 403, last_response.status, "plain HTTP on the LAN is refused"
+  end
+
   def test_lan_requires_tls_certified_host_and_issued_token
     assert_equal [403, "forbidden_host"], call(host: "t3box-ab12.local", https: false, token: ISSUED)
     assert_equal [403, "forbidden_host"], call(host: "evil.example", https: true, token: ISSUED)

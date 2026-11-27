@@ -1,3 +1,4 @@
+import {router} from 'expo-router';
 import {useEffect, useState} from 'react';
 import {FlatList, Pressable, Text, TextInput} from 'react-native';
 import type {ScanNetwork} from '@t3box/provisioning-client';
@@ -43,8 +44,9 @@ export default function Wifi() {
       return;
     }
     const e = await active.session.enrollManagement();
-    await saveEnrollment(active.deviceId, e);
+    await saveEnrollment(active.deviceId, e, active.name);
     setStatus(`発行しました: ${e.urls[0]}\n証明書の指紋 ${e.caSha256.slice(0, 16)}…（アプリ内に安全に保存）`);
+    router.push({pathname: '/dashboard', params: {device: active.deviceId}});
   });
 
   return (

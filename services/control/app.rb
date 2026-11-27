@@ -820,6 +820,16 @@ class Control < Sinatra::Base
     json_reply({stored: merged.values, engine: applied, applied: !applied.nil?})
   end
 
+  # Device CA certificate (public, no credentials). Browsers on a PC need it
+  # installed; the phone app shows the SHA-256 it received sealed over BLE so
+  # the user can compare before trusting it (docs/AUTH.md).
+  get "/ca.pem" do
+    path = settings.lan&.ca_path
+    fail_with 404, "not_found", "device PKI is not configured" unless path && File.file?(path)
+    headers "Content-Disposition" => 'attachment; filename="t3box-ca.pem"'
+    send_file path, type: "application/x-pem-file"
+  end
+
   get "/" do
     index = File.join(settings.public_folder, "index.html")
     fail_with 404, "not_found", "studio is not built" unless File.file?(index)

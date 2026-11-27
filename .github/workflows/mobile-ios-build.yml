@@ -1,0 +1,30 @@
+name: Mobile iOS build
+# Full simulator build of T3Box Connect with the native pinned-fetch module.
+# Manual only: macOS runners are billed at a multiple of Linux minutes on
+# private repositories, and the trust logic itself is tested on every PR
+# that touches native code (studio.yml: mobile-ios-trust).
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        working-directory: packages/provisioning-client
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/mobile
+      - name: Prebuild and build for the simulator
+        working-directory: apps/mobile
+        env:
+          CI: '1'
+        run: |
+          npx expo prebuild --platform ios --clean
+          xcodebuild -workspace ios/T3BoxConnect.xcworkspace -scheme T3BoxConnect -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -50

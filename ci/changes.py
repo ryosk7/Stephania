@@ -18,7 +18,7 @@ import os
 import subprocess
 import sys
 
-AREAS = ["rust", "media", "control", "studio", "provisioning", "mobile", "ble", "wifi", "lan", "phone", "os"]
+AREAS = ["rust", "media", "control", "studio", "provisioning", "mobile", "mobile_native", "ble", "wifi", "lan", "phone", "os"]
 
 # (glob, areas). A path may match several rules; the union is selected.
 RULES = [
@@ -49,7 +49,10 @@ RULES = [
     ("src/provisioning*", ["rust", "provisioning", "mobile", "ble", "wifi", "lan"]), ("src/bin/t3box-provision.rs", ["rust", "provisioning", "mobile", "ble", "wifi", "lan"]),
     ("src/nm*.rs", ["rust", "wifi"]), ("tests/wifi/*", ["wifi"]),
     ("services/ble/*", ["ble"]), ("tests/ble/*", ["ble"]), ("os/bluez/*", ["ble", "os"]),
-    ("packages/*", ["provisioning", "mobile"]), ("apps/mobile/*", ["mobile"]), ("tools/setup-page/*", ["provisioning"]),
+    ("packages/*", ["provisioning", "mobile"]), ("apps/mobile/*", ["mobile"]),
+    # Native code and anything that changes the native projects (prebuild).
+    ("apps/mobile/modules/*", ["mobile", "mobile_native"]), ("apps/mobile/app.json", ["mobile", "mobile_native"]),
+    ("apps/mobile/package*.json", ["mobile", "mobile_native"]), ("ci/mobile-*", ["mobile", "mobile_native"]), ("tools/setup-page/*", ["provisioning"]),
     ("src/pki.rs", ["rust", "lan", "os"]), ("src/management_tokens.rs", ["rust", "lan", "provisioning"]), ("src/bin/t3box-pki.rs", ["rust", "lan", "os"]),
     ("ci/lan*", ["lan"]),
     # Control plane and Studio
@@ -91,7 +94,9 @@ def self_test():
     r = select(["src/native_av.rs"], "pull_request")
     assert r["rust"] and r["media"] and not r["control"]
     r = select(["apps/mobile/src/app/wifi.tsx"], "pull_request")
-    assert r["mobile"] and not r["rust"] and not r["ble"]
+    assert r["mobile"] and not r["rust"] and not r["ble"] and not r["mobile_native"]
+    r = select(["apps/mobile/modules/t3box-pinned-fetch/ios/T3BoxPinnedFetchModule.swift"], "pull_request")
+    assert r["mobile"] and r["mobile_native"] and not r["rust"]
     r = select(["src/provisioning_gatt.rs"], "pull_request")
     assert r["ble"] and r["wifi"] and r["mobile"] and not r["media"]
     r = select(["services/phone/src/main.rs"], "pull_request")
