@@ -33,7 +33,7 @@ Unknown top-level properties are rejected.
 | `stream.start` | none | `accepted:true` — request taken; not ingest confirmation. `engine_start_failed` on configuration error |
 | `stream.stop` | none | `accepted:true, streaming_requested:false` (cooperative stop) |
 | `scene.validate` | `{scene}` | Independent engine validation of draft scene v1 |
-| `scene.apply` | `{scene, scene_id, revision}` | Validates, then succeeds only after the media thread acknowledges frame-boundary application. Fails closed (Program unchanged) with `program_inactive` when no stream runs, `program_timeout` when no frame boundary arrives, `not_implemented` when `T3BOX_COMPOSITOR=0` |
+| `scene.apply` | `{scene, scene_id, revision, transition?}` | Validates (scene v1 or v2, docs/SCENE.md), loads image assets, then succeeds only after the media thread acknowledges frame-boundary application. Fails closed (Program unchanged) with `program_inactive` when no stream runs, `program_timeout` when no frame boundary arrives, `not_implemented` when `T3BOX_COMPOSITOR=0`, `invalid_scene` (asset_unavailable) for a missing asset. `transition`: `{type:cut}` or `{type:fade,duration_ms:1..5000}` |
 | `audio.status` | none | Per-input config/state/levels, master level, resync and limiter counters (docs/AUDIO.md) |
 | `audio.configure` | `{inputs}` | Validates and applies input config live; returns the new status |
 

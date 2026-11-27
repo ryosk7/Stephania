@@ -24,6 +24,9 @@ Environment=T3BOX_CONTROL_DB=/var/lib/t3box/control/control.db
 Environment=T3BOX_PKI_DIR=/var/lib/t3box/pki
 Environment=T3BOX_CONTROL_TLS_PORT=9443
 Environment=T3BOX_CONTROL_TOKENS_FILE=/var/lib/t3box/tokens/tokens.json
+# Scene image assets shared with the engine (files are written 0640).
+Environment=T3BOX_ASSETS_DIR=/var/lib/t3box/assets
+ReadWritePaths=-/var/lib/t3box/assets
 StateDirectory=t3box/control
 StateDirectoryMode=0700
 ExecStart=/usr/bin/bundle exec puma -C config/puma.rb config.ru

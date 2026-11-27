@@ -486,6 +486,75 @@ paths:
                   engine:
                     oneOf: [{type: "null"}, {$ref: "ipc.schema.json#/$defs/audio_status"}]
         default: {$ref: "#/components/responses/Error"}
+  /assets:
+    get:
+      summary: List image assets
+      responses:
+        "200": {description: Assets, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/Asset"}}}}}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      summary: Upload a PNG (raw body, Content-Type image/png); content-addressed
+      description: |
+        id = first 16 hex digits of the file's SHA-256. Uploading identical
+        content returns the existing asset with 200. At most 8 MiB, 1..4096
+        pixels per side, 256 assets.
+      parameters:
+        - {name: name, in: query, required: false, schema: {type: string, maxLength: 100}}
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema: {type: string, format: binary}
+      responses:
+        "201": {description: Stored, content: {application/json: {schema: {$ref: "#/components/schemas/Asset"}}}}
+        "200": {description: Already stored, content: {application/json: {schema: {$ref: "#/components/schemas/Asset"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /assets/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, pattern: "^[0-9a-f]{16}$"}}
+    get:
+      summary: The PNG itself (immutable, cacheable)
+      responses:
+        "200": {description: PNG, content: {image/png: {schema: {type: string, format: binary}}}}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete an asset no scene references (409 asset_in_use otherwise)
+      responses:
+        "204": {description: Deleted}
+        default: {$ref: "#/components/responses/Error"}
+  /templates:
+    get:
+      summary: Developer overlay templates (SVG with {{variables}}, rendered to PNG by the Studio)
+      responses:
+        "200": {description: Templates, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/OverlayTemplate"}}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /templates/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z0-9-]{1,32}$"}}
+    put:
+      summary: Create or replace a developer template (admin). Scripts, event handlers and external references are refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, width, height, svg, vars]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                width: {type: integer, minimum: 1, maximum: 1920}
+                height: {type: integer, minimum: 1, maximum: 1080}
+                svg: {type: string, maxLength: 20000}
+                vars: {type: array, maxItems: 16, items: {$ref: "#/components/schemas/TemplateVar"}}
+      responses:
+        "200": {description: Stored, content: {application/json: {schema: {$ref: "#/components/schemas/OverlayTemplate"}}}}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete a developer template
+      responses:
+        "204": {description: Deleted}
+        default: {$ref: "#/components/responses/Error"}
   /program/transition:
     post:
       summary: Apply a stored draft revision to Program (IPC scene.apply)
@@ -493,7 +562,9 @@ paths:
         Succeeds only after the engine acknowledges frame-boundary application
         (response `engine.first_frame_index`). Program is unchanged on 501
         not_implemented (compositor disabled), 409 program_inactive (no stream
-        running) or 503 program_timeout.
+        running), 503 program_timeout, or 422 invalid_scene when an image
+        asset cannot be loaded. With a fade the acknowledged frame is the
+        first one showing any of the new Program.
       requestBody:
         required: true
         content:
@@ -505,6 +576,7 @@ paths:
               properties:
                 scene_id: {$ref: "#/components/schemas/Id"}
                 revision: {type: integer, minimum: 1}
+                transition: {$ref: "ipc.schema.json#/$defs/transition"}
       responses:
         "200":
           description: Applied and acknowledged by the engine at a frame boundary
@@ -524,12 +596,43 @@ paths:
                       scene_id: {type: string}
                       revision: {type: integer}
                       first_frame_index: {type: integer, minimum: 0}
+                      transition: {$ref: "ipc.schema.json#/$defs/transition"}
         default: {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     bearer: {type: http, scheme: bearer}
     session: {type: apiKey, in: cookie, name: t3box_session, description: "Studio account session; writes also need X-CSRF-Token"}
   schemas:
+    TemplateVar:
+      type: object
+      additionalProperties: false
+      required: [key, label, initial]
+      properties:
+        key: {type: string, pattern: "^[a-z][a-z0-9_.]{0,31}$"}
+        label: {type: string, minLength: 1, maxLength: 100}
+        initial: {type: string, maxLength: 200}
+    OverlayTemplate:
+      type: object
+      additionalProperties: false
+      required: [id, name, width, height, svg, vars]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        width: {type: integer}
+        height: {type: integer}
+        svg: {type: string}
+        vars: {type: array, items: {$ref: "#/components/schemas/TemplateVar"}}
+    Asset:
+      type: object
+      additionalProperties: false
+      required: [id, name, width, height, bytes, created_at_unix]
+      properties:
+        id: {type: string, pattern: "^[0-9a-f]{16}$"}
+        name: {type: string}
+        width: {type: integer}
+        height: {type: integer}
+        bytes: {type: integer}
+        created_at_unix: {type: integer}
     Role:
       enum: [admin, operator]
       description: operator may start/stop, switch Program and change audio; it cannot edit scenes or manage accounts and credentials.
@@ -599,6 +702,7 @@ components:
                 program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
                 too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
                 weak_password(422) user_exists(409) last_admin(409)
+                unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}

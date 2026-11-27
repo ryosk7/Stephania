@@ -32,18 +32,25 @@ impl EngineControl for IpcEngine {
     fn start(&self) -> Result<(), String> { self.0.start() }
     fn stop(&self) { self.0.stop() }
 
-    fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value) -> Result<serde_json::Value, t3box::ipc::IpcError> {
+    fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value, transition: t3box::compositor::Transition) -> Result<serde_json::Value, t3box::ipc::IpcError> {
         use t3box::composition::{apply, ApplyError, APPLY_TIMEOUT};
         use t3box::ipc::{code, IpcError};
         if !t3box::composition::enabled() {
             return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "compositor disabled (T3BOX_COMPOSITOR=0); Program unchanged".into() });
         }
-        let program = t3box::compositor::Program::from_scene(scene_id, revision, scene)
+        // Assets are loaded and static layers rendered here, on the IPC
+        // thread, so the media thread only swaps a finished Program.
+        let store = t3box::assets::store();
+        let program = t3box::compositor::Program::from_scene_with(scene_id, revision, scene, &|id| store.load(id))
             .map_err(|e| IpcError { code: code::INVALID_SCENE, message: e.to_string() })?;
-        match apply(program, APPLY_TIMEOUT) {
+        match apply(program, transition, APPLY_TIMEOUT) {
             Ok(ack) => Ok(serde_json::json!({
                 "applied": true, "scene_id": ack.scene_id, "revision": ack.revision,
                 "first_frame_index": ack.first_frame_index,
+                "transition": match transition {
+                    t3box::compositor::Transition::Cut => serde_json::json!({"type": "cut"}),
+                    t3box::compositor::Transition::Fade { duration_us } => serde_json::json!({"type": "fade", "duration_ms": duration_us / 1000}),
+                },
             })),
             Err(ApplyError::Inactive) => Err(IpcError { code: code::PROGRAM_INACTIVE, message: "no stream is running; Program unchanged".into() }),
             Err(ApplyError::Timeout) => Err(IpcError { code: code::PROGRAM_TIMEOUT, message: "no frame boundary within timeout; Program unchanged".into() }),

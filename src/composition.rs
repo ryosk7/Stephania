@@ -13,10 +13,10 @@
 //!   captured frame goes to the encoder unchanged (no copy, no composition).
 
 use crate::colorspace::I420Frame;
-use crate::compositor::{ApplyAck, Compositor, FrameReport, Program, ProgramSwitch};
+use crate::compositor::{crossfade, ApplyAck, Compositor, FrameReport, Program, ProgramSwitch, Transition};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const SOURCE_MAX_AGE: Duration = Duration::from_millis(500);
@@ -25,6 +25,9 @@ pub const APPLY_TIMEOUT: Duration = Duration::from_secs(2);
 static SWITCH: OnceLock<ProgramSwitch> = OnceLock::new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SOURCES: OnceLock<SourceRegistry> = OnceLock::new();
+/// Output size of the running composition stage (0 = none), so Programs can
+/// be prepared for it before they are handed to the media thread.
+static OUTPUT_SIZE: Mutex<(usize, usize)> = Mutex::new((0, 0));
 
 /// The compositor is part of the media path by default; HDMI-only Programs
 /// take the zero-copy fast path. `T3BOX_COMPOSITOR=0` removes the stage
@@ -54,12 +57,16 @@ pub enum ApplyError {
     Timeout,
 }
 
-/// Request `program` and wait until a frame was produced with it.
-pub fn apply(program: Program, timeout: Duration) -> Result<ApplyAck, ApplyError> {
+/// Request `program` and wait until a frame was produced with it. The
+/// Program is prepared for the running output size first (static layers
+/// rendered here, not on the media thread).
+pub fn apply(program: Program, transition: Transition, timeout: Duration) -> Result<ApplyAck, ApplyError> {
     if !active() {
         return Err(ApplyError::Inactive);
     }
-    let rx = switch().request(program);
+    let (w, h) = *OUTPUT_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+    let program = if w > 0 && h > 0 { program.for_output(w, h) } else { program };
+    let rx = switch().request_with(program, transition);
     match rx.recv_timeout(timeout) {
         Ok(ack) => Ok(ack),
         Err(_) => {
@@ -142,32 +149,60 @@ impl Drop for ActiveGuard {
 /// Per-media-loop state; lives on the encoder thread.
 pub struct CompositionStage {
     compositor: Option<Compositor>,
+    /// Second buffer for the outgoing Program during a fade.
+    fade_compositor: Option<Compositor>,
     frame_index: u64,
     width: usize,
     height: usize,
+    /// Output-prepared copies keyed by the switch's Arc (pointer identity).
+    prepared: Vec<(Arc<Program>, Arc<Program>)>,
     pub last_report: Option<FrameReport>,
     _active: ActiveGuard,
 }
 
 impl CompositionStage {
     pub fn new(width: usize, height: usize) -> Self {
-        Self { compositor: None, frame_index: 0, width, height, last_report: None, _active: ActiveGuard::acquire() }
+        *OUTPUT_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = (width, height);
+        Self { compositor: None, fade_compositor: None, frame_index: 0, width, height, prepared: Vec::new(), last_report: None, _active: ActiveGuard::acquire() }
+    }
+
+    /// The Program prepared for this output; normally already prepared by
+    /// [`apply`], otherwise (initial Program, size change) done once here.
+    fn prepare(&mut self, program: &Arc<Program>) -> Arc<Program> {
+        if program.is_prepared_for(self.width, self.height) {
+            return Arc::clone(program);
+        }
+        if let Some((_, p)) = self.prepared.iter().find(|(k, _)| Arc::ptr_eq(k, program)) {
+            return Arc::clone(p);
+        }
+        let p = Arc::new(program.for_output(self.width, self.height));
+        self.prepared.truncate(1);
+        self.prepared.insert(0, (Arc::clone(program), Arc::clone(&p)));
+        p
     }
 
     /// Decide this frame: `None` = encode `hdmi` as is (fast path);
     /// `Some(frame)` = encode the composed frame.
     pub fn process(&mut self, hdmi: &I420Frame, registry: &SourceRegistry) -> Option<&I420Frame> {
-        let program = switch().at_frame_boundary(self.frame_index).for_output(self.width, self.height);
+        let plan = switch().at_frame(self.frame_index, hdmi.timestamp_us);
         self.frame_index += 1;
-        if program.is_hdmi_passthrough() && hdmi.width == self.width && hdmi.height == self.height {
+        let program = self.prepare(&plan.program);
+        let fade = plan.fade_from.map(|(from, mix)| (self.prepare(&from), mix));
+        if fade.is_none() && program.is_hdmi_passthrough() && hdmi.width == self.width && hdmi.height == self.height {
             self.last_report = None;
             return None;
         }
         let fresh = registry.snapshot(Instant::now());
-        let compositor = self.compositor.get_or_insert_with(|| Compositor::new(self.width, self.height));
-        let report = compositor.compose(&program, hdmi.timestamp_us, |source| {
-            if source == "hdmi" { Some(hdmi) } else { fresh.get(source) }
-        });
+        let pick = |source: &str| if source == "hdmi" { Some(hdmi) } else { fresh.get(source) };
+        let (w, h) = (self.width, self.height);
+        let compositor = self.compositor.get_or_insert_with(|| Compositor::new(w, h));
+        let report = compositor.compose(&program, hdmi.timestamp_us, pick);
+        if let Some((from, mix)) = fade {
+            let aux = self.fade_compositor.get_or_insert_with(|| Compositor::new(w, h));
+            aux.compose(&from, hdmi.timestamp_us, pick);
+            let out = compositor.output_mut();
+            crossfade(out, aux.output(), mix);
+        }
         self.last_report = Some(report);
         Some(compositor.output())
     }
@@ -205,7 +240,7 @@ mod tests {
     #[test]
     fn stage_fast_path_apply_ack_and_staleness() {
         let registry = SourceRegistry::default();
-        assert_eq!(apply(Program::hdmi_only(), Duration::from_millis(10)), Err(ApplyError::Inactive));
+        assert_eq!(apply(Program::hdmi_only(), Transition::Cut, Duration::from_millis(10)), Err(ApplyError::Inactive));
         let mut stage = CompositionStage::new(64, 36);
         assert!(active());
         let hdmi = solid(64, 36, 50);
@@ -216,7 +251,7 @@ mod tests {
             {"id":"s","source":"hdmi","x":0,"y":0,"width":1920,"height":1080,"visible":true},
             {"id":"r","source":"phone:rear","x":960,"y":0,"width":960,"height":540,"visible":true}]});
         let program = Program::from_scene("pip", 4, &scene).unwrap();
-        let waiter = std::thread::spawn(move || apply(program, Duration::from_secs(2)));
+        let waiter = std::thread::spawn(move || apply(program, Transition::Cut, Duration::from_secs(2)));
         // Media thread keeps producing frames until the ack is delivered.
         registry.submit("phone:rear", solid(32, 18, 200));
         let mut composed = None;
@@ -238,7 +273,7 @@ mod tests {
 
         drop(stage);
         assert!(!active());
-        assert_eq!(apply(Program::hdmi_only(), Duration::from_millis(10)), Err(ApplyError::Inactive));
+        assert_eq!(apply(Program::hdmi_only(), Transition::Cut, Duration::from_millis(10)), Err(ApplyError::Inactive));
         // Leave the global Program as HDMI-only for any later user.
         let _ = switch().request(Program::hdmi_only());
         switch().at_frame_boundary(0);

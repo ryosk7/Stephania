@@ -5,12 +5,15 @@ require "json"
 require "sequel"
 require "openssl"
 require "securerandom"
+require "tmpdir"
 require_relative "lib/engine_client"
 require_relative "lib/scene_validator"
 require_relative "lib/event_hub"
 require_relative "lib/lan_access"
 require_relative "lib/audio_settings"
 require_relative "lib/accounts"
+require_relative "lib/asset_store"
+require_relative "lib/template_validator"
 
 # T3Box management plane. Contract: contracts/openapi.yaml.
 #
@@ -59,7 +62,7 @@ class Control < Sinatra::Base
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
-    attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone
+    attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone, :assets_dir
     attr_writer :throttle
 
     def throttle = (@throttle ||= Accounts::Throttle.new)
@@ -95,6 +98,7 @@ class Control < Sinatra::Base
       # t3box-phone speaks the same framing (docs/PHONE.md); answers wait for
       # ICE gathering, hence the longer timeout.
       self.phone = EngineClient.new(socket_path: env.fetch("T3BOX_PHONE_SOCKET", "/run/t3box-phone/phone.sock"), timeout: 8.0)
+      self.assets_dir = env.fetch("T3BOX_ASSETS_DIR") { File.join(Dir.tmpdir, "t3box-assets-#{Process.pid}") }
       configure_storage(env.fetch("T3BOX_CONTROL_DB", ":memory:"))
       configure_events(interval: Float(env.fetch("T3BOX_CONTROL_POLL_SECONDS", "1.0")))
     end
@@ -194,10 +198,21 @@ class Control < Sinatra::Base
       (2..).each { |n| return "#{slug}-#{n}" unless taken.include?("#{slug}-#{n}") }
     end
 
+    # Scenes may only reference uploaded assets.
+    def check_assets!(document)
+      ids = AssetStore.referenced(document)
+      return if ids.empty?
+
+      known = settings.db[:assets].where(id: ids).select_map(:id)
+      missing = ids - known
+      fail_with 422, "unknown_asset", "no such asset: #{missing.join(", ")}" unless missing.empty?
+    end
+
     def create_scene(base, document)
       if (violation = SceneValidator.validate(document))
         fail_with 422, "invalid_scene", violation.join(": ")
       end
+      check_assets!(document)
       db = settings.db
       raw = JSON.generate(document)
       id = nil
@@ -210,6 +225,14 @@ class Control < Sinatra::Base
       {id: id, revision: 1, document: document}
     end
 
+    def template_json(row)
+      {id: row[:id], name: row[:name], width: row[:width], height: row[:height], svg: row[:svg], vars: JSON.parse(row[:vars])}
+    end
+
+    def asset_json(row)
+      {id: row[:id], name: row[:name], width: row[:width], height: row[:height], bytes: row[:bytes], created_at_unix: row[:created_at_unix]}
+    end
+
     def scene_json(row)
       {id: row[:id], revision: row[:revision], document: JSON.parse(row[:document])}
     end
@@ -218,7 +241,7 @@ class Control < Sinatra::Base
   before do
     headers "Cache-Control" => "no-store", "X-Content-Type-Options" => "nosniff",
       "X-Request-Id" => request_id,
-      "Content-Security-Policy" => "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+      "Content-Security-Policy" => "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
     @lan_request = !ALLOWED_HOSTS.include?(request.host)
     if @lan_request
       # Non-loopback Host values are accepted only over TLS and only for the
@@ -494,8 +517,8 @@ class Control < Sinatra::Base
     unless input.is_a?(Hash) && (input.keys - %w[name document]).empty? && input["name"].is_a?(String)
       fail_with 422, "invalid_request", "body must be {name, document?}"
     end
-    document = input["document"] || {"version" => 1, "name" => input["name"],
-      "layers" => [{"id" => "hdmi", "source" => "hdmi", "x" => 0, "y" => 0, "width" => 1920, "height" => 1080, "visible" => true}]}
+    document = input["document"] || {"version" => 2, "name" => input["name"],
+      "layers" => [{"id" => "hdmi", "type" => "video", "source" => "hdmi", "x" => 0, "y" => 0, "width" => 1920, "height" => 1080, "visible" => true}]}
     document = document.merge("name" => input["name"]) if document.is_a?(Hash)
     json_reply(create_scene(input["name"], document), 201)
   end
@@ -540,6 +563,7 @@ class Control < Sinatra::Base
     if (violation = SceneValidator.validate(input["document"]))
       fail_with 422, "invalid_scene", violation.join(": ")
     end
+    check_assets!(input["document"])
     revision = input["revision"]
     document = JSON.generate(input["document"])
     db = settings.db
@@ -571,17 +595,109 @@ class Control < Sinatra::Base
   # timeout (503) Program is unchanged.
   post "/api/v1/program/transition" do
     input = read_json
-    unless input.is_a?(Hash) && input.keys.sort == %w[revision scene_id] &&
+    unless input.is_a?(Hash) && (input.keys - %w[transition]).sort == %w[revision scene_id] &&
         input["scene_id"].is_a?(String) && input["revision"].is_a?(Integer)
-      fail_with 422, "invalid_request", "body must be {scene_id, revision}"
+      fail_with 422, "invalid_request", "body must be {scene_id, revision, transition?}"
+    end
+    transition = input["transition"]
+    unless transition.nil? || transition == {"type" => "cut"} ||
+        (transition.is_a?(Hash) && transition.keys.sort == %w[duration_ms type] && transition["type"] == "fade" &&
+         transition["duration_ms"].is_a?(Integer) && transition["duration_ms"].between?(1, 5000))
+      fail_with 422, "invalid_request", "transition must be {type: cut} or {type: fade, duration_ms: 1..5000}"
     end
     row = scene_row(input["scene_id"])
     fail_with 404, "not_found", "scene does not exist" unless row
     fail_with 409, "revision_conflict", "scene revision is #{row[:revision]}" unless row[:revision] == input["revision"]
-    result = engine_call("scene.apply", {scene: JSON.parse(row[:document]), scene_id: row[:id], revision: row[:revision]})
+    apply = {scene: JSON.parse(row[:document]), scene_id: row[:id], revision: row[:revision]}
+    apply[:transition] = transition if transition
+    result = engine_call("scene.apply", apply)
     # Only reachable once the engine reports an acknowledged application.
     settings.events.publish("program.changed", {scene_id: row[:id], revision: row[:revision]})
     json_reply({scene_id: row[:id], revision: row[:revision], engine: result})
+  end
+
+  # --- Image assets (docs/SCENE.md) ---------------------------------------
+  # Raw PNG upload (Content-Type: image/png), content-addressed: uploading
+  # the same file twice returns the existing asset.
+  post "/api/v1/assets" do
+    fail_with 415, "unsupported_media_type", "upload must be image/png" unless request.media_type == "image/png"
+    if request.content_length.to_i > AssetStore::MAX_BYTES
+      fail_with 413, "body_too_large", "assets are limited to #{AssetStore::MAX_BYTES} bytes"
+    end
+    data = request.body.read(AssetStore::MAX_BYTES + 1).to_s.b
+    fail_with 413, "body_too_large", "assets are limited to #{AssetStore::MAX_BYTES} bytes" if data.bytesize > AssetStore::MAX_BYTES
+    dims = AssetStore.inspect_png(data)
+    fail_with 422, "invalid_asset", dims if dims.is_a?(String)
+    name = params["name"].to_s[0, 100]
+    name = "image.png" unless name.match?(/\A[[:print:]]{1,100}\z/)
+    db = settings.db
+    id = AssetStore.id_for(data)
+    if (row = db[:assets].where(id: id).first)
+      halt 200, JSON.generate(asset_json(row))
+    end
+    fail_with 409, "too_many_assets", "at most #{AssetStore::MAX_ASSETS} assets" if db[:assets].count >= AssetStore::MAX_ASSETS
+    AssetStore.write(settings.assets_dir, id, data)
+    row = {id: id, sha256: OpenSSL::Digest::SHA256.hexdigest(data), name: name, width: dims[0], height: dims[1],
+           bytes: data.bytesize, created_at_unix: Time.now.to_i}
+    db[:assets].insert(row)
+    json_reply(asset_json(row), 201)
+  end
+
+  get "/api/v1/assets" do
+    json_reply(settings.db[:assets].order(:created_at_unix, :id).all.map { |r| asset_json(r) })
+  end
+
+  get "/api/v1/assets/:id" do
+    id = params[:id]
+    fail_with 400, "invalid_id", "asset id must be 16 hex digits" unless id.match?(AssetStore::ID)
+    fail_with 404, "not_found", "no such asset" unless settings.db[:assets].where(id: id).count.positive?
+    path = AssetStore.path(settings.assets_dir, id)
+    fail_with 404, "not_found", "asset file is missing" unless File.file?(path)
+    headers "Cache-Control" => "private, max-age=31536000, immutable"
+    send_file path, type: "image/png"
+  end
+
+  delete "/api/v1/assets/:id" do
+    id = params[:id]
+    fail_with 400, "invalid_id", "asset id must be 16 hex digits" unless id.match?(AssetStore::ID)
+    db = settings.db
+    fail_with 404, "not_found", "no such asset" unless db[:assets].where(id: id).count.positive?
+    users = db[:scenes].all.select { |r| AssetStore.referenced(JSON.parse(r[:document])).include?(id) }.map { |r| r[:id] }
+    fail_with 409, "asset_in_use", "used by scene #{users.join(", ")}" unless users.empty?
+    db[:assets].where(id: id).delete
+    File.unlink(AssetStore.path(settings.assets_dir, id)) if File.exist?(AssetStore.path(settings.assets_dir, id))
+    status 204
+    ""
+  end
+
+  # --- Developer overlay templates (docs/SCENE.md) -----------------------
+  get "/api/v1/templates" do
+    json_reply(settings.db[:templates].order(:id).all.map { |r| template_json(r) })
+  end
+
+  put "/api/v1/templates/:id" do
+    id = params[:id]
+    input = read_json
+    if (problem = TemplateValidator.problem(id, input))
+      fail_with 422, "invalid_template", problem
+    end
+    db = settings.db
+    fail_with 409, "too_many_templates", "at most 64 templates" if db[:templates].count >= 64 && db[:templates].where(id: id).count.zero?
+    row = {id: id, name: input["name"], width: input["width"], height: input["height"], svg: input["svg"],
+           vars: JSON.generate(input["vars"]), updated_at_unix: Time.now.to_i}
+    db.transaction do
+      db[:templates].where(id: id).delete
+      db[:templates].insert(row)
+    end
+    json_reply(template_json(row))
+  end
+
+  delete "/api/v1/templates/:id" do
+    id = params[:id]
+    fail_with 400, "invalid_id", "template id must match #{TemplateValidator::ID.source}" unless id.match?(TemplateValidator::ID)
+    fail_with 404, "not_found", "no such template" if settings.db[:templates].where(id: id).delete.zero?
+    status 204
+    ""
   end
 
   # Phone camera session (docs/PHONE.md). The control plane relays SDP

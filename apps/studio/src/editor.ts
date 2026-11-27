@@ -3,8 +3,29 @@
 // history. Coordinates are canvas pixels (1920×1080), integers, always
 // clamped to scene.schema.json bounds so every edit stays saveable.
 export type Source = 'hdmi' | 'phone:rear' | 'phone:front';
-export type Layer = {id: string; source: Source; x: number; y: number; width: number; height: number; visible: boolean};
-export type Scene = {version: 1; name: string; layers: Layer[]};
+export type Fit = 'stretch' | 'contain' | 'cover';
+export type Crop = {left: number; top: number; right: number; bottom: number};
+export type Template = {id: string; vars: Record<string, string>};
+type Common = {id: string; x: number; y: number; width: number; height: number; visible: boolean; opacity?: number; rotation?: number};
+/** v1 video layers have no `type`; v2 layers always do (docs/SCENE.md). */
+export type VideoLayer = Common & {type?: 'video'; source: Source; fit?: Fit; crop?: Crop};
+export type ImageLayer = Common & {type: 'image'; asset: string; fit?: Fit; template?: Template};
+export type ColorLayer = Common & {type: 'color'; color: string};
+export type Layer = VideoLayer | ImageLayer | ColorLayer;
+export type Scene = {version: 1 | 2; name: string; canvas?: {background: string}; layers: Layer[]};
+
+export const isVideo = (l: Layer): l is VideoLayer => l.type === undefined || l.type === 'video';
+export const MAX_CROP_SUM = 9000;
+
+/** Explicit v1 → v2 migration: every layer becomes a typed video layer. */
+export function migrateToV2(s: Scene): Scene {
+  if (s.version === 2) return s;
+  return {version: 2, name: s.name, layers: s.layers.map(l => ({...(l as VideoLayer), type: 'video' as const}))};
+}
+
+export function layerLabel(l: Layer): string {
+  return isVideo(l) ? l.source : l.type === 'image' ? (l.template ? 'テンプレート:' + l.template.id : '画像') : '色 ' + l.color;
+}
 
 export const CANVAS = {width: 1920, height: 1080} as const;
 export const MAX_LAYERS = 16;
@@ -64,7 +85,7 @@ export function resizeLayer(start: Layer, handle: Handle, dx: number, dy: number
 }
 
 /** Clamp a layer into schema bounds (integers, inside the canvas). */
-export function normalize(l: Layer): Layer {
+export function normalize<T extends Layer>(l: T): T {
   const width = clamp(Math.round(l.width), 1, CANVAS.width);
   const height = clamp(Math.round(l.height), 1, CANVAS.height);
   const x = clamp(Math.round(l.x), 0, CANVAS.width - width);
@@ -72,8 +93,26 @@ export function normalize(l: Layer): Layer {
   return {...l, x, y, width, height};
 }
 
-export function updateLayer(s: Scene, id: string, change: Partial<Layer>): Scene {
-  return {...s, layers: s.layers.map(l => (l.id === id ? normalize({...l, ...change}) : l))};
+const clampInt = (v: number, lo: number, hi: number) => clamp(Math.round(Number.isFinite(v) ? v : 0), lo, hi);
+
+/** Clamp v2 properties into their contract ranges. */
+function normalizeV2<T extends Layer>(l: T): T {
+  const out = {...l};
+  if (out.opacity !== undefined) out.opacity = clampInt(out.opacity, 0, 100);
+  // Wrap into −180…179 so a spinner can turn past ±180.
+  if (out.rotation !== undefined) out.rotation = ((clampInt(out.rotation, -100000, 100000) + 180) % 360 + 360) % 360 - 180;
+  if (isVideo(out) && out.crop) {
+    const c = {...out.crop};
+    for (const k of ['left', 'top', 'right', 'bottom'] as const) c[k] = clampInt(c[k], 0, MAX_CROP_SUM);
+    if (c.left + c.right > MAX_CROP_SUM) c.right = MAX_CROP_SUM - c.left;
+    if (c.top + c.bottom > MAX_CROP_SUM) c.bottom = MAX_CROP_SUM - c.top;
+    (out as VideoLayer).crop = c;
+  }
+  return out;
+}
+
+export function updateLayer(s: Scene, id: string, change: Partial<VideoLayer> | Partial<ImageLayer> | Partial<ColorLayer>): Scene {
+  return {...s, layers: s.layers.map(l => (l.id === id ? normalizeV2(normalize({...l, ...change} as Layer)) : l))};
 }
 
 export type ZMove = 'front' | 'forward' | 'backward' | 'back';
@@ -90,14 +129,38 @@ export function reorder(s: Scene, id: string, move: ZMove): Scene {
   return {...s, layers};
 }
 
-export function addLayer(s: Scene, source: Source): {scene: Scene; id: string} | undefined {
-  if (s.layers.length >= MAX_LAYERS) return undefined;
-  const base = source.replace(':', '-');
+function freeId(s: Scene, base: string): string {
   let id = base;
   for (let n = 2; s.layers.some(l => l.id === id); n++) id = `${base}-${n}`;
+  return id;
+}
+
+function push(s: Scene, layer: Layer): {scene: Scene; id: string} | undefined {
+  if (s.layers.length >= MAX_LAYERS) return undefined;
+  return {scene: {...s, layers: [...s.layers, normalize(layer)]}, id: layer.id};
+}
+
+export function addLayer(s: Scene, source: Source): {scene: Scene; id: string} | undefined {
+  const id = freeId(s, source.replace(':', '-'));
   const offset = (s.layers.length * 40) % 400;
-  const layer = normalize({id, source, x: 1440 - offset, y: offset, width: 480, height: 270, visible: true});
-  return {scene: {...s, layers: [...s.layers, layer]}, id};
+  const base = {id, source, x: 1440 - offset, y: offset, width: 480, height: 270, visible: true};
+  return push(s, s.version === 2 ? {...base, type: 'video'} : base);
+}
+
+/** Colour layer (scene v2 only). */
+export function addColorLayer(s: Scene, color: string): {scene: Scene; id: string} | undefined {
+  if (s.version !== 2) return undefined;
+  return push(s, {id: freeId(s, 'color'), type: 'color', color, x: 0, y: 900, width: 1920, height: 180, visible: true});
+}
+
+/** Image layer sized to the image (at most 960 px wide), scene v2 only. */
+export function addImageLayer(s: Scene, asset: string, width: number, height: number, opts: {template?: Template; x?: number; y?: number; base?: string} = {}): {scene: Scene; id: string} | undefined {
+  if (s.version !== 2) return undefined;
+  const scale = Math.min(1, 960 / width, 540 / height);
+  const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
+  const layer: ImageLayer = {id: freeId(s, opts.base ?? 'image'), type: 'image', asset, x: opts.x ?? 80, y: opts.y ?? 80, width: w, height: h, visible: true,
+    ...(opts.template ? {template: opts.template} : {})};
+  return push(s, layer);
 }
 
 export function removeLayer(s: Scene, id: string): Scene {

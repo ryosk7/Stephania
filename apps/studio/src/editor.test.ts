@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {
-  addLayer, CANVAS, commit, historyOf, MAX_LAYERS, MIN_SIZE, moveLayer, redo, removeLayer, reorder, resizeLayer, undo, updateLayer,
+  addColorLayer, addImageLayer, migrateToV2, addLayer, CANVAS, commit, historyOf, MAX_LAYERS, MIN_SIZE, moveLayer, redo, removeLayer, reorder, resizeLayer, undo, updateLayer,
   type Layer, type Scene,
 } from './editor';
 import {validateScene} from './scene';
@@ -100,5 +100,35 @@ describe('history', () => {
     d = commit(d, s2, true);
     expect(undo(d).present).toBe(s0);
     expect(undo(historyOf(s0)).present).toBe(s0);
+  });
+});
+
+describe('scene v2', () => {
+  const v1 = scene(layer({id: 'a'}));
+  it('migrates explicitly and the result is valid v2', () => {
+    const v2 = migrateToV2(v1);
+    expect(v2.version).toBe(2);
+    expect(v2.layers[0]).toMatchObject({type: 'video', source: 'hdmi'});
+    expect(validateScene(v2)).toBeNull();
+    expect(migrateToV2(v2)).toBe(v2);
+  });
+  it('adds colour and image layers only to v2 scenes, sized to the image', () => {
+    expect(addColorLayer(v1, '#112233')).toBeUndefined();
+    expect(addImageLayer(v1, '0123456789abcdef', 10, 10)).toBeUndefined();
+    const v2 = migrateToV2(v1);
+    const c = addColorLayer(v2, '#112233')!;
+    const i = addImageLayer(c.scene, '0123456789abcdef', 1920, 540, {template: {id: 'title', vars: {title: 'x'}}})!;
+    expect(i.scene.layers.at(-1)).toMatchObject({type: 'image', width: 960, height: 270, template: {id: 'title'}});
+    expect(validateScene(i.scene)).toBeNull();
+    // New video layers in a v2 scene are typed.
+    expect(addLayer(v2, 'phone:front')!.scene.layers.at(-1)).toMatchObject({type: 'video'});
+  });
+  it('clamps v2 properties into the contract', () => {
+    const v2 = migrateToV2(v1);
+    const s = updateLayer(v2, 'a', {opacity: 150, rotation: 190, crop: {left: 8000, top: 0, right: 5000, bottom: 9500}});
+    expect(s.layers[0]).toMatchObject({opacity: 100, rotation: -170, crop: {left: 8000, right: 1000, top: 0, bottom: 9000}});
+    expect(validateScene(s)).toBeNull();
+    expect(updateLayer(v2, 'a', {rotation: -181}).layers[0]!.rotation).toBe(179);
+    expect(updateLayer(v2, 'a', {opacity: -5}).layers[0]!.opacity).toBe(0);
   });
 });
