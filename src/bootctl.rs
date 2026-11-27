@@ -39,6 +39,12 @@ pub struct Config {
 pub struct State {
     pub pending: Option<String>,
     pub bad: Vec<String>,
+    /// Set when a trial was rejected: persistent data must be restored
+    /// from the pre-install snapshot before the control plane starts.
+    pub restore: bool,
+    /// Trial whose data was already restored (crashed-trial path), so the
+    /// later mark-bad does not restore a second time over newer writes.
+    pub restored_trial: Option<String>,
 }
 
 impl State {
@@ -48,6 +54,8 @@ impl State {
         State {
             pending: v.get("pending").and_then(Value::as_str).map(str::to_owned),
             bad: v.get("bad").and_then(Value::as_array).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+            restore: v.get("restore").and_then(Value::as_bool).unwrap_or(false),
+            restored_trial: v.get("restored_trial").and_then(Value::as_str).map(str::to_owned),
         }
     }
 }
@@ -118,7 +126,7 @@ impl BootCtl {
     fn state(&self) -> State { State::load(&self.cfg.state) }
 
     fn save(&self, s: &State) -> Result<(), String> {
-        write_atomic(&self.cfg.state, json!({"pending": s.pending, "bad": s.bad}).to_string().as_bytes())
+        write_atomic(&self.cfg.state, json!({"pending": s.pending, "bad": s.bad, "restore": s.restore, "restored_trial": s.restored_trial}).to_string().as_bytes())
     }
 
     /// Committed primary from `[all]` (the firmware default).
@@ -153,6 +161,8 @@ impl BootCtl {
             return self.write_autoboot(&committed, self.other(&committed)?);
         }
         s.pending = Some(name.to_owned());
+        s.restore = false;
+        s.restored_trial = None;
         // State first: if power fails between the writes, a pending entry
         // without a [tryboot] pointer only yields a harmless failed trial.
         self.save(&s)?;
@@ -177,6 +187,7 @@ impl BootCtl {
                     return Err(format!("refusing to commit {name}: not booted from it"));
                 }
                 s.pending = None;
+                s.restore = false;
                 self.write_autoboot(name, self.other(name)?)?;
             }
             self.save(&s)
@@ -184,6 +195,9 @@ impl BootCtl {
             if !s.bad.iter().any(|b| b == name) { s.bad.push(name.to_owned()); }
             if s.pending.as_deref() == Some(name) {
                 s.pending = None;
+                // The trial may have migrated persistent data.
+                s.restore = s.restored_trial.as_deref() != Some(name);
+                s.restored_trial = None;
                 self.save(&s)?;
                 let committed = self.committed()?;
                 return self.write_autoboot(&committed, self.other(&committed)?);
@@ -226,6 +240,102 @@ pub enum Decision {
     CheckTrial(String),
     /// Booted the primary while a trial was pending.
     TrialFailed(String),
+}
+
+/// Persistent-data protection across a rejected trial (§8: restore a
+/// compatible snapshot on rollback). The pre-install handler snapshots the
+/// control database with SQLite's online backup; a rejected trial sets
+/// `restore`, and `restore_data` (run before the control plane starts)
+/// puts the snapshot back on the committed slot.
+pub struct DataSnapshot {
+    /// Live SQLite database (control plane).
+    pub database: PathBuf,
+    /// Snapshot directory on the data partition.
+    pub dir: PathBuf,
+    /// `sqlite3` CLI used for the online backup.
+    pub sqlite3: String,
+}
+
+impl DataSnapshot {
+    fn snapshot_path(&self) -> PathBuf { self.dir.join("control.db") }
+
+    /// Consistent online copy; replaces any previous snapshot atomically.
+    pub fn take(&self) -> Result<bool, String> {
+        if !self.database.exists() {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        let tmp = self.dir.join("control.db.new");
+        let _ = std::fs::remove_file(&tmp);
+        let status = std::process::Command::new(&self.sqlite3)
+            .arg(&self.database)
+            .arg(format!(".backup '{}'", tmp.display()))
+            .status()
+            .map_err(|e| format!("{}: {e}", self.sqlite3))?;
+        if !status.success() {
+            return Err("sqlite3 .backup failed".into());
+        }
+        let f = std::fs::File::open(&tmp).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, self.snapshot_path()).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// Replaces the live database with the snapshot (control must not be
+    /// running). Stale WAL/SHM files from the trial are removed first.
+    pub fn restore(&self) -> Result<bool, String> {
+        let snap = self.snapshot_path();
+        if !snap.exists() {
+            return Ok(false);
+        }
+        for suffix in ["-wal", "-shm"] {
+            let p = PathBuf::from(format!("{}{suffix}", self.database.display()));
+            match std::fs::remove_file(&p) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", p.display())),
+            }
+        }
+        let tmp = self.database.with_extension("restore");
+        std::fs::copy(&snap, &tmp).map_err(|e| format!("copy snapshot: {e}"))?;
+        std::fs::File::open(&tmp).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &self.database).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    pub fn discard(&self) {
+        let _ = std::fs::remove_file(self.snapshot_path());
+    }
+}
+
+impl BootCtl {
+    /// Boot-time, before the control plane: restore data after a rejected
+    /// or crashed trial, while booted from the committed slot.
+    pub fn restore_data(&self, data: &DataSnapshot) -> Result<bool, String> {
+        let mut s = self.state();
+        let trial_failed = matches!(self.decide()?, Decision::TrialFailed(_));
+        if !(s.restore || trial_failed) {
+            return Ok(false);
+        }
+        if self.booted()?.as_deref() != Some(self.committed()?.as_str()) {
+            return Ok(false);
+        }
+        let restored = data.restore()?;
+        s.restore = false;
+        if trial_failed {
+            s.restored_trial = s.pending.clone();
+        }
+        self.save(&s)?;
+        Ok(restored)
+    }
+
+    /// After a successful commit the snapshot belongs to the old version.
+    pub fn discard_snapshot_if_committed(&self, data: &DataSnapshot) {
+        let s = self.state();
+        if s.pending.is_none() && !s.restore {
+            data.discard();
+        }
+    }
 }
 
 /// Asks the engine for `engine.status` over its IPC socket.
@@ -362,6 +472,55 @@ mod tests {
         assert!(parse_slots("A=2,B=99").is_err());
         std::fs::write(&c.cfg.autoboot, "[all]\nboot_partition=9\n").unwrap();
         assert!(c.committed().is_err(), "unknown partition fails closed");
+    }
+
+    #[test]
+    fn rejected_trial_restores_data_on_the_committed_slot_only() {
+        let fx = Fx::new("data");
+        let c = &fx.ctl;
+        let db = fx.dir.join("control.db");
+        std::fs::write(&db, b"v2").unwrap();
+        std::fs::create_dir_all(fx.dir.join("snap")).unwrap();
+        // Snapshot taken by the pre-install handler (stand-in for sqlite3 .backup).
+        std::fs::write(fx.dir.join("snap/control.db"), b"v2").unwrap();
+        let data = DataSnapshot { database: db.clone(), dir: fx.dir.join("snap"), sqlite3: "sqlite3".into() };
+        c.set_primary("B").unwrap();
+        fx.firmware_boot(true);
+        std::fs::write(&db, b"v3-migrated").unwrap();
+        std::fs::write(fx.dir.join("control.db-wal"), b"wal").unwrap();
+        assert!(!c.restore_data(&data).unwrap(), "never restore while on the trial slot");
+        c.set_state("B", false).unwrap(); // unhealthy
+        assert!(!c.restore_data(&data).unwrap(), "still booted from B until the reboot");
+        fx.firmware_boot(false);
+        assert!(c.restore_data(&data).unwrap());
+        assert_eq!(std::fs::read(&db).unwrap(), b"v2");
+        assert!(!fx.dir.join("control.db-wal").exists());
+        assert!(!c.restore_data(&data).unwrap(), "restore runs once");
+
+        // Crashed trial: no mark-bad ran, restore is driven by the pending state.
+        c.set_primary("B").unwrap();
+        fx.firmware_boot(true);
+        std::fs::write(&db, b"v3").unwrap();
+        fx.firmware_boot(false);
+        assert!(c.restore_data(&data).unwrap());
+        assert_eq!(std::fs::read(&db).unwrap(), b"v2");
+        std::fs::write(&db, b"v2-new-scene").unwrap(); // control runs on A
+        c.set_state("B", false).unwrap(); // confirm: mark-bad other
+        fx.firmware_boot(false);
+        assert!(!c.restore_data(&data).unwrap(), "no second restore over newer data");
+        assert_eq!(std::fs::read(&db).unwrap(), b"v2-new-scene");
+        std::fs::write(fx.dir.join("snap/control.db"), b"v2-new-scene").unwrap();
+
+        // Successful trial: data kept, snapshot discarded after commit.
+        c.set_primary("B").unwrap();
+        fx.firmware_boot(true);
+        std::fs::write(&db, b"v3").unwrap();
+        c.set_state("B", true).unwrap();
+        c.discard_snapshot_if_committed(&data);
+        fx.firmware_boot(false);
+        assert!(!c.restore_data(&data).unwrap());
+        assert_eq!(std::fs::read(&db).unwrap(), b"v3");
+        assert!(!fx.dir.join("snap/control.db").exists());
     }
 
     #[test]

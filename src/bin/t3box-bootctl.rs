@@ -8,14 +8,18 @@
 //!   confirm   — after boot: health-check a trial, then `rauc status mark-*`
 //!   guard     — RAUC pre-install handler: refuse while streaming
 //!   health    — run the local health check only
+//!   snapshot  — RAUC pre-install (after guard): online backup of the control DB
+//!   restore-data — boot, before control: restore it after a rejected trial
+//!   deadline  — trial still unconfirmed at the deadline: reject and reboot
 //!
 //! Environment: T3BOX_AUTOBOOT, T3BOX_BOOT_STATE, T3BOX_BOOT_SLOTS (A=2,B=3),
 //! T3BOX_DEVICE_TREE, T3BOX_ENGINE_SOCKET, T3BOX_DATA_DIR, T3BOX_RAUC,
-//! T3BOX_HEALTH_ATTEMPTS, T3BOX_REBOOT (command run after a failed trial).
+//! T3BOX_HEALTH_ATTEMPTS, T3BOX_REBOOT (command run after a failed trial),
+//! T3BOX_CONTROL_DB, T3BOX_SNAPSHOT_DIR, T3BOX_SQLITE3.
 #[cfg(unix)]
 fn main() {
     use std::path::PathBuf;
-    use t3box::bootctl::{self, BootCtl, Config, Decision};
+    use t3box::bootctl::{self, BootCtl, Config, DataSnapshot, Decision};
 
     let env = |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_owned());
     let die = |e: String| -> ! { eprintln!("t3box-bootctl: {e}"); std::process::exit(1) };
@@ -29,6 +33,16 @@ fn main() {
     let data = PathBuf::from(env("T3BOX_DATA_DIR", "/data/t3box"));
     let attempts: u32 = env("T3BOX_HEALTH_ATTEMPTS", "60").parse().unwrap_or(60);
     let ctl = BootCtl { cfg };
+    let snapshot = DataSnapshot {
+        database: env("T3BOX_CONTROL_DB", "/var/lib/t3box/control/control.db").into(),
+        dir: env("T3BOX_SNAPSHOT_DIR", "/data/t3box/update/snapshot").into(),
+        sqlite3: env("T3BOX_SQLITE3", "sqlite3"),
+    };
+    let reboot = || {
+        let reboot = env("T3BOX_REBOOT", "systemctl reboot");
+        let mut parts = reboot.split_whitespace();
+        let _ = std::process::Command::new(parts.next().unwrap_or("true")).args(parts).status();
+    };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| args.get(i).cloned().unwrap_or_else(|| die("missing argument".into()));
     let rauc = |what: &str, slot: &str| {
@@ -56,20 +70,35 @@ fn main() {
                 Ok(())
             }
             Ok(Decision::CheckTrial(slot)) => match bootctl::health(&socket, &data, attempts, std::time::Duration::from_secs(1)) {
-                Ok(()) => { eprintln!("t3box-bootctl: {slot} healthy; committing"); rauc("mark-good", "booted"); Ok(()) }
+                Ok(()) => {
+                    eprintln!("t3box-bootctl: {slot} healthy; committing");
+                    rauc("mark-good", "booted");
+                    ctl.discard_snapshot_if_committed(&snapshot);
+                    Ok(())
+                }
                 Err(e) => {
                     eprintln!("t3box-bootctl: {slot} unhealthy ({e}); rolling back");
                     rauc("mark-bad", "booted");
-                    let reboot = env("T3BOX_REBOOT", "systemctl reboot");
-                    let mut parts = reboot.split_whitespace();
-                    let _ = std::process::Command::new(parts.next().unwrap_or("true")).args(parts).status();
+                    reboot();
                     Err("trial failed health checks".into())
                 }
             },
             Err(e) => Err(e),
         },
+        Some("snapshot") => snapshot.take().map(|taken| eprintln!("t3box-bootctl: data snapshot {}", if taken { "taken" } else { "skipped (no database)" })),
+        Some("restore-data") => ctl.restore_data(&snapshot).map(|r| if r { eprintln!("t3box-bootctl: persistent data restored from the pre-update snapshot") }),
+        Some("deadline") => match ctl.decide() {
+            Ok(Decision::CheckTrial(slot)) => {
+                eprintln!("t3box-bootctl: trial of {slot} not confirmed before the deadline; rolling back");
+                rauc("mark-bad", "booted");
+                reboot();
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        },
         _ => {
-            eprintln!("usage: t3box-bootctl get-primary|set-primary <s>|get-state <s>|set-state <s> good|bad|get-current|confirm|guard|health");
+            eprintln!("usage: t3box-bootctl get-primary|set-primary <s>|get-state <s>|set-state <s> good|bad|get-current|confirm|guard|health|snapshot|restore-data|deadline");
             std::process::exit(2);
         }
     };

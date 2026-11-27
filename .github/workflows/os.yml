@@ -37,7 +37,7 @@ jobs:
       # Units in systemd/ are verified by studio.yml.
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq squashfs-tools dosfstools meson ninja-build pkg-config \
+          sudo apt-get install -y -qq sqlite3 squashfs-tools dosfstools meson ninja-build pkg-config \
             libglib2.0-dev libssl-dev libcurl4-openssl-dev libjson-glib-dev libnl-genl-3-dev libdbus-1-dev libfdisk-dev >/dev/null
           uname -r
       - name: Build RAUC v1.15
