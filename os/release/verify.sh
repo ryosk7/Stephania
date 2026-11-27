@@ -17,7 +17,11 @@ for f in boot.vfat rootfs.squashfs; do
   [ "$(sha256sum "$w/zip/t3box-install/$f" | cut -d' ' -f1)" = "$want" ] || fail "installer payload $f"
 done
 echo "PASS installer ZIP: manifest signed, payload matches"
-rauc info --keyring="$keyring" "$dist/$name.raucb" >"$w/rauc.txt" 2>&1 || { cat "$w/rauc.txt"; fail "RAUC bundle signature"; }
+# Verify the way the device does (os/rauc/system.conf): the signer must
+# hold a code-signing certificate (check-purpose=codesign); RAUC's default
+# purpose would reject it.
+printf '[system]\ncompatible=t3box-pi5\nbootloader=noop\n[keyring]\npath=%s\ncheck-purpose=codesign\n' "$(cd "$(dirname "$keyring")" && pwd)/$(basename "$keyring")" >"$w/rauc.conf"
+rauc -c "$w/rauc.conf" info "$dist/$name.raucb" >"$w/rauc.txt" 2>&1 || { cat "$w/rauc.txt"; fail "RAUC bundle signature"; }
 grep -q "Compatible: *'t3box-pi5'" "$w/rauc.txt" || grep -q "t3box-pi5" "$w/rauc.txt" || fail "bundle compatible"
 echo "PASS update bundle verifies against the release keyring"
 python3 - "$dist/sbom.spdx.json" <<'PY' || fail "SBOM"
