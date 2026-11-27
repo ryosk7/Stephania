@@ -23,6 +23,7 @@ export const Title = make(type.title, 'primary', true);
 export const Headline = make(type.headline, 'primary');
 export const Body = make(type.body, 'primary');
 export const Callout = make(type.callout, 'secondary');
+export const Subheadline = make(type.subheadline, 'secondary');
 export const Footnote = make(type.footnote, 'secondary');
 export const Caption = make(type.caption, 'secondary');
 export const Mono = make(type.mono, 'primary');

@@ -5,7 +5,7 @@ import {useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
 import type {Device} from 'react-native-ble-plx';
 import {ProvisioningSession} from '@t3box/provisioning-client';
-import {Body, Footnote, List, Notice, Screen, Symbol, TextButton, Title, color, space, symbols} from '@/shared/ui';
+import {Body, Footnote, List, ListIcon, Notice, Screen, TextButton, Title, color, space, symbols} from '@/shared/ui';
 import {connectTransport, disconnect, ensurePermissions, scanDevices, waitPoweredOn} from './ble/manager';
 import {describeSetupError} from './errors';
 import {loadOwnerKey, ownerId, pendingSecret, saveOwnerKey, setActive, setPendingSecret} from './state';
@@ -69,7 +69,7 @@ export function NearbyScreen() {
           ? <List.Row title="Searching…" accessory={<ActivityIndicator color={color.textSecondary} />} />
           : devices.map(d => (
             <List.Row key={d.id} title={d.localName ?? d.name ?? 'T3Box'} detail={busy && phase.id === d.id ? phase.label : signal(d.rssi)}
-              leading={<Symbol name={symbols.bluetooth} size={18} tone="info" />}
+              leading={<ListIcon symbol={symbols.bluetooth} />}
               accessory={busy && phase.id === d.id ? <ActivityIndicator color={color.textSecondary} /> : undefined}
               disabled={busy} onPress={() => void open(d)} />
           ))}

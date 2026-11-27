@@ -4,11 +4,11 @@
 import * as Haptics from 'expo-haptics';
 import {Stack, router} from 'expo-router';
 import {useState} from 'react';
-import {Alert, Pressable, StyleSheet, Switch, View} from 'react-native';
+import {Alert, Pressable, StyleSheet, View} from 'react-native';
 import {DeviceGate, broadcastState, useDeviceClient, type DeviceClient, type StoredScene} from '@/shared/device';
 import {
-  Caption, Card, DestructiveButton, Footnote, Headline, IconButton, LargeTitle, List, Notice, PrimaryButton, Screen,
-  StatusPill, Symbol, color, radius, space, symbols,
+  Caption, Card, DestructiveButton, Footnote, Headline, InlineIconButton, LargeTitle, List, ListIcon, Notice, PrimaryButton, Screen,
+  StatusPill, Subheadline, Toggle, color, radius, space, symbols,
 } from '@/shared/ui';
 import {RenameSheet} from './rename-sheet';
 import {SceneThumbnail} from './scene-thumbnail';
@@ -49,9 +49,9 @@ function Control({deviceId, name: initialName, host, client}: {deviceId: string;
       <View style={{gap: space.s}}>
         <View style={st.titleRow}>
           <LargeTitle style={{flexShrink: 1}} numberOfLines={1}>{name}</LargeTitle>
-          <IconButton symbol={symbols.pencil} label="Rename" onPress={() => setRenaming(true)} />
+          <InlineIconButton symbol={symbols.pencil} label="Rename" onPress={() => setRenaming(true)} />
         </View>
-        {host !== '' && <Footnote>{host}</Footnote>}
+        {host !== '' && <Subheadline>{host}</Subheadline>}
         <View style={st.statusLine}>
           <StatusPill tone={state.tone} label={state.label} pulse={state.pulse} />
           {status?.last_error ? <Footnote tone="warning" style={{flex: 1}} numberOfLines={2}>{status.last_error}</Footnote> : null}
@@ -62,11 +62,11 @@ function Control({deviceId, name: initialName, host, client}: {deviceId: string;
       <View style={{gap: space.s}}>
         <View style={st.sectionHeader}>
           <View style={{flex: 1}}>
-            <Caption>LAYOUTS</Caption>
+            <Footnote style={{letterSpacing: 0.2}}>LAYOUTS</Footnote>
             <Footnote>{streaming ? 'What viewers see. Tap to switch.' : 'What viewers will see. Switch while streaming.'}</Footnote>
           </View>
           <Footnote>Fade</Footnote>
-          <Switch value={fade} onValueChange={setFade} accessibilityLabel="Switch layouts with a 0.5 second fade" />
+          <Toggle value={fade} onChange={setFade} label="Switch layouts with a 0.5 second fade" />
         </View>
         {scenes.length === 0 ? (
           <Card>
@@ -87,16 +87,16 @@ function Control({deviceId, name: initialName, host, client}: {deviceId: string;
         <List.Section title="Audio">
           {audio.map(a => (
             <List.Row key={a.id} title={a.id === 'hdmi' ? 'HDMI audio' : 'Microphone'} detail={a.enabled ? (a.muted ? 'Muted' : 'On air') : 'Not connected'}
-              leading={<Symbol name={a.id === 'hdmi' ? symbols.speaker : symbols.mic} size={16} tint={color.textSecondary} />}
-              accessory={<Switch value={!a.muted} disabled={pending !== null || !a.enabled}
-                accessibilityLabel={`${a.id === 'hdmi' ? 'HDMI audio' : 'Microphone'} on air`}
-                onValueChange={on => void run(`audio:${a.id}`, () => client.setMuted(a.id, !on))} />} />
+              leading={<ListIcon symbol={a.id === 'hdmi' ? symbols.speaker : symbols.mic} />}
+              accessory={<Toggle value={!a.muted} disabled={pending !== null || !a.enabled}
+                label={`${a.id === 'hdmi' ? 'HDMI audio' : 'Microphone'} on air`}
+                onChange={on => void run(`audio:${a.id}`, () => client.setMuted(a.id, !on))} />} />
           ))}
         </List.Section>
         <List.Section title="More">
-          <List.Row title="Send this phone's camera" leading={<Symbol name={symbols.camera} size={16} tint={color.textSecondary} />}
+          <List.Row title="Send this phone's camera" leading={<ListIcon symbol={symbols.camera} />}
             onPress={() => router.push({pathname: '/device/[id]/camera', params: {id: deviceId}})} />
-          <List.Row title="Open the Studio on a PC" leading={<Symbol name={symbols.desktop} size={16} tint={color.textSecondary} />}
+          <List.Row title="Open the Studio on a PC" leading={<ListIcon symbol={symbols.desktop} />}
             onPress={() => router.push({pathname: '/device/[id]/pc', params: {id: deviceId}})} />
         </List.Section>
       </List>
@@ -129,9 +129,9 @@ const st = StyleSheet.create({
   titleRow: {flexDirection: 'row', alignItems: 'center', gap: space.s},
   statusLine: {flexDirection: 'row', alignItems: 'center', gap: space.m},
   sectionHeader: {flexDirection: 'row', alignItems: 'center', gap: space.s, paddingLeft: space.l},
-  grid: {flexDirection: 'row', flexWrap: 'wrap', gap: space.m},
-  tile: {width: '48%', gap: 6},
+  grid: {flexDirection: 'row', flexWrap: 'wrap', columnGap: space.m, rowGap: space.l},
+  tile: {width: '48%', gap: space.s},
   thumb: {width: '100%', aspectRatio: 16 / 9, borderRadius: radius.tile, backgroundColor: color.surface, borderWidth: 2, borderColor: 'transparent', overflow: 'hidden'},
   thumbOnAir: {borderColor: color.live},
-  onAirTag: {position: 'absolute', top: 6, left: 6, backgroundColor: color.live, borderRadius: 4, paddingHorizontal: 5, overflow: 'hidden', fontWeight: '800', letterSpacing: 0.5, fontSize: 10},
+  onAirTag: {position: 'absolute', top: 6, left: 6, backgroundColor: color.live, borderRadius: 5, paddingHorizontal: 6, lineHeight: 18, overflow: 'hidden', fontWeight: '800', letterSpacing: 0.6, fontSize: 10},
 });

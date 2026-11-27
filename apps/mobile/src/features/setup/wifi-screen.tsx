@@ -3,7 +3,7 @@
 import * as Haptics from 'expo-haptics';
 import {router} from 'expo-router';
 import {useCallback, useEffect, useState} from 'react';
-import {ActivityIndicator} from 'react-native';
+import {ActivityIndicator, View} from 'react-native';
 import type {ScanNetwork} from '@t3box/provisioning-client';
 import {saveEnrollment} from '@/shared/device';
 import {Field, Footnote, List, Notice, PrimaryButton, Screen, StatusView, Symbol, TextButton, Title, color, symbols} from '@/shared/ui';
@@ -84,8 +84,13 @@ export function WifiScreen() {
           : networks.length === 0
             ? <List.Row title="No networks found" />
             : networks.map(n => (
+              // iOS Wi-Fi list: check on the left of the chosen network, lock and signal on the right.
               <List.Row key={n.ssid} title={n.ssid} detail={supported(n) ? undefined : 'Security not supported'}
-                leading={<Symbol name={n.security === 'open' ? symbols.wifi : symbols.lock} size={16} tint={color.textSecondary} />}
+                leading={<View style={{width: 20}}>{selected?.ssid === n.ssid && <Symbol name={symbols.checkmark} size={17} tone="info" />}</View>}
+                accessory={<View style={{flexDirection: 'row', gap: 8, alignItems: 'center'}}>
+                  {n.security !== 'open' && <Symbol name={symbols.lock} size={14} tint={supported(n) ? color.text : color.textTertiary} />}
+                  <Symbol name={symbols.wifi} size={16} tint={supported(n) ? color.text : color.textTertiary} />
+                </View>}
                 selected={selected?.ssid === n.ssid} disabled={!supported(n)} onPress={() => setSelected(n)} />
             ))}
       </List.Section>

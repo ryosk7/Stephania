@@ -4,7 +4,11 @@ export const color = {
   bg: '#000000',
   surface: '#1C1C1E',
   surfaceRaised: '#2C2C2E',
-  separator: '#38383A',
+  /** iOS tertiary fill: control backgrounds (secondary buttons, icon buttons, pills, segmented track). */
+  fill: 'rgba(118,118,128,0.24)',
+  /** Selected segment (iOS dark segmented control). */
+  segment: '#636366',
+  separator: 'rgba(84,84,88,0.65)',
   text: '#FFFFFF',
   textSecondary: 'rgba(235,235,245,0.6)',
   textTertiary: 'rgba(235,235,245,0.3)',
@@ -27,7 +31,7 @@ export const toneColor: Record<Tone, string> = {
 };
 
 export const space = {xs: 4, s: 8, m: 12, l: 16, xl: 24, xxl: 32} as const;
-export const radius = {card: 16, tile: 12, control: 10, pill: 999} as const;
+export const radius = {card: 16, group: 12, tile: 12, control: 12, segment: 8, sheet: 28, pill: 999} as const;
 export const size = {hit: 44, primaryButton: 54, screenPadding: 16} as const;
 
 export const type = {
@@ -37,6 +41,7 @@ export const type = {
   body: {fontSize: 17, lineHeight: 22, fontWeight: '400'},
   callout: {fontSize: 16, lineHeight: 21, fontWeight: '400'},
   footnote: {fontSize: 13, lineHeight: 18, fontWeight: '400'},
+  subheadline: {fontSize: 15, lineHeight: 20, fontWeight: '400'},
   caption: {fontSize: 12, lineHeight: 16, fontWeight: '500'},
   mono: {fontSize: 13, lineHeight: 18, fontFamily: 'Menlo', fontWeight: '500'},
 } as const;

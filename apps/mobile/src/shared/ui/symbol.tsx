@@ -17,6 +17,7 @@ export const symbols = {
   wifi: {ios: 'wifi', android: 'wifi'},
   lock: {ios: 'lock.fill', android: 'lock'},
   check: {ios: 'checkmark.circle.fill', android: 'check_circle'},
+  checkmark: {ios: 'checkmark', android: 'check'},
   warning: {ios: 'exclamationmark.triangle.fill', android: 'warning'},
   thermometer: {ios: 'thermometer.medium', android: 'device_thermostat'},
   camera: {ios: 'video.fill', android: 'videocam'},

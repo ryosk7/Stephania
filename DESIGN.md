@@ -74,8 +74,10 @@ iOS; names are semantic so Android can map them to its own palette.
 |---|---|---|
 | `bg` | `#000000` | screen background, camera letterbox |
 | `surface` | `#1C1C1E` | cards, grouped list rows, bars |
-| `surfaceRaised` | `#2C2C2E` | controls on a surface (segmented track, icon buttons) |
-| `separator` | `#38383A` | hairlines between rows |
+| `surfaceRaised` | `#2C2C2E` | inputs on a sheet, pressed rows |
+| `fill` | `rgba(118,118,128,0.24)` | iOS tertiary fill: secondary buttons, icon buttons, pills, segmented track |
+| `segment` | `#636366` | selected segment (iOS dark segmented control) |
+| `separator` | `rgba(84,84,88,0.65)` | hairlines, inset to the text column |
 | `text` | `#FFFFFF` | primary text |
 | `textSecondary` | `#EBEBF5` @ 60 % | secondary text |
 | `textTertiary` | `#EBEBF5` @ 30 % | placeholders, disabled |
@@ -87,11 +89,11 @@ iOS; names are semantic so Android can map them to its own palette.
 
 Type (points, iOS text styles): `largeTitle` 34/41 bold · `title` 22/28
 bold · `headline` 17/22 semibold · `body` 17/22 · `callout` 16/21 ·
-`footnote` 13/18 · `caption` 12/16 · `mono` 13/18 Menlo (fingerprints,
+`subheadline` 15/20 · `footnote` 13/18 · `caption` 12/16 · `mono` 13/18 Menlo (fingerprints,
 URLs). Text scales with Dynamic Type (`allowFontScaling` stays on).
 
 Spacing on a 4-pt grid: `xs 4 · s 8 · m 12 · l 16 · xl 24 · xxl 32`.
-Screen padding 16. Radius: `card 16`, `tile 12`, `control 10`, `pill 999`.
+Screen padding 16. Radius: `card 16`, `group 12`, `tile 12`, `control 12`, `segment 8`, `sheet 28`, `pill 999`.
 Primary button height 54. Minimum hit target 44.
 
 Motion: state changes cross-fade 150 ms; nothing animates while live except
@@ -108,10 +110,11 @@ instead of boolean modes.
 | `Screen` | `<Screen scroll? footer={…}>` | dark background, safe areas; `footer` holds the bottom actions |
 | `ImmersiveScreen` | `<ImmersiveScreen footer={…}>` | variant without a navigation header (camera) |
 | Text | `<Title>`, `<LargeTitle>`, `<Headline>`, `<Body>`, `<Footnote>`, `<Caption>`, `<Mono>` | one component per text style, `tone="secondary"\|"live"\|…` |
-| Buttons | `<PrimaryButton>`, `<SecondaryButton>`, `<DestructiveButton>`, `<TextButton>`, `<IconButton symbol>` | variants are separate components; all ≥ 44 pt |
-| `List` | `<List.Section title footer>` `<List.Row title value? detail? onPress? accessory?>` | dark inset grouped list (GoPro preferences, Muse devices) |
-| `Segmented` | `<Segmented value onChange><Segmented.Item value label disabled?/></Segmented>` | compound; shared state through context |
-| `StatusPill` | `<StatusPill tone label pulse?>` | coloured dot + label (GoPro "Busy", Tesla status) |
+| Buttons | `<PrimaryButton>`, `<SecondaryButton>`, `<DestructiveButton>`, `<TextButton>`, `<IconButton symbol>`, `<InlineIconButton symbol>` | variants are separate components; capsule 54 pt; icon buttons are round on `fill`; the inline one (beside a title) is drawn 36 pt with a 44 pt hit area |
+| `List` | `<List.Section title footer>` `<List.Row title value? detail? leading? onPress? accessory?>`, `<ListIcon symbol>` | dark inset grouped list (GoPro preferences, Muse devices): radius 12, rows ≥ 52 pt, separators inset to the text column, leading symbols on a neutral 30 pt rounded tile (iOS Settings), selection as a blue checkmark |
+| `Toggle` | `<Toggle value onChange label>` | the system switch, green when on; never a checkbox |
+| `Segmented` | `<Segmented value onChange locked?><Segmented.Item value label unavailable?/></Segmented>` | compound; shared state through context; iOS dark look: `fill` track, raised `segment` thumb, 38 pt items |
+| `StatusPill` | `<StatusPill tone label pulse?>` | coloured dot + label on `fill`, 28 pt high (GoPro "Busy", Tesla status) |
 | `LiveBadge` | `<LiveBadge elapsed?>` | red "LIVE" + time |
 | `StatusView` | `<StatusView symbol title body tone>{actions}</StatusView>` | centred single-purpose state (Alexa setup steps, empty states) |
 | `Card` | `<Card>`, `<Card.Header title action?>`, `<Card.Body>` | surface with radius 16 |

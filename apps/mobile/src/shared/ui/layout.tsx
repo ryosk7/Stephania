@@ -3,7 +3,7 @@ import {Children, createContext, isValidElement, use, type ReactNode} from 'reac
 import {Pressable, ScrollView, StyleSheet, View} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {Symbol, symbols, type SymbolName} from './symbol';
-import {Body, Caption, Footnote, Headline, Title} from './text';
+import {Body, Footnote, Headline, Title} from './text';
 import {color, radius, size, space, toneColor, type Tone} from './tokens';
 
 /** Dark screen with safe areas; `footer` pins the bottom actions (DESIGN.md §3.2). */
@@ -49,7 +49,7 @@ List.Section = function ListSection({title, footer, children}: {title?: string; 
   const rows = Children.toArray(children).filter(isValidElement);
   return (
     <View style={{gap: space.s}}>
-      {title && <Caption style={st.sectionTitle}>{title.toUpperCase()}</Caption>}
+      {title && <Footnote style={st.sectionTitle}>{title.toUpperCase()}</Footnote>}
       <View style={st.group}>
         {rows.map((row, i) => <RowPosition key={row.key ?? i} value={{last: i === rows.length - 1}}>{row}</RowPosition>)}
       </View>
@@ -62,25 +62,33 @@ List.Row = function ListRow({title, detail, value, leading, accessory, onPress, 
   onPress?: () => void; disabled?: boolean; selected?: boolean;
 }) {
   const {last} = use(RowPosition);
+  // Separator inset to the text column (iOS grouped list), not under the leading icon.
   const content = (
-    <View style={[st.row, !last && st.rowSeparator]}>
-      {leading}
-      <View style={{flex: 1, gap: 2}}>
-        <Body>{title}</Body>
-        {detail && <Footnote>{detail}</Footnote>}
+    <View style={st.row}>
+      {leading && <View style={st.leading}>{leading}</View>}
+      <View style={[st.rowBody, !leading && {marginLeft: space.l}, !last && st.rowSeparator]}>
+        <View style={{flex: 1, gap: 1}}>
+          <Body tone={disabled ? 'tertiary' : 'primary'}>{title}</Body>
+          {detail && <Footnote>{detail}</Footnote>}
+        </View>
+        {value && <Body tone="secondary">{value}</Body>}
+        {accessory ?? (selected ? <Symbol name={symbols.checkmark} size={17} tone="info" /> : onPress ? <Symbol name={symbols.chevron} size={13} tint={color.textTertiary} /> : null)}
       </View>
-      {value && <Body tone="secondary">{value}</Body>}
-      {accessory ?? (selected ? <Symbol name={symbols.check} size={20} tone="info" /> : onPress ? <Symbol name={symbols.chevron} size={14} tint={color.textTertiary} /> : null)}
     </View>
   );
   if (!onPress) return content;
   return (
     <Pressable accessibilityRole="button" accessibilityState={{disabled, selected}} accessibilityLabel={[title, detail, value].filter(Boolean).join(', ')}
-      disabled={disabled} onPress={onPress} style={({pressed}) => ({opacity: disabled ? 0.4 : 1, backgroundColor: pressed ? color.surfaceRaised : 'transparent'})}>
+      disabled={disabled} onPress={onPress} style={({pressed}) => ({backgroundColor: pressed ? color.surfaceRaised : 'transparent'})}>
       {content}
     </Pressable>
   );
 };
+
+/** 30 pt rounded tile behind a list row's symbol (iOS Settings rows), neutral: colour is reserved for state. */
+export function ListIcon({symbol}: {symbol: SymbolName}) {
+  return <View style={st.listIcon}><Symbol name={symbol} size={17} /></View>;
+}
 
 /** Centred single-purpose state: setup steps, empty and error states. Actions go in `children`. */
 export function StatusView({symbol, tone = 'neutral', title, body, children}: {symbol: SymbolName; tone?: Tone; title: string; body?: string; children?: ReactNode}) {
@@ -100,9 +108,12 @@ const st = StyleSheet.create({
   footer: {paddingHorizontal: size.screenPadding, paddingTop: space.s, paddingBottom: space.s, gap: space.m},
   card: {backgroundColor: color.surface, borderRadius: radius.card, padding: space.l, gap: space.m},
   cardHeader: {flexDirection: 'row', alignItems: 'center', gap: space.s},
-  sectionTitle: {paddingHorizontal: space.l, letterSpacing: 0.4},
-  group: {backgroundColor: color.surface, borderRadius: radius.card, overflow: 'hidden'},
-  row: {minHeight: size.hit + 8, flexDirection: 'row', alignItems: 'center', gap: space.m, paddingHorizontal: space.l, paddingVertical: space.m},
+  sectionTitle: {paddingHorizontal: space.l, letterSpacing: 0.2},
+  group: {backgroundColor: color.surface, borderRadius: radius.group, overflow: 'hidden'},
+  row: {flexDirection: 'row', alignItems: 'stretch'},
+  leading: {paddingLeft: space.l, paddingRight: space.m, justifyContent: 'center'},
+  rowBody: {flex: 1, minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: space.m, paddingRight: space.l, paddingVertical: space.s},
   rowSeparator: {borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: color.separator},
+  listIcon: {width: 30, height: 30, borderRadius: 8, backgroundColor: '#3A3A3C', alignItems: 'center', justifyContent: 'center'},
   status: {flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.m, paddingHorizontal: space.xl},
 });

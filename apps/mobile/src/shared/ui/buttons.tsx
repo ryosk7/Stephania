@@ -16,7 +16,7 @@ function Filled({title, onPress, disabled, busy, symbol, accessibilityHint, bg, 
       {busy ? <ActivityIndicator color={fg} /> : (
         <View style={st.row}>
           {symbol && <Symbol name={symbol} size={18} tint={fg} />}
-          <Text style={[type.headline, {color: fg}]}>{title}</Text>
+          <Text style={[type.headline, {color: fg, letterSpacing: -0.2}]}>{title}</Text>
         </View>
       )}
     </Pressable>
@@ -28,7 +28,7 @@ export const PrimaryButton = (p: Base) => <Filled {...p} bg={color.text} fg={col
 /** Stop / end actions: red, never next to a primary of the same size. */
 export const DestructiveButton = (p: Base) => <Filled {...p} bg={color.live} fg={color.text} />;
 /** Alternatives to the primary action. */
-export const SecondaryButton = (p: Base) => <Filled {...p} bg={color.surfaceRaised} fg={color.text} />;
+export const SecondaryButton = (p: Base) => <Filled {...p} bg={color.fill} fg={color.text} />;
 
 /** Quiet way out ("Find it nearby instead"). */
 export function TextButton({title, onPress, disabled}: Pick<Base, 'title' | 'onPress' | 'disabled'>) {
@@ -50,6 +50,16 @@ export function IconButton({symbol, label, onPress, disabled}: {symbol: SymbolNa
   );
 }
 
+/** Smaller round control beside a title (rename); 36 pt drawn, 44 pt hit area. */
+export function InlineIconButton({symbol, label, onPress}: {symbol: SymbolName; label: string; onPress: () => void}) {
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} hitSlop={4}
+      style={({pressed}) => [st.inlineIcon, {opacity: pressed ? 0.7 : 1}]}>
+      <Symbol name={symbol} size={15} />
+    </Pressable>
+  );
+}
+
 /** Two buttons side by side (Alexa "Change network | Continue"). */
 export const ButtonRow = ({children}: {children: ReactNode}) => <View style={st.buttonRow}>{children}</View>;
 
@@ -57,6 +67,7 @@ const st = StyleSheet.create({
   filled: {minHeight: size.primaryButton, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.xl, flexGrow: 1},
   row: {flexDirection: 'row', alignItems: 'center', gap: space.s},
   text: {minHeight: size.hit, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.s},
-  icon: {width: size.hit, height: size.hit, borderRadius: size.hit / 2, backgroundColor: color.surfaceRaised, alignItems: 'center', justifyContent: 'center'},
+  icon: {width: size.hit, height: size.hit, borderRadius: size.hit / 2, backgroundColor: color.fill, alignItems: 'center', justifyContent: 'center'},
+  inlineIcon: {width: 36, height: 36, borderRadius: 18, backgroundColor: color.fill, alignItems: 'center', justifyContent: 'center'},
   buttonRow: {flexDirection: 'row', gap: space.m},
 });

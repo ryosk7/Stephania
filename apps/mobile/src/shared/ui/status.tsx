@@ -30,7 +30,7 @@ export function LiveBadge({elapsed}: {elapsed?: string}) {
   return (
     <View style={st.live} accessibilityLabel={elapsed ? `Live, ${elapsed}` : 'Live'}>
       <Text style={[type.caption, st.liveText]}>LIVE</Text>
-      {elapsed && <Text style={[type.caption, {color: color.text}]}>{elapsed}</Text>}
+      {elapsed && <Text style={[type.subheadline, {color: color.text, fontWeight: '600', fontVariant: ['tabular-nums']}]}>{elapsed}</Text>}
     </View>
   );
 }
@@ -50,9 +50,9 @@ export function Notice({tone, children, symbol}: {tone: Tone; children: string; 
 }
 
 const st = StyleSheet.create({
-  pill: {flexDirection: 'row', alignItems: 'center', gap: space.s, alignSelf: 'flex-start', backgroundColor: color.surfaceRaised, borderRadius: radius.pill, paddingHorizontal: space.m, paddingVertical: 6},
+  pill: {flexDirection: 'row', alignItems: 'center', gap: 7, alignSelf: 'flex-start', height: 28, backgroundColor: color.fill, borderRadius: 14, paddingLeft: 10, paddingRight: space.m},
   dot: {width: 8, height: 8, borderRadius: 4},
   live: {flexDirection: 'row', alignItems: 'center', gap: space.s, alignSelf: 'flex-start'},
-  liveText: {color: color.text, backgroundColor: color.live, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden', fontWeight: '800', letterSpacing: 0.6},
+  liveText: {color: color.text, backgroundColor: color.live, borderRadius: 6, paddingHorizontal: 7, lineHeight: 22, overflow: 'hidden', fontWeight: '800', letterSpacing: 0.8},
   notice: {flexDirection: 'row', alignItems: 'flex-start', gap: space.s},
 });
