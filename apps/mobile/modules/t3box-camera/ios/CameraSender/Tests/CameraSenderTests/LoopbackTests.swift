@@ -52,6 +52,8 @@ final class LoopbackTests: XCTestCase {
       print("sender:", sender.connectionState, "receiver:", receiver.connectionState, "fed:", feeder.fed)
       print("received frames:", receiver.frames(mid: "0"), receiver.frames(mid: "1"))
       for row in await sender.outboundStats() { print("outbound-rtp:", row.sorted { $0.key < $1.key }) }
+      print("receiver renderers:", receiver.rendererMids)
+      for row in await receiver.inboundStats() { print("inbound-rtp:", row.sorted { $0.key < $1.key }) }
       throw error
     }
     for row in await sender.outboundStats() { print("outbound-rtp:", row.sorted { $0.key < $1.key }) }
@@ -193,6 +195,18 @@ final class Receiver: NSObject, RTCPeerConnectionDelegate {
   }
 
   func frames(mid: String) -> Int { renderer(mid)?.count ?? 0 }
+  var rendererMids: [String] { lock.lock(); defer { lock.unlock() }; return renderers.keys.sorted() }
+
+  func inboundStats() async -> [[String: String]] {
+    await withCheckedContinuation { c in
+      pc.statistics { report in
+        let keys = ["mid", "framesReceived", "framesDecoded", "framesDropped", "frameWidth", "frameHeight", "decoderImplementation", "packetsReceived", "packetsLost", "keyFramesDecoded", "pliCount", "firCount"]
+        c.resume(returning: report.statistics.values.filter { $0.type == "inbound-rtp" }.map { s in
+          Dictionary(uniqueKeysWithValues: keys.compactMap { k in s.values[k].map { (k, "\($0)") } })
+        })
+      }
+    }
+  }
   func size(mid: String) -> CGSize? { renderer(mid)?.size }
   func meanLuma(mid: String) -> Double { renderer(mid)?.luma ?? -1 }
   func close() { pc.close() }
