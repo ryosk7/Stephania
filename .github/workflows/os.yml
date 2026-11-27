@@ -15,6 +15,12 @@ concurrency:
   group: os-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    # Explicit bash runs steps with -o pipefail: a failing command before
+    # `| tee` or `| tail` fails the step.
+    shell: bash
+
 jobs:
   changes:
     runs-on: ubuntu-24.04

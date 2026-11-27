@@ -11,6 +11,12 @@ concurrency:
   cancel-in-progress: true
 env:
   IMAGE: ghcr.io/ryosk7/stephania-qemu-lab
+defaults:
+  run:
+    # Explicit bash runs steps with -o pipefail: a failing command before
+    # `| tee` or `| tail` fails the step.
+    shell: bash
+
 jobs:
   guest:
     runs-on: ubuntu-24.04-arm
