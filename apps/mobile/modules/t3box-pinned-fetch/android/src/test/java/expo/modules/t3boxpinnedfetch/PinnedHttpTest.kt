@@ -1,14 +1,14 @@
 package expo.modules.t3boxpinnedfetch
 
-import com.sun.net.httpserver.HttpsConfigurator
-import com.sun.net.httpserver.HttpsServer
 import java.io.File
 import java.io.FileInputStream
-import java.net.InetSocketAddress
+import java.net.InetAddress
 import java.security.KeyStore
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLServerSocket
+import kotlin.concurrent.thread
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -22,9 +22,35 @@ import org.junit.Test
  * T3BOX_PKI_CA_SHA256 (the enrolled pin).
  */
 class PinnedHttpTest {
-  private lateinit var server: HttpsServer
+  private lateinit var server: SSLServerSocket
   private lateinit var pin: String
   private var port = 0
+
+  /** Minimal HTTPS/1.1 responder (android.jar has no com.sun.net.httpserver). */
+  private fun serve(socket: SSLServerSocket) = thread(isDaemon = true) {
+    while (!socket.isClosed) {
+      val client = runCatching { socket.accept() }.getOrNull() ?: break
+      thread(isDaemon = true) {
+        client.use { c ->
+          runCatching {
+            val input = c.getInputStream().bufferedReader(Charsets.ISO_8859_1)
+            val requestLine = input.readLine() ?: return@runCatching
+            var auth = ""
+            while (true) {
+              val line = input.readLine() ?: break
+              if (line.isEmpty()) break
+              if (line.lowercase().startsWith("authorization:")) auth = line.substringAfter(":").trim()
+            }
+            val body = """{"auth":"$auth","method":"${requestLine.substringBefore(' ')}"}""".toByteArray()
+            val out = c.getOutputStream()
+            out.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            out.write(body)
+            out.flush()
+          }
+        }
+      }
+    }
+  }
 
   @Before
   fun start() {
@@ -34,22 +60,14 @@ class PinnedHttpTest {
     val ks = KeyStore.getInstance("PKCS12").apply { FileInputStream(p12).use { load(it, "t3box".toCharArray()) } }
     val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(ks, "t3box".toCharArray()) }
     val ctx = SSLContext.getInstance("TLS").apply { init(kmf.keyManagers, null, null) }
-    server = HttpsServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-    server.httpsConfigurator = HttpsConfigurator(ctx)
-    server.createContext("/api/v1/status") { ex ->
-      val auth = ex.requestHeaders.getFirst("Authorization") ?: ""
-      val body = """{"auth":"$auth","method":"${ex.requestMethod}"}""".toByteArray()
-      ex.responseHeaders.add("Content-Type", "application/json")
-      ex.sendResponseHeaders(200, body.size.toLong())
-      ex.responseBody.use { it.write(body) }
-    }
-    server.start()
-    port = server.address.port
+    server = ctx.serverSocketFactory.createServerSocket(0, 16, InetAddress.getByName("127.0.0.1")) as SSLServerSocket
+    port = server.localPort
+    serve(server)
   }
 
   @After
   fun stop() {
-    if (::server.isInitialized) server.stop(0)
+    if (::server.isInitialized) server.close()
   }
 
   @Test
