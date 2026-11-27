@@ -16,7 +16,7 @@ export function meterPercent(dbfs: number | undefined): number {
   return Math.max(0, Math.min(100, ((dbfs + 60) / 60) * 100));
 }
 
-function Meter({level, label}: {level?: Level; label: string}) {
+export function Meter({level, label}: {level?: Level; label: string}) {
   return (
     <div className="meter" role="meter" aria-label={label} aria-valuemin={-60} aria-valuemax={0}
       aria-valuenow={level ? Math.round(level.peak_dbfs) : -60}>

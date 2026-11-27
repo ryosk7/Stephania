@@ -8,17 +8,26 @@
     "gen:api": "openapi-typescript ../../contracts/openapi.yaml -o src/api/schema.d.ts",
     "check:api": "openapi-typescript ../../contracts/openapi.yaml -o /tmp/t3box-schema.d.ts && diff -u src/api/schema.d.ts /tmp/t3box-schema.d.ts",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build -o storybook-static",
+    "check:stories": "node scripts/stories-smoke.mjs storybook-static storybook-shots"
   },
   "dependencies": {
+    "@tanstack/react-router": "^1.170.46",
+    "lucide-react": "^1.82.0",
     "react": "19.1.1",
     "react-dom": "19.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",
+    "@storybook/react-vite": "^10.6.9",
+    "@tailwindcss/vite": "^4.3.5",
     "@types/react": "19.1.12",
     "@types/react-dom": "19.1.9",
     "openapi-typescript": "^7.13.0",
+    "storybook": "^10.6.9",
+    "tailwindcss": "^4.3.5",
     "typescript": "5.9.2",
     "vite": "7.1.7",
     "vitest": "^3.2.7"

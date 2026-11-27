@@ -140,7 +140,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.studio == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/studio
@@ -157,6 +157,18 @@ jobs:
       - name: Unit and shared-fixture tests
         run: npm test
       - run: npm run build
+      - name: Storybook builds and every story renders in light and dark
+        env:
+          STORYBOOK_DISABLE_TELEMETRY: '1'
+        run: |
+          npm run build-storybook
+          npm run check:stories
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-storybook-shots
+          path: apps/studio/storybook-shots
+          retention-days: 14
   # Browser end-to-end: real Rust engine (IPC) + Puma control plane serving
   # the built Studio, driven by Playwright Chromium with two browser contexts.
   studio-e2e:
