@@ -1,0 +1,81 @@
+name: TestFlight
+# Builds Stephania Connect for the App Store and uploads it to TestFlight.
+# Run it from the Actions tab, or push a tag connect-v<version>.
+# Needs, in Settings > Secrets and variables > Actions:
+#   ASC_KEY_ID, ASC_ISSUER_ID  App Store Connect API key (App Manager)
+#   ASC_KEY_P8                 contents of the AuthKey_<id>.p8 file
+#   APPLE_TEAM_ID              the Apple Developer team id
+# and an app record for dev.ryosk7.stephania.connect in App Store Connect.
+# Signing is automatic: Xcode creates or reuses the distribution
+# certificate and profile through the API key.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['connect-v*']
+permissions:
+  contents: read
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+jobs:
+  upload:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: Secrets present
+        run: |
+          for v in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::Missing repository secret $v (see the header of .github/workflows/testflight.yml)"; exit 1; }
+          done
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+        working-directory: packages/provisioning-client
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/mobile
+      - name: API key
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "$ASC_KEY_P8" >"$RUNNER_TEMP/asc/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey.p8"
+      - name: Prebuild
+        working-directory: apps/mobile
+        env:
+          CI: '1'
+        run: npx expo prebuild --platform ios --clean
+      - name: Archive (Release, automatic signing)
+        working-directory: apps/mobile/ios
+        run: |
+          # Every upload needs a new build number; the version comes from app.json.
+          xcrun agvtool new-version -all "${{ github.run_number }}" >/dev/null
+          xcodebuild -workspace StephaniaConnect.xcworkspace -scheme StephaniaConnect -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Connect.xcarchive" \
+            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic archive | tail -40
+      - name: Export and upload to App Store Connect
+        run: |
+          cat >"$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Connect.xcarchive" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" | tail -40
+          echo "Uploaded build ${{ github.run_number }}; it appears in TestFlight after Apple's processing." >>"$GITHUB_STEP_SUMMARY"
+      - if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"

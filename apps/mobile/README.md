@@ -31,3 +31,7 @@ npx expo run:ios --device    # or: npx eas-cli@latest build --profile developmen
 
 ## Not verified
 Real radios and devices are untested: iOS/Android BLE behaviour, MTU negotiation, background/foreground interruptions, the camera QR scan and permission prompts. The BlueZ GATT adapter on the Pi doesn't exist yet, so there is nothing real to connect to. No Maestro tests yet. The full iOS app build runs only on demand (workflow "Mobile iOS build"); the Android debug APK and both platforms' trust logic are built and tested on PRs that touch native code.
+
+## TestFlight
+
+`.github/workflows/testflight.yml` archives a Release build, signs it automatically with an App Store Connect API key and uploads it to TestFlight. Run it from the Actions tab or push a `connect-v<version>` tag. It needs the secrets `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` and `APPLE_TEAM_ID`, and an App Store Connect app record for `dev.ryosk7.stephania.connect`. The build number is the workflow run number; the version comes from `app.json`. `ITSAppUsesNonExemptEncryption` is false: the app uses only the system's standard TLS and CryptoKit-equivalent primitives (X25519, HMAC, ChaCha20-Poly1305) for its own protocol.
