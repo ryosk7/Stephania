@@ -1,12 +1,14 @@
-name: Publish setup page (manual)
+name: Publish setup page
 # Publishes tools/setup-page to GitHub Pages (https://ryosk7.github.io/Stephania/).
+# Deploys on every change to the page on main.
 # Requires Settings > Pages > Source: GitHub Actions.
 on:
+  push:
+    branches: [main]
+    paths:
+      - tools/setup-page/**
+      - .github/workflows/setup-page-pages.yml
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: Type "publish" to confirm the page will be public
-        required: true
 permissions:
   contents: read
   pages: write
@@ -16,7 +18,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    if: inputs.confirm == 'publish'
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
