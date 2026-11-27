@@ -31,6 +31,7 @@ extra=${T3BOX_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec60,libavutil58}
 version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
 components=${T3BOX_IMAGE_COMPONENTS:-main,universe}
 root="$out/rootfs"
+. "$repo/os/layout.env"
 
 for b in t3box t3box-phone t3box-provision t3box-pki t3box-bootctl; do
   [ -x "$bins/$b" ] || { echo "missing $bins/$b" >&2; exit 1; }
@@ -38,7 +39,7 @@ done
 
 # Runtime packages only. Ruby gems with native extensions are built with
 # temporary build packages that are purged again (no compilers on device).
-runtime=systemd,systemd-sysv,udev,dbus,kmod,iproute2,util-linux,mount,network-manager,bluez,avahi-daemon,rauc,rauc-service,sqlite3,ca-certificates,ruby,curl,openssl,polkitd,$kernel,initramfs-tools${extra:+,$extra}
+runtime=systemd,systemd-sysv,udev,dbus,kmod,iproute2,util-linux,mount,network-manager,bluez,avahi-daemon,avahi-utils,rauc,rauc-service,sqlite3,ca-certificates,ruby,curl,openssl,polkitd,$kernel,initramfs-tools${extra:+,$extra}
 build=build-essential,ruby-dev,libsqlite3-dev,libssl-dev,pkgconf
 
 rm -rf "$root"
@@ -62,7 +63,9 @@ cp -L "$root/boot/vmlinuz-$kver" "$out/vmlinuz"
 cp -L "$root/boot/initrd.img-$kver" "$out/initrd.img"
 
 mksquashfs "$root" "$out/rootfs.squashfs" -noappend -comp zstd -quiet -e boot/efi
-rootfs_mib=$(( ($(stat -c %s "$out/rootfs.squashfs") / 1048576) + 64 ))
+# Fixed slot sizes (os/layout.env) so every future update fits its slot.
+rootfs_mib=$T3BOX_ROOT_MIB
+[ "$(stat -c %s "$out/rootfs.squashfs")" -le $((rootfs_mib * 1048576)) ] || { echo "rootfs.squashfs exceeds the ${rootfs_mib} MiB slot" >&2; exit 1; }
 
 # Boot partition content (identical for A and B in the QEMU variant; the
 # Pi variant adds firmware, kernel, DTBs and config.txt).
@@ -75,7 +78,7 @@ for slot in a b; do
   mcopy -i "$out/boot-$slot.vfat" "$boot_dir/cmdline.txt" ::cmdline.txt
   mcopy -i "$out/boot-$slot.vfat" "$boot_dir/config.txt" ::config.txt
 done
-truncate -s 16M "$out/selector.vfat"; mkfs.vfat -n SELECTOR "$out/selector.vfat" >/dev/null
+truncate -s "${T3BOX_SELECTOR_MIB}M" "$out/selector.vfat"; mkfs.vfat -n SELECTOR "$out/selector.vfat" >/dev/null
 printf '[all]\ntryboot_a_b=1\nboot_partition=2\n[tryboot]\nboot_partition=3\n' >"$boot_dir/autoboot.txt"
 mcopy -i "$out/selector.vfat" "$boot_dir/autoboot.txt" ::autoboot.txt
 
@@ -83,22 +86,22 @@ mcopy -i "$out/selector.vfat" "$boot_dir/autoboot.txt" ::autoboot.txt
 # read-only root bind-mounts (os/image/customize.sh writes fstab).
 data_dir=$(mktemp -d)
 mkdir -p "$data_dir/t3box/varlib" "$data_dir/t3box/config" "$data_dir/t3box/update" "$data_dir/t3box/rauc"
-truncate -s 256M "$out/data.ext4"; mkfs.ext4 -q -L data -d "$data_dir" "$out/data.ext4"
+truncate -s "${T3BOX_DATA_MIN_MIB}M" "$out/data.ext4"; mkfs.ext4 -q -L data -d "$data_dir" "$out/data.ext4"
 
 # GPT disk image.
 img="$out/t3box.img"
 rm -f "$img"
-sizes=(16 64 64 "$rootfs_mib" "$rootfs_mib" 256)
+sizes=("$T3BOX_SELECTOR_MIB" "$T3BOX_BOOT_MIB" "$T3BOX_BOOT_MIB" "$rootfs_mib" "$rootfs_mib" "$T3BOX_DATA_MIN_MIB")
 total=2; for s in "${sizes[@]}"; do total=$((total + s)); done
 truncate -s "${total}M" "$img"
 sfdisk -q "$img" <<EOF
 label: gpt
-size=16MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=selector
-size=64MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-a
-size=64MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-b
+size=${T3BOX_SELECTOR_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=selector
+size=${T3BOX_BOOT_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-a
+size=${T3BOX_BOOT_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-b
 size=${rootfs_mib}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=rootfs-a
 size=${rootfs_mib}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=rootfs-b
-size=256MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=data
+size=${T3BOX_DATA_MIN_MIB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=data
 EOF
 write_part() { # $1 partition number, $2 file
   local start; start=$(sfdisk -J "$img" | python3 -c 'import json,sys;print(json.load(sys.stdin)["partitiontable"]["partitions"][int(sys.argv[1])-1]["start"])' "$1")
