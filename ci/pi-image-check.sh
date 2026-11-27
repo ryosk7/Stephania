@@ -10,8 +10,11 @@ for slot in a b; do
   upper=$(echo "$slot" | tr a-z A-Z)
   files=$(mdir -b -i "$d/boot-$slot.vfat" ::/)
   for f in vmlinuz initrd.img bcm2712-rpi-5-b.dtb config.txt cmdline.txt overlays; do
-    echo "$files" | grep -qx "::/$f" || fail "boot-$slot lacks $f"
+    # mdir -b lists a directory with a trailing slash.
+    echo "$files" | grep -qxE "::/$f/?" || fail "boot-$slot lacks $f"
   done
+  n=$(mdir -b -i "$d/boot-$slot.vfat" ::/overlays | grep -c '\.dtbo$' || true)
+  [ "$n" -gt 0 ] || fail "boot-$slot overlays directory is empty"
   cfg=$(mtype -i "$d/boot-$slot.vfat" ::/config.txt)
   for l in arm_64bit=1 kernel=vmlinuz 'initramfs initrd.img followkernel' dtparam=watchdog=on; do
     echo "$cfg" | grep -qx "$l" || fail "boot-$slot config.txt lacks '$l'"

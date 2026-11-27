@@ -62,8 +62,17 @@ fi
 [ -d "$tools/usr/lib/ssl" ] && mkdir -p "$ir/usr/lib/ssl" && cp -a "$tools/usr/lib/ssl/openssl.cnf" "$ir/usr/lib/ssl/" 2>/dev/null || true
 
 # Kernel modules for SD/USB/virtio storage and the filesystems used.
-# nls_utf8: Debian kernels mount FAT with iocharset=utf8 by default.
-mods="vfat nls_cp437 nls_iso8859_1 nls_utf8 ext4 virtio_blk virtio_pci virtio_scsi sd_mod usb_storage uas mmc_block sdhci_brcmstb sdhci_iproc"
+# FAT needs its default code page (CONFIG_FAT_DEFAULT_CODEPAGE) and I/O
+# charset (CONFIG_FAT_DEFAULT_IOCHARSET; Debian's is "ascii", the Raspberry
+# Pi kernel's "iso8859-1") at mount time, so both are taken from the kernel
+# config rather than guessed.
+kcfg="$img/rootfs/boot/config-$kver"
+[ -f "$kcfg" ] || { echo "installer: no kernel config $kcfg" >&2; exit 1; }
+cp_mod="nls_cp$(sed -n 's/^CONFIG_FAT_DEFAULT_CODEPAGE=//p' "$kcfg")"
+io=$(sed -n 's/^CONFIG_FAT_DEFAULT_IOCHARSET="\(.*\)"$/\1/p' "$kcfg")
+io_mod="nls_$(echo "${io:-iso8859-1}" | tr - _)"
+mods="vfat $cp_mod $io_mod nls_cp437 nls_iso8859_1 nls_utf8 ext4 virtio_blk virtio_pci virtio_scsi sd_mod usb_storage uas mmc_block sdhci_brcmstb sdhci_iproc"
+mods=$(printf '%s\n' $mods | awk '!seen[$0]++' | tr '\n' ' ')
 : >"$ir/etc/t3box/modules"
 for m in $mods; do
   deps=$(chroot "$img/rootfs" modprobe -S "$kver" --show-depends "$m" 2>/dev/null | awk '$1=="insmod"{print $2}') || true
@@ -74,7 +83,7 @@ done
 # vfat and its code pages are required to read the install medium: a
 # kernel where they are neither built in nor found as modules fails here,
 # not on the device.
-for m in vfat nls_cp437 nls_utf8; do
+for m in vfat $cp_mod $io_mod; do
   grep -qx "$m" "$ir/etc/t3box/modules" || grep -q "/$m.ko" "$img/rootfs/lib/modules/$kver/modules.builtin" \
     || { echo "installer: kernel module $m not found for $kver" >&2; exit 1; }
 done
