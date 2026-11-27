@@ -6,10 +6,19 @@ require "securerandom"
 
 # Client for the engine control IPC (docs/IPC.md, contracts/ipc.schema.json).
 #
-# Frames are a 4-byte big-endian length followed by UTF-8 JSON. One request is
-# sent per connection so a hung engine can never pin a Puma thread beyond the
-# configured timeout, and no long-lived state has to be reconciled after an
-# engine restart.
+# Frames are a 4-byte big-endian length followed by UTF-8 JSON.
+#
+# Connections are pooled (at most MAX_CONNECTIONS, below the engine's limit
+# of 8, ipc.rs MAX_CONNECTIONS) and reused for sequential requests: opening
+# one connection per request under load ran into the engine's limit because
+# a closed connection's slot is released only when the engine thread sees
+# EOF (measured by ci/control-load.sh). Every request still has its own
+# timeout, so a hung engine cannot pin a Puma thread longer than before; a
+# connection that failed or timed out is discarded, never reused. Idle
+# connections older than IDLE_SECONDS are dropped before the engine's own
+# 5 s idle timeout, and a request that finds its pooled connection closed
+# (engine restarted) is retried once on a fresh one — the engine closes
+# idle connections only between requests, so the request was never read.
 class EngineClient
   VERSION = 1
   MAX_FRAME_BYTES = 64 * 1024
@@ -28,11 +37,32 @@ class EngineClient
     end
   end
 
+  MAX_CONNECTIONS = 6
+  IDLE_SECONDS = 3.0
+
+  # The pooled connection was closed by the engine before it read anything.
+  class Stale < StandardError; end
+
   attr_reader :socket_path
 
-  def initialize(socket_path: DEFAULT_SOCKET, timeout: 2.0)
+  def initialize(socket_path: DEFAULT_SOCKET, timeout: 2.0, max_connections: MAX_CONNECTIONS)
     @socket_path = socket_path
     @timeout = timeout
+    @max = max_connections
+    @idle = [] # [socket, last_used_monotonic]
+    @open = 0
+    @lock = Mutex.new
+    @available = ConditionVariable.new
+  end
+
+  # Drop all idle connections (tests, shutdown).
+  def close_idle
+    @lock.synchronize do
+      @idle.each { |sock, _| sock.close rescue nil }
+      @open -= @idle.size
+      @idle.clear
+      @available.broadcast
+    end
   end
 
   # Returns the `result` object or raises RemoteError / Unavailable.
@@ -59,21 +89,89 @@ class EngineClient
   private
 
   def exchange(body)
-    socket = connect
+    socket, reused = checkout
+    healthy = false
     begin
-      write_all(socket, [body.bytesize].pack("N") + body)
-      header = read_exact(socket, 4)
-      length = header.unpack1("N")
-      raise Unavailable, "invalid engine frame length" if length.zero? || length > MAX_FRAME_BYTES
-
-      JSON.parse(read_exact(socket, length).force_encoding(Encoding::UTF_8))
+      begin
+        result = round_trip(socket, body, reused)
+      rescue Stale
+        socket.close rescue nil
+        socket = connect
+        result = round_trip(socket, body, false)
+      end
+      healthy = true
+      result
     ensure
-      socket.close
+      checkin(socket, healthy)
     end
   rescue JSON::ParserError
     raise Unavailable, "engine returned invalid JSON"
   rescue SystemCallError, IOError => e
     raise Unavailable, "engine socket error: #{e.class.name.split('::').last}"
+  end
+
+  def round_trip(socket, body, reused)
+    begin
+      write_all(socket, [body.bytesize].pack("N") + body)
+    rescue Errno::EPIPE, Errno::ECONNRESET
+      raise Stale if reused
+
+      raise
+    end
+    header = begin
+      read_exact(socket, 4)
+    rescue Unavailable => e
+      raise Stale if reused && e.message == "engine closed the connection"
+
+      raise
+    end
+    length = header.unpack1("N")
+    raise Unavailable, "invalid engine frame length" if length.zero? || length > MAX_FRAME_BYTES
+
+    JSON.parse(read_exact(socket, length).force_encoding(Encoding::UTF_8))
+  end
+
+  # [socket, reused?]; waits up to the timeout when all connections are busy.
+  def checkout
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @timeout
+    @lock.synchronize do
+      loop do
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        while (entry = @idle.pop)
+          sock, used = entry
+          return [sock, true] if now - used < IDLE_SECONDS
+
+          sock.close rescue nil
+          @open -= 1
+        end
+        if @open < @max
+          @open += 1
+          break
+        end
+        remaining = deadline - now
+        raise Unavailable, "engine connection pool exhausted" if remaining <= 0
+
+        @available.wait(@lock, remaining)
+      end
+    end
+    begin
+      [connect, false]
+    rescue StandardError
+      @lock.synchronize { @open -= 1; @available.signal }
+      raise
+    end
+  end
+
+  def checkin(socket, healthy)
+    @lock.synchronize do
+      if healthy && socket && !socket.closed?
+        @idle.push([socket, Process.clock_gettime(Process::CLOCK_MONOTONIC)])
+      else
+        socket&.close rescue nil
+        @open -= 1
+      end
+      @available.signal
+    end
   end
 
   def connect

@@ -4,7 +4,9 @@
 N keep-alive clients issue a Studio-like mix for a fixed time while the
 maximum number of SSE streams is held open. Prints one JSON object with
 throughput, latency percentiles per route, errors and stream health.
-Usage: control_load.py <base-url> <token> <seconds> <clients> <label>
+Usage: control_load.py <base-url> <token> <seconds> <clients> <label> [streams]
+Streams default to the maximum (8); the warm-up passes 0 because an
+abandoned stream keeps its slot until the next 15 s keepalive write fails.
 """
 import http.client, json, random, socket, statistics, sys, threading, time
 from urllib.parse import urlparse
@@ -59,7 +61,7 @@ def stream(i):
         stream_alive[i] = False
 
 stop = threading.Event()
-MAX_STREAMS = 8
+MAX_STREAMS = int(sys.argv[6]) if len(sys.argv) > 6 else 8
 stream_alive = [False] * MAX_STREAMS
 stream_heads = [b""] * MAX_STREAMS
 stream_end = [None] * MAX_STREAMS
@@ -67,9 +69,11 @@ threads = [threading.Thread(target=stream, args=(i,), daemon=True) for i in rang
 for t in threads:
     t.start()
 time.sleep(1.0)
-c = conn()
-extra, _ = call(c, "GET", "/api/v1/events")
-c.close()
+extra = None
+if MAX_STREAMS == 8:
+    c = conn()
+    extra, _ = call(c, "GET", "/api/v1/events")
+    c.close()
 
 lat = {}
 errors = []

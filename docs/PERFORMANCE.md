@@ -20,6 +20,16 @@ artifact. These are GitHub-hosted x86_64 numbers: they show regressions and
 the effect of YJIT and the cgroup limits on the same machine, not device
 capacity.
 
+Findings so far:
+- One IPC connection per request made `/status` fail under load: the
+  engine frees a connection slot only when its thread sees EOF, so bursts
+  exceeded its limit of 8 (`busy`, and `EPIPE` on the client). The control
+  client now pools at most 6 connections and reuses them; the same load
+  runs without errors.
+- An event stream whose client vanished keeps its slot until the next
+  keepalive write fails (at most 15 s); a new client can get 429 in that
+  window.
+
 ## Not measured yet (needs hardware)
 - Control plane on a Pi 5 while the engine streams (R06): run
   `ci/control-load.sh` on the device with the engine live and record it in

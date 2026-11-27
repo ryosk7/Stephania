@@ -83,6 +83,7 @@ jobs:
           bundle exec ruby test/audio_test.rb
           bundle exec ruby test/accounts_test.rb
           bundle exec ruby test/assets_test.rb
+          bundle exec ruby test/engine_client_test.rb
       - name: Server-Sent Events through real Puma
         working-directory: services/control
         env:
