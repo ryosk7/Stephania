@@ -23,6 +23,7 @@ cleanup() {
   sudo pkill -x t3box-ble 2>/dev/null || true
   sudo pkill -x bluetoothd 2>/dev/null || true
   sudo pkill -x btvirt 2>/dev/null || true
+  sudo systemctl unmask --runtime bluetooth.service 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -39,6 +40,10 @@ start_bluetoothd() {
   for i in 0 1; do sudo btmgmt --index "$i" power on >/dev/null; done
 }
 
+# Mask, not just stop: while our bluetoothd is down (restart phase) a
+# D-Bus call to org.bluez would otherwise activate the system unit, which
+# then owns the name and our bluetoothd fails with "Name already in use".
+sudo systemctl mask --runtime bluetooth.service 2>/dev/null || true
 sudo systemctl stop bluetooth 2>/dev/null || true
 sudo pkill -x t3box-ble 2>/dev/null || true
 sudo pkill -x bluetoothd 2>/dev/null || true
