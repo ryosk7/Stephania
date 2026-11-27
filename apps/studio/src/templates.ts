@@ -15,14 +15,14 @@ export type TemplateDef = {
 };
 
 export const BUILTIN: TemplateDef[] = [
-  {id: 'lower-third', name: 'ローワーサード', width: 1000, height: 160, vars: [
-    {key: 'speaker.name', label: '登壇者名', initial: '登壇者名'},
-    {key: 'speaker.title', label: '肩書き', initial: '所属・肩書き'},
-    {key: 'event.name', label: 'イベント名', initial: 'イベント名'},
+  {id: 'lower-third', name: 'Lower third', width: 1000, height: 160, vars: [
+    {key: 'speaker.name', label: 'Speaker name', initial: 'Speaker name'},
+    {key: 'speaker.title', label: 'Title', initial: 'Affiliation and title'},
+    {key: 'event.name', label: 'Event name', initial: 'Event name'},
   ]},
-  {id: 'title', name: 'タイトル', width: 1600, height: 200, vars: [
-    {key: 'title', label: 'テキスト', initial: 'タイトル'},
-    {key: 'color', label: '文字色', initial: '#ffffff'},
+  {id: 'title', name: 'Title', width: 1600, height: 200, vars: [
+    {key: 'title', label: 'Text', initial: 'Title'},
+    {key: 'color', label: 'Text colour', initial: '#ffffff'},
   ]},
 ];
 
@@ -42,18 +42,18 @@ export function substitute(svg: string, vars: Record<string, string>): string {
  * stored template honest and the failure visible.
  */
 export function checkDeveloperSvg(svg: string): string | null {
-  if (svg.length > MAX_SVG_CHARS) return `SVG は ${MAX_SVG_CHARS} 文字以内にしてください`;
-  if (!/^\s*<svg[\s>]/i.test(svg) || !/<\/svg>\s*$/i.test(svg)) return 'SVG は <svg> で始まり </svg> で終わる必要があります';
-  if (/<script|<(iframe|object|embed)|\son[a-z]+\s*=|javascript:|<!ENTITY|<!DOCTYPE/i.test(svg)) return 'スクリプトや外部埋め込みは使えません';
-  if (/(href|src)\s*=\s*["']\s*(?!#|data:image\/)/i.test(svg)) return '外部リソースは参照できません（#id と data:image のみ）';
-  if (/url\(\s*["']?\s*(?!#|data:image\/)/i.test(svg)) return 'CSS の外部 url() は使えません';
+  if (svg.length > MAX_SVG_CHARS) return `SVG must be at most ${MAX_SVG_CHARS} characters`;
+  if (!/^\s*<svg[\s>]/i.test(svg) || !/<\/svg>\s*$/i.test(svg)) return 'SVG must start with <svg> and end with </svg>';
+  if (/<script|<(iframe|object|embed)|\son[a-z]+\s*=|javascript:|<!ENTITY|<!DOCTYPE/i.test(svg)) return 'Scripts and embedded content are not allowed';
+  if (/(href|src)\s*=\s*["']\s*(?!#|data:image\/)/i.test(svg)) return 'External references are not allowed (only #id and data:image)';
+  if (/url\(\s*["']?\s*(?!#|data:image\/)/i.test(svg)) return 'External CSS url() is not allowed';
   return null;
 }
 
 /** SVG markup for a template and its variables. */
 export function templateSvg(def: TemplateDef, vars: Record<string, string>): string {
   const v = (k: string) => xml(vars[k] ?? '');
-  const font = `font-family="'Hiragino Sans','Noto Sans JP','Yu Gothic',system-ui,sans-serif"`;
+  const font = `font-family="system-ui,'Hiragino Sans','Noto Sans JP',sans-serif"`;
   if (def.svg) return substitute(def.svg, vars);
   if (def.id === 'lower-third') {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${def.width}" height="${def.height}">` +
@@ -87,12 +87,12 @@ export async function renderPng(svg: string, width: number, height: number): Pro
   const url = URL.createObjectURL(new Blob([svg], {type: 'image/svg+xml'}));
   try {
     const img = new Image(width, height);
-    await new Promise<void>((ok, fail) => { img.onload = () => ok(); img.onerror = () => fail(new Error('SVG を描画できません')); img.src = url; });
+    await new Promise<void>((ok, fail) => { img.onload = () => ok(); img.onerror = () => fail(new Error('Cannot render the SVG')); img.src = url; });
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
-    return await new Promise<Blob>((ok, fail) => canvas.toBlob(b => (b ? ok(b) : fail(new Error('PNG に変換できません'))), 'image/png'));
+    return await new Promise<Blob>((ok, fail) => canvas.toBlob(b => (b ? ok(b) : fail(new Error('Cannot convert to PNG'))), 'image/png'));
   } finally {
     URL.revokeObjectURL(url);
   }

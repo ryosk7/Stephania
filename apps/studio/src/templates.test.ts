@@ -3,8 +3,8 @@ import {BUILTIN, checkDeveloperSvg, initialVars, reference, substitute, svgSize,
 
 describe('templates', () => {
   it('substitutes variables with XML escaping', () => {
-    expect(substitute('<text>{{speaker.name}} / {{ missing }}</text>', {'speaker.name': '<b>&"内田"</b>'}))
-      .toBe('<text>&lt;b&gt;&amp;&quot;内田&quot;&lt;/b&gt; / </text>');
+    expect(substitute('<text>{{speaker.name}} / {{ missing }}</text>', {'speaker.name': '<b>&"Doe"</b>'}))
+      .toBe('<text>&lt;b&gt;&amp;&quot;Doe&quot;&lt;/b&gt; / </text>');
   });
   it('renders the built-in lower third with escaped values', () => {
     const def = BUILTIN.find(t => t.id === 'lower-third')!;

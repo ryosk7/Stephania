@@ -11,7 +11,7 @@ first violation's reason (`invalid-reasons.json`). JSON Schema:
 
 `{version: 1, name, layers: [{id, source, x, y, width, height, visible}]}`.
 Still accepted everywhere and composed exactly as before (golden tests).
-Migration to version 2 is explicit (Studio "v2に変換"), never silent.
+Migration to version 2 is explicit (Studio "Convert to v2"), never silent.
 
 ## Version 2
 

@@ -19,7 +19,7 @@ export const DEFAULT_SCENE: Scene = {version: 2, name: 'LT', layers: [
   {id: 'rear', type: 'video', source: 'phone:rear', x: 1440, y: 0, width: 480, height: 540, visible: true},
   {id: 'front', type: 'video', source: 'phone:front', x: 1440, y: 540, width: 480, height: 540, visible: true},
 ]};
-const SOURCE_NAMES: Record<Source, string> = {hdmi: 'HDMI', 'phone:rear': 'スマホ背面', 'phone:front': 'スマホ前面'};
+const SOURCE_NAMES: Record<Source, string> = {hdmi: 'HDMI', 'phone:rear': 'Phone (rear)', 'phone:front': 'Phone (front)'};
 
 type Action =
   | {type: 'load'; scene: Scene}
@@ -146,19 +146,19 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
 
   async function createScene() {
     const name = newName.trim();
-    if (!name) { onMessage('シーン名を入力してください'); return; }
+    if (!name) { onMessage('Enter a scene name'); return; }
     const s = await api.createScene(name);
     setNewName('');
     await refresh();
     await open(s);
-    onMessage(`シーン「${name}」を作成しました`);
+    onMessage(`Created scene "${name}"`);
   }
 
   async function duplicate() {
     const s = await api.duplicateScene(current);
     await refresh();
     await open(s);
-    onMessage(`複製しました（${s.id}）`);
+    onMessage(`Duplicated (${s.id})`);
   }
 
   async function remove() {
@@ -168,7 +168,7 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
     setScenes(list);
     if (list[0]) await open(list[0]);
     else { setCurrent('lt'); setRevision(0); setSaved(null); setRevisions([]); dispatch({type: 'load', scene: DEFAULT_SCENE}); }
-    onMessage('シーンを削除しました');
+    onMessage('Scene deleted');
   }
 
   async function exportScene() {
@@ -179,16 +179,16 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
     a.download = `${current}.t3box-scene.json`;
     a.click();
     URL.revokeObjectURL(url);
-    onMessage('エクスポートしました');
+    onMessage('Exported');
   }
 
   async function importFile(file: File) {
     let parsed: unknown;
-    try { parsed = JSON.parse(await file.text()); } catch { onMessage('JSONとして読み込めません'); return; }
+    try { parsed = JSON.parse(await file.text()); } catch { onMessage('Not valid JSON'); return; }
     const s = await api.importScene(parsed as SceneExport);
     await refresh();
     await open(s);
-    onMessage(`インポートしました（${s.id}）`);
+    onMessage(`Imported (${s.id})`);
   }
 
   const order = useMemo(() => scene.layers.map((l, i) => ({l, i})).reverse(), [scene.layers]);
@@ -196,45 +196,45 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
   return (
     <div className="studio" data-testid="studio">
       <section className="scenes" aria-label="scenes">
-        <h2>シーン</h2>
+        <h2>Scenes</h2>
         <ul>
           {scenes.map(s => (
             <li key={s.id}><button aria-pressed={s.id === current} onClick={() => run(async () => { await open(s); onMessage('Loaded'); })}>
               {(s.document as Scene).name} <small>{s.id} r{s.revision}</small></button></li>
           ))}
-          {!scenes.some(s => s.id === current) && <li><button aria-pressed>{scene.name} <small>未保存</small></button></li>}
+          {!scenes.some(s => s.id === current) && <li><button aria-pressed>{scene.name} <small>unsaved</small></button></li>}
         </ul>
         {canEdit && <>
-          <label>新しいシーン <input value={newName} onChange={e => setNewName(e.target.value)} maxLength={100}/></label>
-          <button onClick={() => run(createScene)}>作成</button>
-          <button disabled={revision < 1} onClick={() => run(duplicate)}>複製</button>
-          <button disabled={revision < 1} onClick={() => run(remove)}>削除</button>
-          <button disabled={revision < 1} onClick={() => run(exportScene)}>エクスポート</button>
-          <label className="file">インポート <input type="file" accept="application/json,.json" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void run(() => importFile(f)); }}/></label>
+          <label>New scene <input value={newName} onChange={e => setNewName(e.target.value)} maxLength={100}/></label>
+          <button onClick={() => run(createScene)}>Create</button>
+          <button disabled={revision < 1} onClick={() => run(duplicate)}>Duplicate</button>
+          <button disabled={revision < 1} onClick={() => run(remove)}>Delete</button>
+          <button disabled={revision < 1} onClick={() => run(exportScene)}>Export</button>
+          <label className="file">Import <input type="file" accept="application/json,.json" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void run(() => importFile(f)); }}/></label>
         </>}
       </section>
 
       <div className="workspace">
-        {stale && <p data-testid="remote-update">別の画面で r{remote} が保存されました。読み込んでから編集してください（このまま保存すると競合します）。</p>}
+        {stale && <p data-testid="remote-update">r{remote} was saved elsewhere. Reload before editing (saving now would conflict).</p>}
         <nav className="toolbar">
-          <button disabled={!h.past.length || !canEdit} onClick={() => dispatch({type: 'undo'})} title="Ctrl+Z">元に戻す</button>
-          <button disabled={!h.future.length || !canEdit} onClick={() => dispatch({type: 'redo'})} title="Ctrl+Shift+Z">やり直す</button>
-          <button onClick={() => run(reload)}>読み込み</button>
-          {canEdit && <button onClick={() => run(save)}>下書き保存</button>}
-          {canEdit && <button onClick={() => setCode(JSON.stringify(scene, null, 2))}>JSON編集</button>}
-          <label>切替 <select aria-label="transition" value={transition} onChange={e => setTransition(e.target.value as 'cut' | 'fade')}>
-            <option value="cut">カット</option><option value="fade">フェード</option></select></label>
-          {transition === 'fade' && <label>時間 <input type="number" aria-label="fade ms" min={1} max={5000} step={100} value={fadeMs} onChange={e => setFadeMs(Number(e.target.value))}/>ms</label>}
+          <button disabled={!h.past.length || !canEdit} onClick={() => dispatch({type: 'undo'})} title="Ctrl+Z">Undo</button>
+          <button disabled={!h.future.length || !canEdit} onClick={() => dispatch({type: 'redo'})} title="Ctrl+Shift+Z">Redo</button>
+          <button onClick={() => run(reload)}>Reload</button>
+          {canEdit && <button onClick={() => run(save)}>Save draft</button>}
+          {canEdit && <button onClick={() => setCode(JSON.stringify(scene, null, 2))}>Edit JSON</button>}
+          <label>Transition <select aria-label="transition" value={transition} onChange={e => setTransition(e.target.value as 'cut' | 'fade')}>
+            <option value="cut">Cut</option><option value="fade">Fade</option></select></label>
+          {transition === 'fade' && <label>Duration <input type="number" aria-label="fade ms" min={1} max={5000} step={100} value={fadeMs} onChange={e => setFadeMs(Number(e.target.value))}/>ms</label>}
           <button disabled={revision < 1} onClick={() => run(async () => {
             const t = transition === 'fade' ? {type: 'fade' as const, duration_ms: Math.min(5000, Math.max(1, Math.round(fadeMs)))} : undefined;
             const r = await api.transition(current, revision, t) as {engine?: {first_frame_index?: number}};
             onMessage('Program applied at frame ' + (r.engine?.first_frame_index ?? '?'));
-          })}>Programへ適用</button>
-          <span data-testid="dirty">{dirty ? '未保存の変更あり' : '保存済み'}</span>
+          })}>Apply to Program</button>
+          <span data-testid="dirty">{dirty ? 'unsaved changes' : 'saved'}</span>
         </nav>
 
-        {!v2 && <p data-testid="v1-banner">このシーンは旧形式 (v1) です。画像・色・不透明度・回転・トリミングを使うには v2 に変換してください。
-          {canEdit && <button onClick={() => { edit(migrateToV2(scene)); onMessage('v2 に変換しました（保存で確定）'); }}>v2に変換</button>}</p>}
+        {!v2 && <p data-testid="v1-banner">This scene uses the legacy format (v1). Convert it to v2 to use images, colours, opacity, rotation and crop.
+          {canEdit && <button onClick={() => { edit(migrateToV2(scene)); onMessage('Converted to v2 (save to keep it)'); }}>Convert to v2</button>}</p>}
         <h2>Preview layout (draft) — {scene.name}</h2>
         <div className="canvas" ref={canvasRef} onPointerDown={() => setSelected('')} style={{background: scene.canvas?.background}}>
           {scene.layers.map(l => l.visible && (
@@ -243,7 +243,7 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
               onPointerDown={e => startDrag(e, l)}>
               {l.type === 'image' ? (assetUrls[l.asset]
                 ? <img src={assetUrls[l.asset]} alt="" draggable={false} style={{objectFit: l.fit === 'cover' ? 'cover' : l.fit === 'contain' ? 'contain' : 'fill'}}/>
-                : '画像') : l.type === 'color' ? null : layerLabel(l)}
+                : 'image') : l.type === 'color' ? null : layerLabel(l)}
               {canEdit && selected === l.id && HANDLES.map(hd => (
                 <span key={hd} className={'handle ' + hd} data-handle={hd} aria-label={'resize ' + hd} onPointerDown={e => startDrag(e, l, hd)}/>
               ))}
@@ -252,71 +252,71 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
         </div>
 
         <section className="layers" aria-label="layers">
-          <h3>レイヤー（上が手前）</h3>
+          <h3>Layers (top is in front)</h3>
           <ul>
             {order.map(({l, i}) => (
               <li key={l.id} className={selected === l.id ? 'selected' : ''}>
                 <button onClick={() => setSelected(l.id)} aria-pressed={selected === l.id}>{layerLabel(l)}</button> <small>{l.id}</small>
-                <label>表示 <input type="checkbox" checked={l.visible} disabled={!canEdit} onChange={e => edit(updateLayer(scene, l.id, {visible: e.target.checked}))}/></label>
+                <label>Visible <input type="checkbox" checked={l.visible} disabled={!canEdit} onChange={e => edit(updateLayer(scene, l.id, {visible: e.target.checked}))}/></label>
                 {canEdit && <>
                   {(['front', 'forward', 'backward', 'back'] as ZMove[]).map(m => (
                     <button key={m} aria-label={`${m} ${l.id}`} disabled={(m === 'front' || m === 'forward') ? i === scene.layers.length - 1 : i === 0}
-                      onClick={() => edit(reorder(scene, l.id, m))}>{{front: '最前面', forward: '前へ', backward: '後ろへ', back: '最背面'}[m]}</button>
+                      onClick={() => edit(reorder(scene, l.id, m))}>{{front: 'To front', forward: 'Forward', backward: 'Backward', back: 'To back'}[m]}</button>
                   ))}
-                  <button aria-label={'remove ' + l.id} onClick={() => edit(removeLayer(scene, l.id))}>削除</button>
+                  <button aria-label={'remove ' + l.id} onClick={() => edit(removeLayer(scene, l.id))}>Delete</button>
                 </>}
               </li>
             ))}
           </ul>
           {canEdit && <>
-            <label>ソース <select value={addSource} onChange={e => setAddSource(e.target.value as Source)}>
+            <label>Source <select value={addSource} onChange={e => setAddSource(e.target.value as Source)}>
               {SOURCES.map(s => <option key={s} value={s}>{SOURCE_NAMES[s]}</option>)}</select></label>
-            <button onClick={() => { const r = addLayer(scene, addSource); if (!r) { onMessage('レイヤーは最大16個です'); return; } edit(r.scene); setSelected(r.id); }}>レイヤー追加</button>
-            <button disabled={!v2} onClick={() => { const r = addColorLayer(scene, '#1e3a5f'); if (!r) { onMessage('レイヤーは最大16個です'); return; } edit(r.scene); setSelected(r.id); }}>色レイヤー追加</button>
+            <button onClick={() => { const r = addLayer(scene, addSource); if (!r) { onMessage('At most 16 layers'); return; } edit(r.scene); setSelected(r.id); }}>Add layer</button>
+            <button disabled={!v2} onClick={() => { const r = addColorLayer(scene, '#1e3a5f'); if (!r) { onMessage('At most 16 layers'); return; } edit(r.scene); setSelected(r.id); }}>Add colour layer</button>
           </>}
         </section>
 
         <div className="library">
           <AssetLibrary api={api} canEdit={canEdit} v2={v2} onMessage={onMessage} onAdd={a => {
             const r = addImageLayer(scene, a.id, a.width, a.height);
-            if (!r) { onMessage('レイヤーは最大16個です'); return; }
+            if (!r) { onMessage('At most 16 layers'); return; }
             edit(r.scene); setSelected(r.id);
           }}/>
           <TemplatePanel api={api} canEdit={canEdit} v2={v2} onMessage={onMessage} onAdd={(a, def, vars) => {
             const r = addImageLayer(scene, a.id, a.width, a.height, {template: reference(def, vars), base: def.id, x: 80, y: 860});
-            if (!r) { onMessage('レイヤーは最大16個です'); return; }
+            if (!r) { onMessage('At most 16 layers'); return; }
             edit(r.scene); setSelected(r.id);
           }}/>
         </div>
 
         {layer && (
           <section className="props" aria-label="properties">
-            <h3>プロパティ: {layer.id}</h3>
+            <h3>Properties: {layer.id}</h3>
             {(['x', 'y', 'width', 'height'] as const).map(k => (
               <label key={k}>{k}<input type="number" value={layer[k]} disabled={!canEdit} onChange={e => edit(updateLayer(scene, layer.id, {[k]: Number(e.target.value)}))}/></label>
             ))}
-            <label>表示<input type="checkbox" checked={layer.visible} disabled={!canEdit} onChange={e => edit(updateLayer(scene, layer.id, {visible: e.target.checked}))}/></label>
+            <label>Visible<input type="checkbox" checked={layer.visible} disabled={!canEdit} onChange={e => edit(updateLayer(scene, layer.id, {visible: e.target.checked}))}/></label>
             {v2 && <V2Props api={api} layer={layer} canEdit={canEdit} onMessage={onMessage} onChange={c => edit(updateLayer(scene, layer.id, c as never))}/>}
-            <label>アスペクト比固定<input type="checkbox" checked={lockAspect} onChange={e => setLockAspect(e.target.checked)}/></label>
-            <label>グリッド <select value={grid} onChange={e => setGrid(Number(e.target.value))}>
-              {[1, 8, 16, 40].map(g => <option key={g} value={g}>{g === 1 ? 'なし' : g + 'px'}</option>)}</select></label>
+            <label>Lock aspect ratio<input type="checkbox" checked={lockAspect} onChange={e => setLockAspect(e.target.checked)}/></label>
+            <label>Grid <select value={grid} onChange={e => setGrid(Number(e.target.value))}>
+              {[1, 8, 16, 40].map(g => <option key={g} value={g}>{g === 1 ? 'off' : g + 'px'}</option>)}</select></label>
           </section>
         )}
 
         {code !== '' && (
           <section>
             <textarea aria-label="scene json" value={code} onChange={e => setCode(e.target.value)}/>
-            <button onClick={() => { const r = validateSceneText(code); if (r.violation) { onMessage('Invalid scene ' + r.violation.path + ': ' + r.violation.reason); return; } edit(r.doc as Scene); setCode(''); }}>下書きに適用</button>
-            <button onClick={() => setCode('')}>閉じる</button>
+            <button onClick={() => { const r = validateSceneText(code); if (r.violation) { onMessage('Invalid scene ' + r.violation.path + ': ' + r.violation.reason); return; } edit(r.doc as Scene); setCode(''); }}>Apply to draft</button>
+            <button onClick={() => setCode('')}>Close</button>
           </section>
         )}
 
         {revisions.length > 0 && (
           <section>
-            <h2>履歴（最新50版）</h2>
+            <h2>History (last 50 revisions)</h2>
             <ul>{revisions.map(r => (
               <li key={r.revision}>r{r.revision} {new Date(r.created_at_unix * 1000).toLocaleString()} {canEdit &&
-                <button onClick={() => { edit(r.document as Scene); onMessage('r' + r.revision + ' を下書きに読み込みました（保存はまだです）'); }}>復元</button>}</li>
+                <button onClick={() => { edit(r.document as Scene); onMessage('r' + r.revision + ' loaded into the draft (not saved yet)'); }}>Restore</button>}</li>
             ))}</ul>
           </section>
         )}

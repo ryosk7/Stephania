@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src '__SCRIPT_HASH__'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<title>T3Box セットアップQR</title>
+<title>T3Box setup QR</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#111}
   button,a.button{font:inherit;padding:.6rem 1rem;border:1px solid #111;border-radius:.4rem;background:#fff;color:#111;text-decoration:none;cursor:pointer;display:inline-block;margin:.25rem 0}
@@ -15,20 +15,20 @@
 </style>
 </head>
 <body>
-<h1>T3Box セットアップQR</h1>
-<p>このページは、T3Boxの所有者登録に使う秘密値をこのブラウザ内で作ります。通信は一切しません（ページのCSPで外部への接続を禁止しています）。オフラインで開いても動作します。</p>
-<button id="generate" type="button">秘密値を作成</button>
-<p id="error" class="warn" hidden>このブラウザでは安全な乱数・ハッシュ機能が使えません。HTTPS または file:// で開き直してください。</p>
+<h1>T3Box setup QR</h1>
+<p>This page creates, inside this browser, the secret used to register the owner of a T3Box. It makes no network connections (the page CSP forbids them) and works offline.</p>
+<button id="generate" type="button">Create secret</button>
+<p id="error" class="warn" hidden>This browser does not provide secure random numbers and hashing here. Open the page again over HTTPS or as a file:// URL.</p>
 <section id="steps" hidden>
   <div id="qr"></div>
   <ol>
-    <li><a id="download" class="button" href="#">t3box-setup.txt をダウンロード</a></li>
-    <li>ダウンロードしたファイルを、OS を書き込んだ microSD の <strong>boot（FAT32）領域の直下</strong>にコピーします。</li>
-    <li>microSD を T3Box に入れて電源を入れます。初回起動時にファイルが取り込まれ、SD から削除されます。</li>
-    <li>T3Box Connect アプリでこの QR を読み取り、BLE で所有者登録します。</li>
-    <li>登録が終わったら <button id="clear" type="button">QR を消去</button> してこのタブを閉じてください。</li>
+    <li><a id="download" class="button" href="#">Download t3box-setup.txt</a></li>
+    <li>Copy the downloaded file to the <strong>top level of the boot (FAT32) partition</strong> of the microSD card with the OS.</li>
+    <li>Insert the microSD card into the T3Box and power it on. The first boot imports the file and deletes it from the card.</li>
+    <li>Scan this QR code with the T3Box Connect app to register as the owner over BLE.</li>
+    <li>When registration is done, <button id="clear" type="button">clear the QR code</button> and close this tab.</li>
   </ol>
-  <p class="warn">この QR とファイルは T3Box の所有権そのものです。他人に見せたり、共有フォルダやチャットに置いたりしないでください。登録前の microSD を他人に渡さないでください。所有者が登録済みの T3Box は、このファイルを入れても秘密値を変更しません（無視して削除します）。</p>
+  <p class="warn">This QR code and the file are the ownership of the T3Box. Do not show them to anyone or put them in shared folders or chats, and do not hand the microSD card to anyone before registration. A T3Box that already has an owner ignores and deletes the file without changing its secret.</p>
 </section>
 <p><small>Page integrity: compare this file's SHA-256 with SHA256SUMS published alongside it.</small></p>
 <script>__SCRIPT__</script>

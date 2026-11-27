@@ -5,9 +5,9 @@ import type {AudioInput, createClient} from './api/client';
 import type {AudioLevels, Level} from './live';
 
 type Api = ReturnType<typeof createClient>;
-const NAMES: Record<string, string> = {hdmi: 'HDMI音声', mic: 'マイク'};
+const NAMES: Record<string, string> = {hdmi: 'HDMI audio', mic: 'Microphone'};
 const STATES: Record<string, string> = {
-  disabled: '無効', idle: '待機（配信停止中）', waiting: '接続待ち', active: '入力あり', stalled: '入力が止まっています', error: 'エラー（自動再接続中）',
+  disabled: 'disabled', idle: 'idle (not streaming)', waiting: 'waiting for input', active: 'receiving', stalled: 'input stalled', error: 'error (reconnecting)',
 };
 
 /** dBFS (−60..0) → 0..100 % for meter bars. */
@@ -54,7 +54,7 @@ export function AudioPanel({api, levels, onMessage}: {api: Api; levels?: AudioLe
         // Only the last queued save replaces local state; earlier ones would
         // briefly undo edits the user has already made.
         if (pending.current === 1) setInputs(r.stored);
-        onMessage(r.applied ? '音声設定を適用しました' : '保存しました（エンジン接続時に適用されます）');
+        onMessage(r.applied ? 'Audio settings applied' : 'Saved (applied when the engine connects)');
       } catch (e) {
         onMessage(String(e));
         await load().catch(() => undefined);
@@ -80,7 +80,7 @@ export function AudioPanel({api, levels, onMessage}: {api: Api; levels?: AudioLe
 
   return (
     <section aria-label="audio" data-testid="audio">
-      <h2>音声</h2>
+      <h2>Audio</h2>
       {levels?.master && <Meter level={levels.master} label="program"/>}
       {inputs.map(i => {
         const live = levels?.inputs.find(l => l.id === i.id);
@@ -90,11 +90,11 @@ export function AudioPanel({api, levels, onMessage}: {api: Api; levels?: AudioLe
             <strong>{NAMES[i.id] ?? i.id}</strong> <span data-testid={'audio-state-' + i.id}>{st ? STATES[st] ?? st : ''}</span>
             {state[i.id]?.error && <span> {state[i.id]!.error}</span>}
             <Meter level={live?.levels} label={i.id}/>
-            <label>有効 <input type="checkbox" checked={i.enabled} onChange={e => commit(i.id, {enabled: e.target.checked, device: i.device})}/></label>
-            <label>デバイス <input value={i.device} onChange={e => edit(i.id, {device: e.target.value})} onBlur={e => void save(i.id, {device: e.target.value})} placeholder="plughw:CARD=Mic,DEV=0"/></label>
-            <label>ゲイン {i.gain_db.toFixed(1)} dB <input type="range" min={-60} max={12} step={0.5} value={i.gain_db}
+            <label>Enabled <input type="checkbox" checked={i.enabled} onChange={e => commit(i.id, {enabled: e.target.checked, device: i.device})}/></label>
+            <label>Device <input value={i.device} onChange={e => edit(i.id, {device: e.target.value})} onBlur={e => void save(i.id, {device: e.target.value})} placeholder="plughw:CARD=Mic,DEV=0"/></label>
+            <label>Gain {i.gain_db.toFixed(1)} dB <input type="range" min={-60} max={12} step={0.5} value={i.gain_db}
               aria-label={'gain ' + i.id} onChange={e => edit(i.id, {gain_db: Number(e.target.value)}, true)}/></label>
-            <button aria-pressed={i.muted} onClick={() => commit(i.id, {muted: !i.muted})}>{i.muted ? 'ミュート解除' : 'ミュート'}</button>
+            <button aria-pressed={i.muted} onClick={() => commit(i.id, {muted: !i.muted})}>{i.muted ? 'Unmute' : 'Mute'}</button>
           </div>
         );
       })}
