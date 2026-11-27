@@ -1,4 +1,4 @@
-//! Protocol v2 against the real stephania-provision binary over its socket.
+//! Protocol v3 against the real stephania-provision binary over its socket.
 #![cfg(all(unix, feature = "ci-virtual"))]
 
 use serde_json::{json, Value};
@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
 use std::time::Duration;
 use stephania::ipc::{read_frame, write_frame};
-use stephania::provisioning::{claim_proof, derive_owner_key, fragment, hex, operation_proof, seal, setup_uri, unhex, MIN_ATT_PAYLOAD};
+use stephania::provisioning::{claim_confirmation, client_claim, fragment, hex, operation_proof, seal, unhex, PairingChallenge, MIN_ATT_PAYLOAD};
 
 struct Guard(Child, std::path::PathBuf, bool);
 impl Drop for Guard {
@@ -19,7 +19,6 @@ impl Drop for Guard {
 
 fn start(dir: &std::path::Path, cleanup: bool) -> Guard {
     let child = Command::new(env!("CARGO_BIN_EXE_stephania-provision"))
-        .env("STEPHANIA_SETUP_FILE", dir.join("boot-stephania-setup.txt"))
         .env("STEPHANIA_PROVISION_SOCKET", dir.join("provisioning.sock"))
         .env("STEPHANIA_CREDENTIALS_DIR", dir)
         .env("STEPHANIA_NETWORK_BACKEND", "virtual")
@@ -65,23 +64,31 @@ impl Phone {
     fn nonce(&mut self, op: &str) -> [u8; 32] {
         unhex::<32>(self.send(json!({"op": op}))["nonce"].as_str().unwrap()).unwrap()
     }
+    fn challenge(&mut self) -> PairingChallenge {
+        let c = self.send(json!({"op": "pairing.challenge"}));
+        PairingChallenge { nonce: unhex(c["nonce"].as_str().unwrap()).unwrap(), device_key: unhex(c["device_key"].as_str().unwrap()).unwrap() }
+    }
+    /// First-come claim: X25519 with the device's per-challenge key.
+    fn claim(&mut self, owner_id: &str) -> [u8; 32] {
+        let c = self.challenge();
+        let (phone_key, key) = client_claim(&c, owner_id).unwrap();
+        let r = self.send(json!({"op":"pairing.claim","owner_id":owner_id,"phone_key":hex(&phone_key)}));
+        assert_eq!(r, json!({"state":"CLAIMED","confirm":hex(&claim_confirmation(&key, &c.nonce))}));
+        key
+    }
 }
 
 #[test]
-fn claim_scan_join_over_socket_with_setup_file() {
-    let dir = tempdir("prov-v2");
-    let secret = *b"QR-from-browser!";
-    std::fs::write(dir.join("boot-stephania-setup.txt"), setup_uri(&secret)).unwrap();
+fn claim_scan_join_over_socket() {
+    let dir = tempdir("prov-v3");
     let _guard = start(&dir, true);
-    assert!(!dir.join("boot-stephania-setup.txt").exists(), "setup file consumed");
     let mut p = Phone::connect(&dir, "AA:BB:CC:DD:EE:01");
-    assert_eq!(p.send(json!({"op":"device.info"}))["protocol"], 2);
-    let nonce = p.nonce("pairing.challenge");
-    assert_eq!(p.send(json!({"op":"pairing.claim","owner_id":"x","proof":hex(&[0u8;32])})), json!({"error":"bad_proof"}));
-    let nonce2 = p.nonce("pairing.challenge");
-    assert_ne!(nonce, nonce2);
-    assert_eq!(p.send(json!({"op":"pairing.claim","owner_id":"qr-phone","proof":hex(&claim_proof(&secret, &nonce2, "qr-phone"))})), json!({"state":"CLAIMED"}));
-    let key = derive_owner_key(&secret, &nonce2, "qr-phone");
+    assert_eq!(p.send(json!({"op":"device.info"}))["protocol"], 3);
+    let first = p.challenge();
+    assert_eq!(p.send(json!({"op":"pairing.claim","owner_id":"x","phone_key":hex(&[0u8;32])})), json!({"error":"bad_key"}));
+    assert_ne!(first.device_key, p.challenge().device_key, "fresh device key per challenge");
+    let key = p.claim("first-phone");
+    assert_eq!(p.send(json!({"op":"pairing.challenge"})), json!({"state":"CLAIMED"}));
 
     let n = p.nonce("operation.challenge");
     let r = p.send(json!({"op":"wifi.scan","proof":hex(&operation_proof(&key, &n, "wifi.scan", b""))}));
@@ -104,14 +111,11 @@ fn claim_scan_join_over_socket_with_setup_file() {
 fn ownership_survives_process_restart() {
     let dir = tempdir("prov-restart");
     let first = start(&dir, false);
-    let secret = unhex::<16>(std::fs::read_to_string(dir.join("setup-secret")).unwrap().trim()).unwrap();
     let mut p = Phone::connect(&dir, "peer-1");
-    let nonce = p.nonce("pairing.challenge");
-    assert_eq!(p.send(json!({"op":"pairing.claim","owner_id":"p","proof":hex(&claim_proof(&secret, &nonce, "p"))})), json!({"state":"CLAIMED"}));
+    p.claim("p");
     drop(p);
     drop(first);
     let _second = start(&dir, true);
-    assert_eq!(std::fs::read_to_string(dir.join("setup-secret")).unwrap().trim(), hex(&secret));
     let mut p = Phone::connect(&dir, "peer-1");
     assert_eq!(p.send(json!({"op":"pairing.challenge"})), json!({"state":"CLAIMED"}));
 }

@@ -1,106 +1,106 @@
-// Setup step 3: join Wi-Fi, then issue LAN management access (sealed under
-// the owner key; never over plain BLE). Ends on a success state.
-import * as Haptics from 'expo-haptics';
+// Setup, Wi-Fi step (skipped when the device is already online). The list
+// is what the *device* sees, strongest first: the phone's own Wi-Fi is not
+// read, so the app needs no location permission. Tapping a network opens
+// the password sheet; joining issues LAN access and opens Control.
 import {router} from 'expo-router';
 import {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
 import type {ScanNetwork} from '@stephania/provisioning-client';
-import {saveEnrollment} from '@/shared/device';
-import {Field, Icon, IconButton, List, Notice, PrimaryButton, Screen, StatusView, TextButton, Title, TopBar, useColor} from '@/shared/ui';
+import {Field, Footnote, Icon, IconButton, List, Notice, PrimaryButton, Screen, SectionHeading, Sheet, StatusView, TopBar, useColor} from '@/shared/ui';
 import {describeSetupError} from './errors';
+import {finishSetup} from './flow';
 import {activeSession} from './state';
 
-type Step = {kind: 'pick'} | {kind: 'joining'} | {kind: 'issuing'} | {kind: 'done'; url: string};
+const supported = (n: ScanNetwork) => n.security === 'open' || n.security === 'wpa-psk';
+const bars = (rssi: number): 'signal0' | 'signal1' | 'signal2' | 'signal3' => (rssi > -60 ? 'signal3' : rssi > -72 ? 'signal2' : rssi > -82 ? 'signal1' : 'signal0');
 
 export function WifiScreen() {
   const active = activeSession();
   const [networks, setNetworks] = useState<ScanNetwork[] | null>(null);
-  const [selected, setSelected] = useState<ScanNetwork>();
+  const [picked, setPicked] = useState<ScanNetwork>();
   const [psk, setPsk] = useState('');
-  const [step, setStep] = useState<Step>({kind: 'pick'});
+  const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [scanError, setScanError] = useState('');
   const spinner = useColor('secondary');
 
   const scan = useCallback(async () => {
     if (!active) return;
-    setNetworks(null); setError('');
-    try { setNetworks(await active.session.scan()); } catch (e) { setNetworks([]); setError(describeSetupError(e)); }
+    setNetworks(null); setScanError('');
+    try {
+      setNetworks([...(await active.session.scan())].sort((a, b) => Number(supported(b)) - Number(supported(a)) || b.rssi - a.rssi));
+    } catch (e) { setNetworks([]); setScanError(describeSetupError(e)); }
   }, [active]);
   useEffect(() => { void scan(); }, [scan]);
 
   if (!active) {
-    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'bluetooth'} tone="warning" title="Not connected" body="Open the Stephania device from the nearby list first.">
-      <PrimaryButton title="Nearby" icon="bluetooth" accessibilityLabel="Find the Stephania device nearby" onPress={() => router.replace('/setup/nearby')} />
-    </StatusView></Screen>;
-  }
-
-  /** Joins `selected` (unless `skipJoin`: the Stephania device is already on the LAN), then issues access. */
-  async function join(skipJoin = false) {
-    if (!skipJoin && !selected) return;
-    setError('');
-    try {
-      if (!skipJoin && selected) {
-        setStep({kind: 'joining'});
-        const state = await active!.session.configureWifi(
-          selected.security === 'open' ? {ssid: selected.ssid, security: 'open'} : {ssid: selected.ssid, security: 'wpa-psk', psk});
-        setPsk('');
-        if (state !== 'CONNECTED') throw Object.assign(new Error('join_failed'), {code: 'join_failed'});
-      }
-      setStep({kind: 'issuing'});
-      if (!(await active!.session.managementAvailable())) {
-        throw new Error('The Stephania device is still preparing its certificate. Try again in a few minutes.');
-      }
-      const e = await active!.session.enrollManagement();
-      await saveEnrollment(active!.deviceId, e, active!.name);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setStep({kind: 'done', url: e.urls[0]!});
-    } catch (e) {
-      setStep({kind: 'pick'});
-      setError(describeSetupError(e));
-    }
-  }
-
-  if (step.kind === 'joining' || step.kind === 'issuing') {
-    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'wifi'} tone="info"
-      title={step.kind === 'joining' ? `Joining ${selected?.ssid}…` : 'Setting up secure access…'}
-      body={step.kind === 'joining' ? 'This can take up to 30 seconds.' : 'The Stephania device hands this phone its address and certificate.'}>
-      <ActivityIndicator color={spinner} />
-    </StatusView></Screen>;
-  }
-  if (step.kind === 'done') {
-    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />} footer={<PrimaryButton title="Control" icon="control" accessibilityLabel="Open controls" onPress={() => router.replace({pathname: '/device/[id]', params: {id: active.deviceId}})} />}>
-      <StatusView icon={'done'} tone="success" title={`${active.name} is ready`} body={`Reachable at ${step.url}`} />
+    return <Screen header={<TopBar onBack={() => router.back()} />}>
+      <StatusView icon="bluetooth" tone="warning" title="Not connected" body="Open Stephania Connect next to the device to set it up.">
+        <PrimaryButton title="Home" icon="bluetooth" onPress={() => router.replace('/')} />
+      </StatusView>
     </Screen>;
   }
 
-  const supported = (n: ScanNetwork) => n.security === 'open' || n.security === 'wpa-psk';
-  const canJoin = !!selected && supported(selected) && (selected.security === 'open' || psk.length >= 8);
+  async function join() {
+    if (!picked) return;
+    setError('');
+    try {
+      setBusy(`Joining ${picked.ssid}`);
+      const state = await active!.session.configureWifi(
+        picked.security === 'open' ? {ssid: picked.ssid, security: 'open'} : {ssid: picked.ssid, security: 'wpa-psk', psk});
+      if (state !== 'CONNECTED') throw Object.assign(new Error('join_failed'), {code: 'join_failed'});
+      setPsk('');
+      setBusy('Setting up secure access');
+      const id = await finishSetup();
+      setPicked(undefined);
+      router.replace({pathname: '/device/[id]', params: {id}});
+    } catch (e) {
+      setError(describeSetupError(e));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const canJoin = !!picked && (picked.security === 'open' || psk.length >= 8);
   return (
-    <Screen header={<TopBar onBack={() => router.back()} title={active.name} trailing={<IconButton icon="refresh" label="Scan again" onPress={() => void scan()} />} />}
-      scroll footer={<PrimaryButton title="Join" icon="arrow" disabled={!canJoin} onPress={() => void join()} />}>
-      <Title>Choose Wi-Fi</Title>
-      <List.Section>
-        {networks === null
-          ? <List.Row title="Scanning…" accessory={<ActivityIndicator color={spinner} />} />
-          : networks.length === 0
-            ? <List.Row title="No networks found" />
-            : networks.map(n => (
-              // iOS Wi-Fi list: check on the left of the chosen network, lock and signal on the right.
-              <List.Row key={n.ssid} title={n.ssid} detail={supported(n) ? undefined : 'Not supported'}
-                accessibilityLabel={`${n.ssid}${n.security !== 'open' ? ', secured' : ''}${supported(n) ? '' : ', security not supported'}`}
-                leading={<View className="w-5">{selected?.ssid === n.ssid && <Icon name="check" size={18} strokeWidth={2.5} />}</View>}
-                accessory={<View className="flex-row items-center gap-2">
-                  {n.security !== 'open' && <Icon name={'lock'} size={14} color={supported(n) ? 'text' : 'tertiary'} />}
-                  <Icon name={'wifi'} size={16} color={supported(n) ? 'text' : 'tertiary'} />
-                </View>}
-                selected={selected?.ssid === n.ssid} disabled={!supported(n)} onPress={() => setSelected(n)} />
-            ))}
-      </List.Section>
-      {selected?.security === 'wpa-psk' && (
-        <Field label={`Password for ${selected.ssid}`} icon="lock" secure value={psk} onChangeText={setPsk} placeholder="At least 8 characters" returnKeyType="join" onSubmitEditing={() => canJoin && void join()} />
-      )}
-      {error !== '' && <Notice tone="warning">{error}</Notice>}
-      <TextButton title="Already on this network? Set up access only" onPress={() => void join(true)} />
+    <Screen scroll header={<TopBar onBack={() => router.back()} title={active.name} trailing={<IconButton icon="refresh" label="Scan again" onPress={() => void scan()} />} />}>
+      <View className="flex-row items-center gap-2.5 px-1" accessible accessibilityLabel="This phone is the owner">
+        <Icon name="check" size={18} strokeWidth={2.6} tone="success" />
+        <Footnote>This phone is the owner</Footnote>
+      </View>
+      <View className="gap-2">
+        <SectionHeading icon="wifi" label="Wi-Fi networks, strongest first" />
+        <List.Section>
+          {networks === null
+            ? <List.Row title="Scanning…" accessory={<ActivityIndicator color={spinner} />} />
+            : networks.length === 0
+              ? <List.Row title="No networks found" />
+              : networks.map(n => (
+                <List.Row key={n.ssid} title={n.ssid} detail={supported(n) ? undefined : 'Not supported'}
+                  accessibilityLabel={`${n.ssid}${n.security !== 'open' ? ', secured' : ''}${supported(n) ? '' : ', security not supported'}`}
+                  accessory={<View className="flex-row items-center gap-2">
+                    {n.security !== 'open' && <Icon name="lock" size={14} color={supported(n) ? 'text' : 'tertiary'} />}
+                    <Icon name={bars(n.rssi)} size={16} color={supported(n) ? 'text' : 'tertiary'} />
+                  </View>}
+                  disabled={!supported(n)} onPress={() => { setError(''); setPsk(''); setPicked(n); }} />
+              ))}
+        </List.Section>
+      </View>
+      {scanError !== '' && <Notice tone="warning">{scanError}</Notice>}
+      <View className="flex-row items-center justify-center gap-2" accessible accessibilityLabel="With a LAN cable this step is skipped">
+        <Icon name="cable" size={16} color="tertiary" /><Footnote tone="tertiary">With a LAN cable this step is skipped</Footnote>
+      </View>
+
+      <Sheet visible={!!picked} icon="wifi" title={picked?.ssid} subtitle={`${active.name} joins this network`}
+        onClose={() => { if (!busy) setPicked(undefined); }}>
+        {picked?.security === 'wpa-psk' && (
+          <Field label={`Password for ${picked.ssid}`} icon="lock" secure autoFocus value={psk} onChangeText={setPsk}
+            placeholder="At least 8 characters" returnKeyType="join" onSubmitEditing={() => canJoin && void join()} />
+        )}
+        {error !== '' && <Notice tone="warning">{error}</Notice>}
+        {busy !== '' && <Footnote className="text-center">{busy}…</Footnote>}
+        <PrimaryButton title="Join" busy={busy !== ''} disabled={!canJoin} onPress={() => void join()} />
+      </Sheet>
     </Screen>
   );
 }

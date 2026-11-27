@@ -1,9 +1,10 @@
 // Screen, TopBar, Card, List, SectionHeading, StatusView, Sheet: structural
 // parts composed by every screen. Drawn by Stephania, not by the platform: no
 // native headers, no system alerts, so iOS and Android look the same.
-import {Children, createContext, isValidElement, use, type ReactNode} from 'react';
-import {KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, View} from 'react-native';
-import {SafeAreaView as RawSafeAreaView} from 'react-native-safe-area-context';
+import {Children, createContext, isValidElement, use, useEffect, useRef, type ReactNode} from 'react';
+import {BlurView} from 'expo-blur';
+import {Animated, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, View} from 'react-native';
+import {SafeAreaInsetsContext, SafeAreaView as RawSafeAreaView} from 'react-native-safe-area-context';
 import {withUniwind} from 'uniwind';
 import {IconButton} from './buttons';
 import {Icon, type IconName} from './icon';
@@ -128,24 +129,74 @@ export function StatusView({icon, tone = 'neutral', title, body, children}: {ico
 }
 
 /**
- * Bottom sheet drawn by the app (rename, confirmations): same on both
- * platforms, unlike Alert.prompt / system dialogs. `icon` leads the title.
+ * The one sheet (DESIGN.md §5): device setup, Wi-Fi password, rename,
+ * confirmations. Drawn by the app, same on both platforms, unlike
+ * Alert.prompt / system dialogs. It floats above the bottom edge with a
+ * grabber and no close button: swipe down, tap outside or Android back
+ * dismisses it. The head is centred: `art` (any picture) or `icon` (in a
+ * round tile), then `title` and an optional `subtitle` line; `children`
+ * follow and end with the sheet's action. `bare` drops the head for
+ * content that brings its own (the device carousel).
  */
-export function Sheet({visible, title, icon, onClose, children}: {visible: boolean; title: string; icon?: IconName; onClose(): void; children: ReactNode}) {
+export function Sheet({visible, onClose, title, subtitle, icon, art, bare, children}: {
+  visible: boolean; onClose(): void; title?: string; subtitle?: ReactNode; icon?: IconName; art?: ReactNode; bare?: boolean; children: ReactNode;
+}) {
+  // Context, not useSafeAreaInsets(): stories render without a provider.
+  const bottom = use(SafeAreaInsetsContext)?.bottom ?? 0;
+  const drag = useRef(new Animated.Value(0)).current;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const pan = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_, g) => g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+    onPanResponderMove: (_, g) => drag.setValue(Math.max(0, g.dy)),
+    onPanResponderRelease: (_, g) => {
+      if (g.dy > 80 || g.vy > 0.8) { onCloseRef.current(); drag.setValue(0); }
+      else Animated.spring(drag, {toValue: 0, useNativeDriver: true}).start();
+    },
+  })).current;
+  // The backdrop fades in; the sheet itself rises from below.
+  useEffect(() => {
+    if (!visible) return;
+    drag.setValue(600);
+    Animated.spring(drag, {toValue: 0, useNativeDriver: true, bounciness: 0, speed: 16}).start();
+  }, [visible, drag]);
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable className="absolute inset-0 bg-scrim" onPress={onClose} accessibilityLabel="Close" />
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      {/* The screen below stays recognisable: a gentle blur under the scrim. */}
+      <BlurView intensity={18} tint="default" style={StyleSheet.absoluteFill} />
+      <Pressable className="absolute inset-0 bg-scrim" onPress={onClose} accessibilityLabel="Dismiss" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} className="flex-1 justify-end" pointerEvents="box-none">
-        <SafeAreaView edges={['bottom']} className="gap-4 rounded-t-sheet border border-border bg-surface px-4 pb-4">
-          <View className="mt-2 h-1 w-10 self-center rounded-full bg-tertiary" />
-          <View className="flex-row items-center gap-2.5">
-            {icon && <Icon name={icon} size={20} color="secondary" />}
-            <Title className="flex-1">{title}</Title>
-            <IconButton icon="close" label="Close" onPress={onClose} />
-          </View>
-          {children}
-        </SafeAreaView>
+        {/* 8 pt from the screen edges like the system's floating sheets; the
+            content keeps clear of the home indicator inside the sheet. */}
+        <View className="px-2 pb-2">
+          <Animated.View {...pan.panHandlers} style={{transform: [{translateY: drag}]}}>
+            <SheetCard title={title} subtitle={subtitle} icon={icon} art={art} bare={bare} bottom={bottom}>{children}</SheetCard>
+          </Animated.View>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+/** The sheet's card on its own (what <Sheet> floats over the screen); stories show it inline. */
+export function SheetCard({title, subtitle, icon, art, bare, bottom = 0, children}: {
+  title?: string; subtitle?: ReactNode; icon?: IconName; art?: ReactNode; bare?: boolean; bottom?: number; children: ReactNode;
+}) {
+  return (
+    <View className="items-center gap-3.5 rounded-sheet border border-border bg-surface px-5 pt-3" style={{paddingBottom: Math.max(24, bottom)}}>
+      <View className="h-1 w-10 rounded-full bg-tertiary" accessibilityElementsHidden />
+      {!bare && (art ?? (icon && (
+        <View className="h-[88px] w-[88px] items-center justify-center rounded-full bg-fill" accessibilityElementsHidden>
+          <Icon name={icon} size={40} />
+        </View>
+      )))}
+      {!bare && title && (
+        <View className="items-center gap-1">
+          <Title className="text-center">{title}</Title>
+          {typeof subtitle === 'string' ? <Footnote className="text-center">{subtitle}</Footnote> : subtitle}
+        </View>
+      )}
+      <View className="mt-0.5 gap-3.5 self-stretch">{children}</View>
+    </View>
   );
 }

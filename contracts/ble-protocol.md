@@ -1,4 +1,4 @@
-# Stephania BLE provisioning protocol — version 2
+# Stephania BLE provisioning protocol — version 3
 
 Implementations:
 - **Device core:** `src/provisioning.rs`, `src/provisioning_gatt.rs`, `src/bin/stephania-provision.rs`
@@ -6,35 +6,25 @@ Implementations:
 - **Phone:** `packages/provisioning-client`, `apps/mobile`
 - **Independent test client:** `tests/ble/client.py`
 
-Status: proof-of-concept contract. The setup-secret delivery (R02) design is chosen but still needs independent security review and physical testing. Do not call this production enrollment yet.
+Status: proof-of-concept contract. It still needs independent security review and physical testing. Do not call this production enrollment yet.
 
-Version 2 replaced the earlier multi-characteristic design (v1, never released). The goal was to remove common BlueZ and Linux BLE failure modes by design; see [BlueZ robustness](#bluez-robustness).
+Version 3 replaced the v2 setup secret (a QR code made on a web page and copied onto the card) with a first-come claim. Version 2 had replaced the earlier multi-characteristic design (v1, never released) to remove common BlueZ and Linux BLE failure modes by design; see [BlueZ robustness](#bluez-robustness).
 
 ## Principles
-- **Authentication:** BLE proximity is not authentication. Ownership is proven with a per-device 128-bit setup secret via HMAC-SHA256 challenge-response. The secret is never transmitted.
-- **No pairing or bonding:** the protocol never requires BLE pairing or bonding. Authentication (HMAC) and confidentiality (ChaCha20-Poly1305 sealing of Wi-Fi credentials) are at the application layer. BLE link encryption is off by default (`STEPHANIA_BLE_REQUIRE_ENCRYPTION=1` enables it).
-- **Ownership is safe by default:** there are no shared default credentials. A claimed device cannot be re-claimed over BLE; factory reset requires physical confirmation. A corrupt ownership file becomes `RECOVERY_REQUIRED`, never `UNCLAIMED`.
+- **Ownership is first come:** an unclaimed device belongs to the first phone that claims it. There is nothing to copy, print or scan. Whoever can write the microSD card controls the device anyway, and rewriting the card (or a factory reset with physical confirmation) makes it claimable again.
+- **Key agreement, not a shared secret:** every `pairing.challenge` creates a fresh X25519 key on the device. The phone sends its own X25519 public key with the claim, and both sides derive the owner key from the shared secret. The owner key is never sent. A passive listener during the claim learns nothing; an active attacker in radio range at that moment could take the device first, and the owner then sees the device as taken in the app and rewrites the card.
+- **No pairing or bonding:** the protocol never requires BLE pairing or bonding. Authentication (HMAC with the owner key) and confidentiality (ChaCha20-Poly1305 sealing of Wi-Fi credentials) are at the application layer. BLE link encryption is off by default (`STEPHANIA_BLE_REQUIRE_ENCRYPTION=1` enables it).
+- **Ownership sticks:** a claimed device cannot be re-claimed over BLE; factory reset requires physical confirmation. A corrupt ownership file becomes `RECOVERY_REQUIRED`, never `UNCLAIMED`.
 - **Two independent state machines:** ownership (`UNCLAIMED / PAIRING / CLAIMED / RECOVERY_REQUIRED`) and network (`DISCONNECTED / SCANNING / CONNECTING / CONNECTED / FAILED`). A Wi-Fi failure never changes ownership.
+- **Wired first:** `network.status` reports `wired`. With an Ethernet cable connected the app skips Wi-Fi setup.
 
-## Setup secret delivery (R02 decision, 2026-11-27)
-No printed labels. The owner opens the static setup page (`tools/setup-page`: GitHub Pages `gh-pages` branch, or a local copy). The page generates the secret with `crypto.getRandomValues` in the browser, shows it as a QR code, and downloads `stephania-setup.txt` containing `stephania-setup:v1:<32 hex>:<8 hex SHA-256 check>`.
-1. The owner copies the file to the boot (FAT32) partition next to the OS.
-2. On boot, `stephania-provision` imports it **only while UNCLAIMED**, stores the secret 0600, then overwrites and deletes the file. An owned or recovery-required device deletes the file without importing it; invalid files are deleted too.
-3. The app scans the QR from the screen and claims over BLE.
-
-**Residual risks:**
-- Anyone holding the microSD before first boot can read the secret.
-- FAT32 deletion is not secure erasure.
-- Page integrity depends on the hosting. This is mitigated by having no external resources, a CSP script hash and a published SHA256SUMS.
-- The QR stays visible on the owner's screen until it is cleared.
-
-## GATT layout (fixed for v2)
-Service `7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60`. Its UUID changes with every protocol major version, so a phone never applies a cached layout from another version.
+## GATT layout (fixed for v3)
+Service `7c3b0200-5d1e-4a6f-9b0e-3a1f2c4d5e60`. Its UUID changes with every protocol major version, so a phone never applies a cached layout from another version.
 
 | UUID | Name | Properties | Content |
 |---|---|---|---|
-| `7c3b0101-…` | Info | read | Static `{"v":2,"p":"steph"}` (19 bytes; `p` is a short product tag, Stephania). It fits a minimum-MTU read, so no long read is ever needed. |
-| `7c3b0102-…` | Rpc | write (with response), indicate | Request fragments in; response fragments out. |
+| `7c3b0201-…` | Info | read | Static `{"v":3,"p":"steph"}` (19 bytes; `p` is a short product tag, Stephania). It fits a minimum-MTU read, so no long read is ever needed. |
+| `7c3b0202-…` | Rpc | write (with response), indicate | Request fragments in; response fragments out. |
 
 The advertisement carries the 128-bit service UUID and the name `Stephania-XXXX` (scan response if needed). It uses legacy advertising only.
 
@@ -62,13 +52,13 @@ A request is a UTF-8 JSON object with `op`; unknown keys are rejected. A failed 
 
 | op | Fields | Response | Replayed |
 |---|---|---|---|
-| `device.info` | — | `model, firmware, protocol:2, ownership, network` | no |
-| `pairing.challenge` | — | `{state:"PAIRING", nonce}` while unclaimed, else `{state}` | yes |
-| `pairing.claim` | `owner_id, proof` | `{state:"CLAIMED"}` (persisted before the response) | yes |
+| `device.info` | — | `model, firmware, protocol:3, ownership, network` | no |
+| `pairing.challenge` | — | `{state:"PAIRING", nonce, device_key}` while unclaimed (a fresh X25519 key each time; the latest challenge wins, 120 s), else `{state}` | yes |
+| `pairing.claim` | `owner_id, phone_key` | `{state:"CLAIMED", confirm}` (persisted before the response; `bad_key` for a key with no usable shared secret, `not_claimable` once owned) | yes |
 | `operation.challenge` | — | `{nonce}` (single use, 120 s) | yes |
 | `wifi.scan` | `proof` (payload `""`) | `{networks:[{ssid,rssi,security}]}`: up to 40, strongest per SSID, `scan_error` on failure | yes |
 | `wifi.configure` | `sealed, proof` (payload = `sealed`) | `{state:"CONNECTED"\|"FAILED"}` | yes |
-| `network.status` | — | `{state, last_error?}` | no |
+| `network.status` | — | `{state, wired, last_error?}`; `wired` is true while Ethernet is connected | no |
 | `management.endpoint` | — | `{available}`: whether LAN TLS is set up (unauthenticated hint; carries no URL or pin) | no |
 | `management.enroll` | `proof` (payload `""`) | `{sealed}`; plaintext `{token, token_id, urls, ca_sha256}`; `management_unavailable` until the device PKI has published an endpoint | yes |
 
@@ -79,16 +69,17 @@ A request is a UTF-8 JSON object with `op`; unknown keys are rejected. A failed 
 
 | Value | Definition |
 |---|---|
-| claim proof | `MAC(setup_secret, "stephania-claim-v1", nonce, owner_id)` |
-| owner key | `MAC(setup_secret, "stephania-owner-key-v1", nonce, owner_id)`: derived on both sides, never sent |
+| shared | `X25519(device private, phone_key) = X25519(phone private, device_key)`; all-zero results are refused (`bad_key`) |
+| owner key | `MAC(shared, "stephania-owner-key-v2", nonce, owner_id, device_key, phone_key)`: derived on both sides, never sent |
+| confirm | `MAC(owner_key, "stephania-claim-confirm-v1", nonce)`: the phone checks it to know both sides hold the same key |
 | operation proof | `MAC(owner_key, "stephania-operation-v1", op_nonce, operation, payload)` |
 | sealed | `ChaCha20-Poly1305(key = MAC(owner_key, "stephania-seal-v1"), nonce = op_nonce[0..12], aad = operation).encrypt(plaintext)` |
 
 `management.enroll` seals its *response* the same way (operation `"management.enroll"`, the request carries no sealed payload, so the nonce is still used once). The phone keeps `token` in secure storage and accepts a LAN server only if its certificate chain ends in the CA whose DER SHA-256 is `ca_sha256`. The device keeps only SHA-256(token); a factory reset clears every token.
 
-The Wi-Fi plaintext is `{"ssid", "security":"open"|"wpa-psk", "psk"?}`, with SSID 1–32 bytes and PSK 8–63 printable characters or 64 hex. The operation nonce is single-use, so every seal uses a unique nonce. `owner_id` is 1–64 characters of `[A-Za-z0-9._-]`. After 5 failed proofs the device locks out for 300 s.
+The Wi-Fi plaintext is `{"ssid", "security":"open"|"wpa-psk", "psk"?}`, with SSID 1–32 bytes and PSK 8–63 printable characters or 64 hex. The operation nonce is single-use, so every seal uses a unique nonce. `owner_id` is 1–64 characters of `[A-Za-z0-9._-]`. After 5 failed proofs or bad keys the device locks out for 300 s. If storing the new owner fails, the claim is rolled back and the device stays unclaimed.
 
-Vectors are computed independently in Python (`fixtures/ble/generate.py`): `fixtures/ble/hmac-vectors.json` and `fixtures/ble/seal-vectors.json` (verified by Rust and TypeScript), and `fixtures/ble/setup-uris.json`.
+Vectors are computed independently in Python (`fixtures/ble/generate.py`, `--check` to compare): `fixtures/ble/claim-vectors.json` and `fixtures/ble/seal-vectors.json`, verified by Rust and TypeScript.
 
 ## BlueZ robustness
 | Common failure | Design response |
@@ -112,13 +103,13 @@ If BlueZ itself proves unsuitable on hardware, the adapter process can be replac
 - **Device core over its socket:** `tests/provision_socket.rs` runs the real binary, including reconnect replay.
 - **TypeScript client and app transport:** both are tested against the real binary. The tests lose and duplicate responses on purpose and require recovery.
 - **`ble-e2e`, real BlueZ:** runs on two virtual LE controllers (`btvirt`).
-  - **Flow:** the Python client claims, replays, scans, fails and then succeeds a join, and has an unauthenticated operation rejected.
+  - **Flow:** the Python client has a bad key refused, claims, replays, scans, fails and then succeeds a join, and has an unauthenticated operation rejected.
   - **Self-heal:** bluetoothd is then restarted, and the supervised adapter must self-heal and serve the same owned device.
   - **Variants:** runs at the negotiated MTU and with 20-byte fragments.
 
 Not verified: real radios, phones, range and interference, and the on-board CYW43455.
 
 ## Open items
-- **Security:** independent security review; PAKE evaluation; owner credential rotation and revocation; multiple owners.
+- **Security:** independent security review; owner credential rotation and revocation; multiple owners.
 - **Networking:** NetworkManager D-Bus adapter with PSK persistence; captive-portal detection.
 - **Phone and hardware:** phone-side behaviour on real iOS/Android; physical range tests.

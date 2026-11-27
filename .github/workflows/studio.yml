@@ -287,25 +287,6 @@ jobs:
           npx vitest run --reporter=verbose | tee vitest.log
           grep -q 'interop with Rust stephania-provision' vitest.log
           if grep -qiE 'skipped|↓' vitest.log; then echo "interop test skipped" >&2; exit 1; fi
-  setup-page:
-    needs: [changes]
-    if: needs.changes.outputs.provisioning == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: tools/setup-page
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: tools/setup-page/package-lock.json
-      - run: npm ci --no-audit --no-fund
-      - name: Build and test the exact shipped page (QR round-trip via jsQR)
-        run: npm test
-      - run: cat dist/SHA256SUMS
   mobile:
     needs: [changes, bins]
     if: needs.changes.outputs.mobile == 'true'

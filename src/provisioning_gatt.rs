@@ -1,12 +1,13 @@
-//! Provisioning protocol v2: one request/response channel over GATT
+//! Provisioning protocol v3: one request/response channel over GATT
 //! (contracts/ble-protocol.md).
 //!
 //! Designed around common BlueZ / Linux BLE failure modes:
 //! - No dynamic characteristic reads (no ATT long reads, no read side
 //!   effects): every operation is a request message written in fragments
 //!   to the single RPC characteristic; the response is indicated back.
-//! - No BLE pairing/bonding: authentication is HMAC-based and Wi-Fi
-//!   credentials are sealed at the application layer.
+//! - No BLE pairing/bonding: ownership is an X25519 key agreement, requests
+//!   are authenticated with HMAC and Wi-Fi credentials are sealed at the
+//!   application layer.
 //! - Lost responses are recoverable: mutating requests are kept in a small
 //!   replay cache, so a client that reconnects and resends the identical
 //!   request (same message id and bytes) gets the same response without the
@@ -31,15 +32,15 @@ use std::collections::HashMap;
 use std::io;
 use std::time::{Duration, Instant};
 
-pub const PROTOCOL_VERSION: u64 = 2;
+pub const PROTOCOL_VERSION: u64 = 3;
 /// New service UUID per protocol major version, so clients never apply a
 /// cached GATT layout of another version.
-pub const SERVICE_UUID: &str = "7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60";
-/// Static, tiny (fits one minimum-MTU read): `{"v":2,"p":"steph"}`.
-pub const INFO_UUID: &str = "7c3b0101-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+pub const SERVICE_UUID: &str = "7c3b0200-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+/// Static, tiny (fits one minimum-MTU read): `{"v":3,"p":"steph"}`.
+pub const INFO_UUID: &str = "7c3b0201-5d1e-4a6f-9b0e-3a1f2c4d5e60";
 /// Write (with response) request fragments; responses are indicated.
-pub const RPC_UUID: &str = "7c3b0102-5d1e-4a6f-9b0e-3a1f2c4d5e60";
-pub const INFO_VALUE: &[u8] = br#"{"v":2,"p":"steph"}"#;
+pub const RPC_UUID: &str = "7c3b0202-5d1e-4a6f-9b0e-3a1f2c4d5e60";
+pub const INFO_VALUE: &[u8] = br#"{"v":3,"p":"steph"}"#;
 
 /// Scan results are returned in one response; 40 worst-case entries
 /// (~75 bytes each) stay under the 4096-byte message limit.
@@ -59,6 +60,8 @@ pub trait NetworkBackend {
     fn scan(&mut self) -> Result<Vec<ScanResult>, String>;
     /// Join the network. Implementations must not log the PSK.
     fn connect(&mut self, config: &WifiConfiguration) -> Result<(), String>;
+    /// Whether a wired (Ethernet) connection is up, so setup can skip Wi-Fi.
+    fn wired(&mut self) -> bool { false }
 }
 
 pub trait OwnershipStore {
@@ -109,6 +112,7 @@ pub fn claim_error_code(c: &ClaimError) -> &'static str {
         ClaimError::LockedOut => "locked_out",
         ClaimError::InvalidOwnerId => "invalid_owner_id",
         ClaimError::BadProof => "bad_proof",
+        ClaimError::BadKey => "bad_key",
         ClaimError::NotOwner => "not_owner",
         ClaimError::PhysicalConfirmationRequired => "physical_confirmation_required",
         ClaimError::Random => "internal_error",
@@ -286,23 +290,24 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             "pairing.challenge" => {
                 exact(&req, &["op"])?;
                 if *self.ownership.state() == Ownership::Unclaimed {
-                    let nonce = self.ownership.begin_pairing(now)?;
-                    Ok((json!({"state": "PAIRING", "nonce": hex(&nonce)}), true))
+                    let c = self.ownership.begin_pairing(now)?;
+                    Ok((json!({"state": "PAIRING", "nonce": hex(&c.nonce), "device_key": hex(&c.device_key)}), true))
                 } else {
                     Ok((json!({"state": self.ownership.reported_state()}), false))
                 }
             }
             "pairing.claim" => {
-                exact(&req, &["op", "owner_id", "proof"])?;
+                exact(&req, &["op", "owner_id", "phone_key"])?;
                 let owner_id = req["owner_id"].as_str().ok_or(RpcError("invalid_request"))?;
-                let proof = hex_field::<32>(&req, "proof")?;
-                let claimed = self.ownership.complete_pairing(owner_id, &proof, now)?.clone();
+                let phone_key = hex_field::<32>(&req, "phone_key")?;
+                let confirm = self.ownership.complete_pairing(owner_id, &phone_key, now)?;
+                let claimed = self.ownership.state().clone();
                 if self.store.save(&claimed).is_err() {
                     // Not durable means not claimed: roll back so a retry works.
-                    let _ = self.ownership.factory_reset(true);
+                    self.ownership.abandon_claim();
                     return Err(RpcError("storage_failed"));
                 }
-                Ok((json!({"state": "CLAIMED"}), true))
+                Ok((json!({"state": "CLAIMED", "confirm": hex(&confirm)}), true))
             }
             "operation.challenge" => {
                 exact(&req, &["op"])?;
@@ -326,9 +331,10 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             }
             "network.status" => {
                 exact(&req, &["op"])?;
+                let wired = self.network.wired();
                 Ok((match self.network_error {
-                    Some(error) => json!({"state": network_name(self.network_state), "last_error": error}),
-                    None => json!({"state": network_name(self.network_state)}),
+                    Some(error) => json!({"state": network_name(self.network_state), "wired": wired, "last_error": error}),
+                    None => json!({"state": network_name(self.network_state), "wired": wired}),
                 }, false))
             }
             // Unauthenticated hint only; URLs and the CA pin are delivered
@@ -407,18 +413,21 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provisioning::{claim_proof, derive_owner_key, fragment, operation_proof, seal, WifiSecurity, MAX_MESSAGE_BYTES, MIN_ATT_PAYLOAD};
+    use crate::provisioning::{claim_confirmation, client_claim, fragment, operation_proof, seal, PairingChallenge, WifiSecurity, MAX_MESSAGE_BYTES, MIN_ATT_PAYLOAD};
 
-    const SECRET: [u8; 16] = *b"fedcba9876543210";
+    fn challenge_of(c: &Value) -> PairingChallenge {
+        PairingChallenge { nonce: unhex::<32>(c["nonce"].as_str().unwrap()).unwrap(), device_key: unhex::<32>(c["device_key"].as_str().unwrap()).unwrap() }
+    }
 
     #[derive(Default)]
-    struct FakeNetwork { joined: Vec<WifiConfiguration>, fail_join: bool, networks: Vec<ScanResult> }
+    struct FakeNetwork { joined: Vec<WifiConfiguration>, fail_join: bool, networks: Vec<ScanResult>, wired: bool }
     impl NetworkBackend for FakeNetwork {
         fn scan(&mut self) -> Result<Vec<ScanResult>, String> { Ok(self.networks.clone()) }
         fn connect(&mut self, config: &WifiConfiguration) -> Result<(), String> {
             self.joined.push(config.clone());
             if self.fail_join { Err("Secrets were required: psk=hunter22".into()) } else { Ok(()) }
         }
+        fn wired(&mut self) -> bool { self.wired }
     }
 
     #[derive(Default)]
@@ -434,7 +443,7 @@ mod tests {
     type Svc = RpcService<FakeNetwork, MemoryStore>;
 
     fn svc(network: FakeNetwork) -> Svc {
-        RpcService::new(OwnershipManager::new(SECRET, Ownership::Unclaimed), network, MemoryStore::default())
+        RpcService::new(OwnershipManager::new(Ownership::Unclaimed), network, MemoryStore::default())
     }
 
     /// Virtual phone: requests in minimum-MTU fragments.
@@ -452,11 +461,11 @@ mod tests {
             self.send_with_id(s, self.id, &body, now)
         }
         fn claim(&mut self, s: &mut Svc, now: Instant) -> [u8; 32] {
-            let c = self.send(s, json!({"op":"pairing.challenge"}), now);
-            let nonce = unhex::<32>(c["nonce"].as_str().unwrap()).unwrap();
-            let r = self.send(s, json!({"op":"pairing.claim","owner_id":"iphone-1","proof":hex(&claim_proof(&SECRET, &nonce, "iphone-1"))}), now);
-            assert_eq!(r, json!({"state":"CLAIMED"}));
-            derive_owner_key(&SECRET, &nonce, "iphone-1")
+            let c = challenge_of(&self.send(s, json!({"op":"pairing.challenge"}), now));
+            let (phone_key, owner_key) = client_claim(&c, "iphone-1").unwrap();
+            let r = self.send(s, json!({"op":"pairing.claim","owner_id":"iphone-1","phone_key":hex(&phone_key)}), now);
+            assert_eq!(r, json!({"state":"CLAIMED","confirm":hex(&claim_confirmation(&owner_key, &c.nonce))}));
+            owner_key
         }
         fn nonce(&mut self, s: &mut Svc, now: Instant) -> [u8; 32] {
             unhex::<32>(self.send(s, json!({"op":"operation.challenge"}), now)["nonce"].as_str().unwrap()).unwrap()
@@ -494,7 +503,10 @@ mod tests {
         let r = p.configure(&mut s, &key, br#"{"ssid":"LT Hall","security":"wpa-psk","psk":"correct horse"}"#, now);
         assert_eq!(r, json!({"state":"CONNECTED"}));
         assert_eq!(s.network().joined[0].security, WifiSecurity::WpaPsk("correct horse".into()));
-        assert_eq!(p.send(&mut s, json!({"op":"network.status"}), now), json!({"state":"CONNECTED"}));
+        assert_eq!(p.send(&mut s, json!({"op":"network.status"}), now), json!({"state":"CONNECTED","wired":false}));
+        // A cable makes Wi-Fi optional: the phone skips that step.
+        s.network.wired = true;
+        assert_eq!(p.send(&mut s, json!({"op":"network.status"}), now)["wired"], true);
         assert_eq!(p.send(&mut s, json!({"op":"management.endpoint"}), now), json!({"available": false}));
     }
 
@@ -523,12 +535,13 @@ mod tests {
         let c = p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now);
         // Challenge retry (indication lost) returns the same nonce, not a new one.
         assert_eq!(p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now), c);
-        let nonce = unhex::<32>(c["nonce"].as_str().unwrap()).unwrap();
-        let claim = json!({"op":"pairing.claim","owner_id":"iphone-1","proof":hex(&claim_proof(&SECRET, &nonce, "iphone-1"))});
-        assert_eq!(p.send_with_id(&mut s, 2, &claim, now), json!({"state":"CLAIMED"}));
+        let (phone_key, owner_key) = client_claim(&challenge_of(&c), "iphone-1").unwrap();
+        let claim = json!({"op":"pairing.claim","owner_id":"iphone-1","phone_key":hex(&phone_key)});
+        let claimed = json!({"state":"CLAIMED","confirm":hex(&claim_confirmation(&owner_key, &challenge_of(&c).nonce))});
+        assert_eq!(p.send_with_id(&mut s, 2, &claim, now), claimed);
         // Lost indication + reconnect from a new address: same bytes, same id.
         let q = Phone::new("phone-new-rpa");
-        assert_eq!(q.send_with_id(&mut s, 2, &claim, now), json!({"state":"CLAIMED"}));
+        assert_eq!(q.send_with_id(&mut s, 2, &claim, now), claimed);
         assert_eq!(s.store.saved.len(), 1, "claim ran once");
         // Different id = new request (not a replay).
         assert_eq!(q.send_with_id(&mut s, 3, &claim, now), json!({"error":"not_claimable"}));
@@ -544,7 +557,7 @@ mod tests {
         let key = p.claim(&mut s, now);
         assert_eq!(p.configure(&mut s, &key, br#"{"ssid":"LT","security":"wpa-psk","psk":"hunter22"}"#, now), json!({"state":"FAILED"}));
         let status = p.send(&mut s, json!({"op":"network.status"}), now);
-        assert_eq!(status, json!({"state":"FAILED","last_error":"join_failed"}));
+        assert_eq!(status, json!({"state":"FAILED","wired":false,"last_error":"join_failed"}));
         assert!(!status.to_string().contains("hunter22"));
         assert!(matches!(s.ownership(), Ownership::Claimed { .. }));
     }
@@ -593,7 +606,7 @@ mod tests {
         for f in &a[1..] { ra = s.handle_fragment("A", f, now); }
         let mut rb = None;
         for f in &b[1..] { rb = s.handle_fragment("B", f, now); }
-        assert_eq!(serde_json::from_slice::<Value>(&ra.unwrap()).unwrap()["protocol"], 2);
+        assert_eq!(serde_json::from_slice::<Value>(&ra.unwrap()).unwrap()["protocol"], 3);
         assert_eq!(serde_json::from_slice::<Value>(&rb.unwrap()).unwrap()["state"], "DISCONNECTED");
         // Abandoned transfer is dropped on disconnect.
         assert_eq!(s.handle_fragment("A", &a[0], now), None);
@@ -609,11 +622,11 @@ mod tests {
     #[test]
     fn claim_not_acknowledged_if_not_persisted_and_reset_clears_state() {
         let now = Instant::now();
-        let mut s = RpcService::new(OwnershipManager::new(SECRET, Ownership::Unclaimed), FakeNetwork::default(), MemoryStore { fail: true, ..Default::default() });
+        let mut s = RpcService::new(OwnershipManager::new(Ownership::Unclaimed), FakeNetwork::default(), MemoryStore { fail: true, ..Default::default() });
         let mut p = Phone::new("p");
-        let c = p.send(&mut s, json!({"op":"pairing.challenge"}), now);
-        let nonce = unhex::<32>(c["nonce"].as_str().unwrap()).unwrap();
-        let r = p.send(&mut s, json!({"op":"pairing.claim","owner_id":"p","proof":hex(&claim_proof(&SECRET, &nonce, "p"))}), now);
+        let c = challenge_of(&p.send(&mut s, json!({"op":"pairing.challenge"}), now));
+        let (phone_key, _) = client_claim(&c, "p").unwrap();
+        let r = p.send(&mut s, json!({"op":"pairing.claim","owner_id":"p","phone_key":hex(&phone_key)}), now);
         assert_eq!(r, json!({"error":"storage_failed"}));
         assert_eq!(*s.ownership(), Ownership::Unclaimed);
         let mut t = svc(FakeNetwork::default());

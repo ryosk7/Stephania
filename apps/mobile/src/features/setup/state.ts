@@ -1,16 +1,13 @@
-// Provisioning state of the setup flow. The setup secret lives only in
-// memory until the claim succeeds; afterwards only the derived owner key is
-// kept, in the platform secure store (Keychain / Keystore).
+// Provisioning state of the setup flow. Only the owner key derived during
+// the claim is kept, in the platform secure store (Keychain / Keystore).
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import {fromHex, toHex, type ProvisioningSession} from '@stephania/provisioning-client';
 
-let setupSecret: Uint8Array | undefined;
-let active: {deviceId: string; name: string; session: ProvisioningSession} | undefined;
+export type ActiveSetup = {deviceId: string; name: string; session: ProvisioningSession};
+let active: ActiveSetup | undefined;
 
-export const setPendingSecret = (s: Uint8Array | undefined) => { setupSecret = s; };
-export const pendingSecret = () => setupSecret;
-export const setActive = (a: typeof active) => { active = a; };
+export const setActive = (a: ActiveSetup | undefined) => { active = a; };
 export const activeSession = () => active;
 
 // SecureStore keys allow [A-Za-z0-9._-]; Android device ids contain ':'.

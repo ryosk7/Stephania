@@ -1,4 +1,4 @@
-// BleTransport over react-native-ble-plx, protocol v2 (contracts/ble-protocol.md).
+// BleTransport over react-native-ble-plx, protocol v3 (contracts/ble-protocol.md).
 // - One long-lived indication subscription on the RPC characteristic,
 //   established before any write; indications are routed by message id, so
 //   stale responses from an earlier attempt are ignored.

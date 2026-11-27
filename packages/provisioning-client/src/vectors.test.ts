@@ -1,17 +1,20 @@
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
-import {claimProof, deriveOwnerKey, fragment, fromHex, operationProof, seal, toHex, validateWifi, MAX_FRAGMENTS} from './index';
+import {claimConfirmation, deriveOwnerKey, fragment, fromHex, operationProof, seal, toHex, validateWifi, x25519PublicKey, x25519Shared, MAX_FRAGMENTS} from './index';
 
 type Vector = Record<string, string>;
-const vectors: Vector[] = JSON.parse(readFileSync(join(__dirname, '../../../contracts/fixtures/ble/hmac-vectors.json'), 'utf8')).vectors;
+const vectors: Vector[] = JSON.parse(readFileSync(join(__dirname, '../../../contracts/fixtures/ble/claim-vectors.json'), 'utf8')).vectors;
 
-describe('contracts/fixtures/ble/hmac-vectors.json', () => {
+describe('contracts/fixtures/ble/claim-vectors.json', () => {
   it.each(vectors.map(v => [v.owner_id, v] as [string, Vector]))('%s', (_: string, v: Vector) => {
-    const secret = fromHex(v.setup_secret), nonce = fromHex(v.nonce);
-    expect(toHex(claimProof(secret, nonce, v.owner_id))).toBe(v.claim_proof);
-    const key = deriveOwnerKey(secret, nonce, v.owner_id);
+    const nonce = fromHex(v.nonce);
+    expect(toHex(x25519PublicKey(fromHex(v.phone_private)))).toBe(v.phone_key);
+    const shared = x25519Shared(fromHex(v.phone_private), fromHex(v.device_key));
+    expect(toHex(shared)).toBe(v.shared);
+    const key = deriveOwnerKey(shared, nonce, v.owner_id, fromHex(v.device_key), fromHex(v.phone_key));
     expect(toHex(key)).toBe(v.owner_key);
+    expect(toHex(claimConfirmation(key, nonce))).toBe(v.confirm);
     expect(toHex(operationProof(key, fromHex(v.operation_nonce), v.operation, fromHex(v.payload_hex)))).toBe(v.operation_proof);
   });
 });

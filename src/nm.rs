@@ -132,6 +132,16 @@ impl<R: CommandRunner> NetworkBackend for NetworkManagerBackend<R> {
         }?;
         if result.success { Ok(()) } else { Err("activation failed".into()) }
     }
+
+    fn wired(&mut self) -> bool {
+        self.run(&["-t", "-f", "TYPE,STATE", "device"])
+            .is_ok_and(|o| o.success && parse_wired(&o.stdout))
+    }
+}
+
+/// `nmcli -t -f TYPE,STATE device`: any Ethernet device fully connected.
+pub fn parse_wired(stdout: &str) -> bool {
+    stdout.lines().any(|l| l.split_once(':').is_some_and(|(t, s)| t == "ethernet" && s == "connected"))
 }
 
 #[cfg(test)]
@@ -203,5 +213,13 @@ mod tests {
         let (mut s, dir3) = backend(Recorder { fail_on: Some("list"), ..Default::default() });
         assert!(s.scan().is_err());
         for d in [dir, dir2, dir3] { let _ = std::fs::remove_dir_all(d); }
+    }
+
+    #[test]
+    fn wired_means_a_connected_ethernet_device() {
+        assert!(parse_wired("wifi:disconnected\nethernet:connected\nloopback:connected (externally)\n"));
+        assert!(!parse_wired("wifi:connected\nethernet:unavailable\n"));
+        assert!(!parse_wired("ethernet:connecting (getting IP configuration)\n"));
+        assert!(!parse_wired(""));
     }
 }

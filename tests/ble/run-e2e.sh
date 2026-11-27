@@ -64,16 +64,10 @@ test -e /sys/class/bluetooth/hci1 || { echo "virtual controllers missing"; cat "
 sudo btmon -w "$logs/btmon.snoop" >/dev/null 2>&1 & pids+=($!)
 start_bluetoothd
 
-# Browser-equivalent setup secret, delivered through the boot-partition file.
-secret=$(python3 -c 'import secrets;print(secrets.token_hex(16))')
-uri="stephania-setup:v1:${secret}:$(python3 -c "import hashlib,sys;print(hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8])" "$secret")"
-printf '%s\n' "$uri" >"$work/stephania-setup.txt"
-
 STEPHANIA_PROVISION_SOCKET="$work/provisioning.sock" STEPHANIA_CREDENTIALS_DIR="$work" \
-  STEPHANIA_SETUP_FILE="$work/stephania-setup.txt" STEPHANIA_NETWORK_BACKEND=virtual \
+  STEPHANIA_NETWORK_BACKEND=virtual \
   "$target/stephania-provision" >"$logs/provision.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do [ -S "$work/provisioning.sock" ] && break; sleep 0.1; done
-test ! -e "$work/stephania-setup.txt" || { echo "setup file was not consumed"; exit 1; }
 
 # Supervisor equivalent to systemd Restart=always RestartSec=1.
 (
@@ -97,10 +91,10 @@ dump() {
   echo "---- ATT (btmon)"; sudo btmon -r "$logs/btmon.snoop" 2>/dev/null | grep -E "ATT: |Data(\[|:)" | tail -80
 }
 run_client() {
-  if ! sudo timeout 200 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode}; then
+  if ! sudo timeout 200 python3 "$here/client.py" "$1" --adapter hci1 ${mode:+$mode}; then
     echo "---- client retry with bleak debug logging"
     sudo btmgmt --index 1 info || true
-    sudo BLEAK_LOGGING=1 timeout 120 python3 "$here/client.py" "$uri" "$1" --adapter hci1 ${mode:+$mode} 2>&1 | tail -80 || true
+    sudo BLEAK_LOGGING=1 timeout 120 python3 "$here/client.py" "$1" --adapter hci1 ${mode:+$mode} 2>&1 | tail -80 || true
     dump; exit 1
   fi
 }

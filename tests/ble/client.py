@@ -1,15 +1,15 @@
-"""Independent BLE client for Stephania provisioning protocol v2.
+"""Independent BLE client for Stephania provisioning protocol v3.
 
 Runs over a real BlueZ stack (in CI: two btvirt virtual LE controllers)
 against stephania-ble + stephania-provision. Written from contracts/ble-protocol.md
 only, so it is a third implementation next to Rust and TypeScript.
 
 Phases:
-  claim   wrong secret, claim, lost-response replay, scan, join fail/ok,
-          unauthenticated rejection (fresh device)
+  claim   bad key refused, first claim wins (X25519), lost-response replay,
+          scan, join fail/ok, unauthenticated rejection (fresh device)
   resume  after bluetoothd restart: the device is found again and still owned
 
-Usage: client.py <setup-uri> <phase> [--adapter hci1] [--min-mtu]
+Usage: client.py <phase> [--adapter hci1] [--min-mtu]
 """
 import argparse
 import asyncio
@@ -20,11 +20,13 @@ import struct
 import sys
 
 from bleak import BleakClient, BleakScanner
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-SERVICE = "7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60"
-INFO = "7c3b0101-5d1e-4a6f-9b0e-3a1f2c4d5e60"
-RPC = "7c3b0102-5d1e-4a6f-9b0e-3a1f2c4d5e60"
+SERVICE = "7c3b0200-5d1e-4a6f-9b0e-3a1f2c4d5e60"
+INFO = "7c3b0201-5d1e-4a6f-9b0e-3a1f2c4d5e60"
+RPC = "7c3b0202-5d1e-4a6f-9b0e-3a1f2c4d5e60"
 
 
 def mac(key, *parts):
@@ -35,14 +37,6 @@ def mac(key, *parts):
 def seal(owner_key, op_nonce, operation, plaintext):
     key = mac(owner_key, b"stephania-seal-v1")
     return ChaCha20Poly1305(key).encrypt(op_nonce[:12], plaintext, operation.encode())
-
-
-def parse_setup_uri(text):
-    prefix, version, secret_hex, check = text.strip().lower().split(":")
-    assert (prefix, version) == ("stephania-setup", "v1")
-    secret = bytes.fromhex(secret_hex)
-    assert hashlib.sha256(secret).hexdigest()[:8] == check
-    return secret
 
 
 def check(cond, message):
@@ -122,31 +116,35 @@ async def connect(adapter, min_mtu):
     att = 20 if min_mtu else max(20, min(payload, 509))
     print(f"mtu {mtu} att {att}", flush=True)
     info = json.loads(bytes(await client.read_gatt_char(INFO)))
-    check(info == {"v": 2, "p": "steph"}, f"static info read {info}")
+    check(info == {"v": 3, "p": "steph"}, f"static info read {info}")
     rpc = Rpc(client, att)
     await rpc.start()
     return client, rpc
 
 
-async def phase_claim(rpc, secret):
+async def phase_claim(rpc):
     info = await rpc.send({"op": "device.info"})
-    check(info["ownership"] == "UNCLAIMED" and info["protocol"] == 2, f"device info {info}")
+    check(info["ownership"] == "UNCLAIMED" and info["protocol"] == 3, f"device info {info}")
 
-    nonce = await rpc.nonce("pairing.challenge")
-    bad = await rpc.send({"op": "pairing.claim", "owner_id": "ble-ci",
-                          "proof": mac(b"\0" * 16, b"stephania-claim-v1", nonce, b"ble-ci").hex()})
-    check(bad == {"error": "bad_proof"}, f"wrong secret rejected {bad}")
+    # A low-order (all-zero) public key is refused.
+    await rpc.send({"op": "pairing.challenge"})
+    bad = await rpc.send({"op": "pairing.claim", "owner_id": "ble-ci", "phone_key": "00" * 32})
+    check(bad == {"error": "bad_key"}, f"degenerate key rejected {bad}")
 
-    nonce = await rpc.nonce("pairing.challenge")
-    claim = {"op": "pairing.claim", "owner_id": "ble-ci", "proof": mac(secret, b"stephania-claim-v1", nonce, b"ble-ci").hex()}
+    c = await rpc.send({"op": "pairing.challenge"})
+    nonce, device_key = bytes.fromhex(c["nonce"]), bytes.fromhex(c["device_key"])
+    private = X25519PrivateKey.generate()
+    phone_key = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    key = mac(private.exchange(X25519PublicKey.from_public_bytes(device_key)), b"stephania-owner-key-v2", nonce, b"ble-ci", device_key, phone_key)
+    claim = {"op": "pairing.claim", "owner_id": "ble-ci", "phone_key": phone_key.hex()}
+    claimed = {"state": "CLAIMED", "confirm": mac(key, b"stephania-claim-confirm-v1", nonce).hex()}
     r = await rpc.send(claim, mid=200)
-    check(r == {"state": "CLAIMED"}, f"claimed {r}")
+    check(r == claimed, f"claimed; same owner key on both sides {r}")
     # Simulated lost indication: resend the identical request with the same id.
     r = await rpc.send(claim, mid=200)
-    check(r == {"state": "CLAIMED"}, f"identical retry replayed, not rejected {r}")
+    check(r == claimed, f"identical retry replayed, not rejected {r}")
     r = await rpc.send(claim)
     check(r == {"error": "not_claimable"}, f"new claim refused {r}")
-    key = mac(secret, b"stephania-owner-key-v1", nonce, b"ble-ci")
 
     n = await rpc.nonce("operation.challenge")
     r = await rpc.send({"op": "wifi.scan", "proof": mac(key, b"stephania-operation-v1", n, b"wifi.scan", b"").hex()})
@@ -163,7 +161,7 @@ async def phase_claim(rpc, secret):
     check(r == {"state": "FAILED"}, f"join failure reported {r}")
     r = await configure({"ssid": ssid, "security": "wpa-psk", "psk": "stephania-ci-pass"})
     check(r == {"state": "CONNECTED"}, f"joined {ssid} {r}")
-    check(await rpc.send({"op": "network.status"}) == {"state": "CONNECTED"}, "network status")
+    check(await rpc.send({"op": "network.status"}) == {"state": "CONNECTED", "wired": False}, "network status")
     bogus = await rpc.send({"op": "wifi.configure", "sealed": "00" * 20, "proof": "00" * 32})
     check("error" in bogus, f"unauthenticated operation rejected {bogus}")
 
@@ -177,16 +175,14 @@ async def phase_resume(rpc):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("setup_uri")
     ap.add_argument("phase", choices=["claim", "resume"])
     ap.add_argument("--adapter", default="hci1")
     ap.add_argument("--min-mtu", action="store_true")
     args = ap.parse_args()
-    secret = parse_setup_uri(args.setup_uri)
     client, rpc = await connect(args.adapter, args.min_mtu)
     try:
         if args.phase == "claim":
-            await phase_claim(rpc, secret)
+            await phase_claim(rpc)
         else:
             await phase_resume(rpc)
     finally:

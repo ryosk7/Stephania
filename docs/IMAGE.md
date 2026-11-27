@@ -37,7 +37,7 @@ host, the DNS-SD record and name resolution.
 ## Layout and root filesystem
 Fixed slot sizes from `os/layout.env` (selector 64 MiB, boot 256 MiB,
 root 1 GiB, data ≥ 512 MiB), shared with the installer (docs/INSTALL.md).
-GPT: selector (autoboot.txt, `stephania-setup.txt`), boot-a, boot-b, rootfs-a (SquashFS, zstd),
+GPT: selector (autoboot.txt), boot-a, boot-b, rootfs-a (SquashFS, zstd),
 rootfs-b (empty until the first update), data (ext4). The root is never
 written: `init=/usr/local/sbin/stephania-overlay-init` mounts a tmpfs overlay
 over the read-only SquashFS before exec'ing systemd. Persistent state is on

@@ -2,7 +2,7 @@
 forward it), then a real TLS call to the control plane pinned to the CA the
 device delivered sealed.
 
-Usage: lan_enroll.py <provision.sock> <setup-uri> <tls-port> <out-dir>
+Usage: lan_enroll.py <provision.sock> <tls-port> <out-dir>
 Writes <out-dir>/token and <out-dir>/pinned-ca.sha256.
 """
 import hashlib
@@ -14,9 +14,11 @@ import struct
 import sys
 import http.client
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-sock_path, uri, port, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+sock_path, port, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 
 
 def mac(key, *parts):
@@ -62,10 +64,20 @@ def rpc(body, mid=None):
     return json.loads(bytes.fromhex(last["result"]["response_hex"]))
 
 
-secret = bytes.fromhex(uri.strip().split(":")[2])
-nonce = bytes.fromhex(rpc({"op": "pairing.challenge"})["nonce"])
-check(rpc({"op": "pairing.claim", "owner_id": "lan-ci", "proof": mac(secret, b"stephania-claim-v1", nonce, b"lan-ci").hex()}) == {"state": "CLAIMED"}, "claimed")
-key = mac(secret, b"stephania-owner-key-v1", nonce, b"lan-ci")
+def claim(owner_id):
+    """Protocol v3: the first claim wins; X25519 gives both sides the owner key."""
+    c = rpc({"op": "pairing.challenge"})
+    nonce, device_key = bytes.fromhex(c["nonce"]), bytes.fromhex(c["device_key"])
+    private = X25519PrivateKey.generate()
+    phone_key = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    shared = private.exchange(X25519PublicKey.from_public_bytes(device_key))
+    key = mac(shared, b"stephania-owner-key-v2", nonce, owner_id, device_key, phone_key)
+    r = rpc({"op": "pairing.claim", "owner_id": owner_id.decode(), "phone_key": phone_key.hex()})
+    check(r == {"state": "CLAIMED", "confirm": mac(key, b"stephania-claim-confirm-v1", nonce).hex()}, "claimed; both sides derived the same owner key")
+    return key
+
+
+key = claim(b"lan-ci")
 check(rpc({"op": "management.endpoint"}) == {"available": True}, "endpoint advertised as available")
 
 n = bytes.fromhex(rpc({"op": "operation.challenge"})["nonce"])

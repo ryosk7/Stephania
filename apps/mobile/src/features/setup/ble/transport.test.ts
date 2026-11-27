@@ -1,10 +1,11 @@
-// BlePlxTransport (protocol v2) against the real Rust device core. FakeBle
+// BlePlxTransport (protocol v3) against the real Rust device core. FakeBle
 // plays the future BlueZ adapter exactly as contracts/ble-protocol.md
 // specifies: written fragments are forwarded; the response is indicated on
 // the RPC characteristic, fragmented under the request's message id. It can
 // also lose or duplicate indications to exercise recovery.
 import {spawn, type ChildProcess} from 'node:child_process';
-import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdtempSync, rmSync} from 'node:fs';
+import {randomBytes} from 'node:crypto';
 import {connect, type Socket} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -82,8 +83,7 @@ describe.skipIf(!bin)('BlePlxTransport against Rust device core', () => {
   let dir: string, child: ChildProcess, sock: Socket;
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'stephania-app-'));
-    child = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(dir, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: dir,
-      STEPHANIA_SETUP_FILE: join(dir, 'none'), STEPHANIA_NETWORK_BACKEND: 'virtual'}, stdio: 'ignore'});
+    child = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(dir, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: dir, STEPHANIA_NETWORK_BACKEND: 'virtual'}, stdio: 'ignore'});
     for (let i = 0; i < 100 && !existsSync(join(dir, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
     sock = await new Promise<Socket>((ok, ko) => { const s = connect(join(dir, 'p.sock'), () => ok(s)); s.on('error', ko); });
   });
@@ -93,10 +93,9 @@ describe.skipIf(!bin)('BlePlxTransport against Rust device core', () => {
     const ble = new FakeBle(sock, 20);
     const transport = new BlePlxTransport(ble, 'dev-1', 20, () => ble.reconnectLink());
     const session = new ProvisioningSession(transport);
-    const secret = fromHex(readFileSync(join(dir, 'setup-secret'), 'utf8').trim());
-    await expect(session.claim(new Uint8Array(16), 'app-phone')).rejects.toMatchObject({code: 'bad_proof'});
     ble.duplicateIndications = true;
-    await session.claim(secret, 'app-phone');
+    await session.claim('app-phone', randomBytes(32));
+    await expect(session.claim('app-phone-2', randomBytes(32))).rejects.toMatchObject({code: 'already_claimed'});
     ble.duplicateIndications = false;
     expect(ble.writes).toBeGreaterThan(2);
     expect(await session.scan()).toEqual([{ssid: 'virtual-lab', rssi: -40, security: 'wpa-psk'}]);

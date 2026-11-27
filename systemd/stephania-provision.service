@@ -13,10 +13,6 @@ Environment=STEPHANIA_CREDENTIALS_DIR=/var/lib/stephania/credentials
 Environment=STEPHANIA_PROVISION_SOCKET=/run/stephania-provision/provisioning.sock
 Environment=STEPHANIA_PROVISION_RUNTIME=/run/stephania-provision/secrets
 Environment=STEPHANIA_NETWORK_BACKEND=nm
-# First-boot setup file on the selector partition (the FAT32 partition the
-# user sees first; tools/setup-page, docs/INSTALL.md).
-Environment=STEPHANIA_SETUP_FILE=/boot/selector/stephania-setup.txt
-ReadWritePaths=-/boot/selector
 # LAN enrollment (management.enroll): reads the endpoint published by
 # stephania-pki and stores issued token hashes for the control plane. The
 # tokens directory is setgid stephania-control (stephania.tmpfiles.conf).

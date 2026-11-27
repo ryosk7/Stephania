@@ -122,9 +122,8 @@ if [ -n "$fresh" ]; then
   [ "$avail" -ge "$payload" ] || fatal "not enough RAM for the payload"
   # Everything the card must keep is copied to RAM before the first write.
   cp "$M/boot.vfat" "$M/rootfs.squashfs" "$M/manifest.json" "$M/manifest.sig" /run/payload/ || fatal "copy to RAM failed"
-  (cd /mnt/src && find . -maxdepth 1 -type f ! -name 'stephania-setup.txt' -exec cp {} /run/boot/ \;)
+  (cd /mnt/src && find . -maxdepth 1 -type f -exec cp {} /run/boot/ \;)
   [ -d /mnt/src/overlays ] && cp -r /mnt/src/overlays /run/boot/
-  setup_secret=""; [ -f /mnt/src/stephania-setup.txt ] && cp /mnt/src/stephania-setup.txt /run/payload/ && setup_secret=1
   umount /mnt/src
   ( cd /run/payload && sha256sum -c >/dev/null 2>&1 <<SUMS
 $(manifest_field manifest.json boot.vfat_sha256)  boot.vfat
@@ -151,9 +150,6 @@ GPT
   cp -r /run/boot/. /mnt/sel/
   mkdir -p /mnt/sel/stephania-install
   cp /run/payload/manifest.json /run/payload/manifest.sig /mnt/sel/stephania-install/
-  # The owner setup secret (tools/setup-page) stays on the selector, where
-  # stephania-provision imports it on first boot.
-  [ -n "$setup_secret" ] && cp /run/payload/stephania-setup.txt /mnt/sel/
   LOGFILE=/mnt/sel/stephania-install/install.log
   set_state partition
   power_cut_after partition
@@ -203,7 +199,7 @@ cp /mnt/sel/stephania-install/manifest.json /mnt/data/stephania/config/installed
 rm -rf "$S"; sync
 umount /mnt/data
 # Selector: only the A/B switch (firmware tryboot) and the install record.
-find /mnt/sel -mindepth 1 -maxdepth 1 ! -name stephania-install ! -name stephania-setup.txt -exec rm -rf {} +
+find /mnt/sel -mindepth 1 -maxdepth 1 ! -name stephania-install -exec rm -rf {} +
 printf '[all]\ntryboot_a_b=1\nboot_partition=2\n[tryboot]\nboot_partition=3\n' >/mnt/sel/autoboot.txt
 rm -f /mnt/sel/stephania-install/manifest.sig
 set_state done

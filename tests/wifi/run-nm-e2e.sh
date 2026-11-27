@@ -49,15 +49,12 @@ sudo dnsmasq --no-daemon --conf-file=/dev/null --interface=wlan1 --bind-interfac
 for _ in $(seq 50); do grep -q "AP-ENABLED" "$logs/hostapd.log" && break; sleep 0.2; done
 grep -q "AP-ENABLED" "$logs/hostapd.log" || { cat "$logs/hostapd.log"; exit 1; }
 
-secret=$(python3 -c 'import secrets;print(secrets.token_hex(16))')
-uri="stephania-setup:v1:${secret}:$(python3 -c "import hashlib,sys;print(hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8])" "$secret")"
-printf '%s\n' "$uri" >"$work/stephania-setup.txt"
-sudo env STEPHANIA_PROVISION_SOCKET="$work/p.sock" STEPHANIA_CREDENTIALS_DIR="$work" STEPHANIA_SETUP_FILE="$work/stephania-setup.txt" \
+sudo env STEPHANIA_PROVISION_SOCKET="$work/p.sock" STEPHANIA_CREDENTIALS_DIR="$work" \
   STEPHANIA_NETWORK_BACKEND=nm STEPHANIA_WIFI_INTERFACE=wlan0 "$target/stephania-provision" >"$logs/provision.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do sudo test -S "$work/p.sock" && break; sleep 0.1; done
 
 fail() { echo "FAIL $1"; cat "$logs/provision.log"; tail -40 "$logs/hostapd.log"; sudo journalctl -u NetworkManager --no-pager | tail -60; exit 1; }
-sudo timeout 240 python3 "$here/socket_client.py" "$work/p.sock" "$uri" "$ssid" "$psk" || fail "socket client"
+sudo timeout 240 python3 "$here/socket_client.py" "$work/p.sock" "$ssid" "$psk" || fail "socket client"
 
 profile="stephania-$(printf '%s' "$ssid" | od -An -tx1 | tr -d ' \n')"
 count=$(nmcli -t -f NAME connection show | grep -cx "$profile" || true)

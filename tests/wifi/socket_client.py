@@ -1,7 +1,7 @@
-"""Drive stephania-provision over its socket (protocol v2) like the BLE adapter.
+"""Drive stephania-provision over its socket (protocol v3) like the BLE adapter.
 
 Used by tests/wifi/run-nm-e2e.sh against the real NetworkManager backend.
-Usage: socket_client.py <socket> <setup-uri> <ssid> <good-psk>
+Usage: socket_client.py <socket> <ssid> <good-psk>
 """
 import hashlib
 import hmac
@@ -10,9 +10,11 @@ import socket
 import struct
 import sys
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-sock_path, uri, ssid, good_psk = sys.argv[1:5]
+sock_path, ssid, good_psk = sys.argv[1:4]
 
 
 def mac(key, *parts):
@@ -25,7 +27,6 @@ def check(cond, message):
         raise SystemExit(1)
 
 
-secret = bytes.fromhex(uri.strip().split(":")[2])
 s = socket.socket(socket.AF_UNIX)
 s.connect(sock_path)
 s.settimeout(90)
@@ -58,9 +59,20 @@ def rpc(body):
     return json.loads(bytes.fromhex(last["result"]["response_hex"]))
 
 
-nonce = bytes.fromhex(rpc({"op": "pairing.challenge"})["nonce"])
-check(rpc({"op": "pairing.claim", "owner_id": "nm-ci", "proof": mac(secret, b"stephania-claim-v1", nonce, b"nm-ci").hex()}) == {"state": "CLAIMED"}, "claimed")
-key = mac(secret, b"stephania-owner-key-v1", nonce, b"nm-ci")
+def claim(owner_id):
+    """Protocol v3: the first claim wins; X25519 gives both sides the owner key."""
+    c = rpc({"op": "pairing.challenge"})
+    nonce, device_key = bytes.fromhex(c["nonce"]), bytes.fromhex(c["device_key"])
+    private = X25519PrivateKey.generate()
+    phone_key = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    shared = private.exchange(X25519PublicKey.from_public_bytes(device_key))
+    key = mac(shared, b"stephania-owner-key-v2", nonce, owner_id, device_key, phone_key)
+    r = rpc({"op": "pairing.claim", "owner_id": owner_id.decode(), "phone_key": phone_key.hex()})
+    check(r == {"state": "CLAIMED", "confirm": mac(key, b"stephania-claim-confirm-v1", nonce).hex()}, "claimed; both sides derived the same owner key")
+    return key
+
+
+key = claim(b"nm-ci")
 
 
 def op_nonce():

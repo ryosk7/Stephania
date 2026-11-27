@@ -15,15 +15,14 @@ export function RenameSheet({deviceId, name, host, visible, onClose, onRenamed}:
     try { onRenamed(await renameDevice(deviceId, value)); onClose(); } catch (e) { setError((e as Error).message); }
   };
   return (
-    <Sheet visible={visible} title="Rename" icon="pencil" onClose={onClose}>
+    <Sheet visible={visible} title="Rename" icon="pencil" onClose={onClose} subtitle={host !== '' && (
+      <View className="flex-row items-center gap-1.5" accessible accessibilityLabel={`The network name ${host} and the certificate stay the same`}>
+        <Icon name="lock" size={14} color="secondary" />
+        <Mono tone="secondary">{host}</Mono>
+        <Footnote>stays the same</Footnote>
+      </View>
+    )}>
       <Field label="Name shown on this phone" value={value} onChangeText={setValue} autoCapitalize="words" autoFocus maxLength={40} returnKeyType="done" onSubmitEditing={() => void save()} />
-      {host !== '' && (
-        <View className="flex-row items-center gap-2 px-1" accessible accessibilityLabel={`The network name ${host} and the certificate stay the same`}>
-          <Icon name="lock" size={15} color="secondary" />
-          <Mono tone="secondary">{host}</Mono>
-          <Footnote>stays the same</Footnote>
-        </View>
-      )}
       {error !== '' && <Notice tone="warning">{error}</Notice>}
       <PrimaryButton title="Save" icon="check" disabled={!value.trim()} onPress={() => void save()} />
     </Sheet>

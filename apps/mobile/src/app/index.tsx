@@ -1,2 +1,6 @@
 import {HomeScreen} from '@/features/home';
-export default HomeScreen;
+import {useSetupSheet} from '@/features/setup';
+
+export default function Home() {
+  return <HomeScreen useSetup={useSetupSheet} />;
+}

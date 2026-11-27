@@ -4,8 +4,7 @@
 monitor, keyboard or terminal is needed.
 
 1. Format a microSD card as FAT32 (most cards up to 32 GB already are).
-2. Extract `stephania-os-pi5.zip` onto it. Optionally add `stephania-setup.txt`
-   from the setup page (tools/setup-page) next to the extracted files.
+2. Extract `stephania-os-pi5.zip` onto it.
 3. Insert the card into the Stephania device and power it on.
 
 The firmware boots `vmlinuz` + `installer.cpio.gz` (`config.txt`); the
@@ -17,7 +16,7 @@ installer (`os/installer/stephania-install`, PID 1 of the initramfs) then:
 | partition | GPT A/B layout (os/layout.env); the selector partition gets the installer files and an install record | **unsafe window:** the next boot reports `RECOVERY: …copy the ZIP contents again` (the payload was only in RAM) |
 | staged | payload copied to the data partition | next boot resumes from the staged copy |
 | written | boot-a and rootfs-a written and read back against the manifest hashes | next boot resumes |
-| done | data skeleton; selector keeps only `autoboot.txt`, the install record and `stephania-setup.txt` | — |
+| done | data skeleton; selector keeps only `autoboot.txt` and the install record | — |
 
 Target identification never touches other storage: a disk qualifies only
 if its first partition is FAT carrying a manifest signed by the release key
@@ -33,8 +32,8 @@ release files live in the FAT32 filesystem the new layout replaces. A cut
 there leaves a card that boots the installer again and asks for the ZIP to
 be copied again, never a half-installed system that looks fine.
 
-`stephania-setup.txt` stays on the selector partition, where `stephania-provision`
-imports it on first boot (`STEPHANIA_SETUP_FILE=/boot/selector/stephania-setup.txt`).
+Ownership is not part of the card: after the first boot, the first phone
+to claim the device in Stephania Connect owns it (contracts/ble-protocol.md).
 
 ## Verified in CI (`ci/installer-e2e.sh`, QEMU amd64)
 - two cards with the same ZIP: refused, both byte-identical afterwards;
