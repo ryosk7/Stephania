@@ -125,6 +125,8 @@ pub trait EngineControl: Send + Sync {
     /// Program on air (scene_id, revision); revision 0 = built-in HDMI only.
     fn program(&self) -> (String, u64) { (String::new(), 0) }
     fn compositor_enabled(&self) -> bool { false }
+    /// Live non-HDMI sources (crate::composition::SourceRegistry::describe).
+    fn sources(&self) -> Vec<Value> { Vec::new() }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,7 +254,12 @@ fn scene_param(params: Option<&Value>) -> Result<&Value, IpcError> {
 /// exercised exhaustively in unit tests.
 pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>) -> Result<Value, IpcError> {
     match method {
-        "engine.status" => { no_params(params)?; Ok(with_program(status_result(&engine.status(), engine.instance()), engine.program())) }
+        "engine.status" => {
+            no_params(params)?;
+            let mut status = with_program(status_result(&engine.status(), engine.instance()), engine.program());
+            status["sources"] = Value::Array(engine.sources());
+            Ok(status)
+        }
         "engine.capabilities" => {
             no_params(params)?;
             let mut caps = capabilities_result(engine.instance());
@@ -522,6 +529,7 @@ mod tests {
         assert_eq!(r["result"]["instance_id"].as_str().unwrap().len(), 16);
         assert!(r["result"]["uptime_ms"].is_u64());
         assert!(r["result"]["program"].is_null(), "no scene applied: program must be null");
+        assert_eq!(r["result"]["sources"], json!([]));
     }
 
     #[test]

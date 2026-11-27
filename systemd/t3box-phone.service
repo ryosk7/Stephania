@@ -1,0 +1,42 @@
+[Unit]
+Description=T3Box phone camera WebRTC receiver
+# Independent of the engine: it reconnects to the ingest socket on its own,
+# and a crash here never stops media (docs/PHONE.md).
+After=network-online.target t3box.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=t3box-phone
+Group=t3box-phone
+# Group t3box reaches /run/t3box/media.sock (engine ingest, 0660).
+SupplementaryGroups=t3box
+ExecStart=/usr/local/bin/t3box-phone
+Environment=T3BOX_PHONE_SOCKET=/run/t3box-phone/phone.sock
+Environment=T3BOX_MEDIA_SOCKET=/run/t3box/media.sock
+# Single UDP port for ICE/DTLS/SRTP (BUNDLE); open it on the LAN firewall.
+Environment=T3BOX_PHONE_UDP_PORT=40100
+RuntimeDirectory=t3box-phone
+# 0750 + group t3box-phone: the control plane (member) relays SDP here.
+RuntimeDirectoryMode=0750
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+UMask=0007
+MemoryMax=128M
+CPUWeight=50
+
+[Install]
+WantedBy=multi-user.target

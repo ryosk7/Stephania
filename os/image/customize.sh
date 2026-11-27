@@ -9,7 +9,7 @@ echo "$version" >"$r/etc/t3box-version"
 echo t3box >"$r/etc/hostname"
 
 # Binaries and helpers.
-install -m 0755 "$bins"/t3box "$bins"/t3box-provision "$bins"/t3box-pki "$bins"/t3box-bootctl "$r/usr/local/bin/"
+install -m 0755 "$bins"/t3box "$bins"/t3box-phone "$bins"/t3box-provision "$bins"/t3box-pki "$bins"/t3box-bootctl "$r/usr/local/bin/"
 install -m 0755 "$repo/os/rauc/t3box-update" "$r/usr/local/bin/t3box-update"
 install -d "$r/usr/local/lib/t3box" "$r/usr/local/sbin"
 install -m 0755 "$repo/os/rauc/rauc-pre-install" "$r/usr/local/lib/t3box/rauc-pre-install"
@@ -72,7 +72,7 @@ sed -i 's#^ExecStart=/usr/bin/bundle#ExecStart=/usr/local/bin/bundle#' "$r/etc/s
 [ -x "$r/usr/local/bin/bundle" ] || sed -i 's#^ExecStart=/usr/local/bin/bundle#ExecStart=/usr/bin/bundle#' "$r/etc/systemd/system/t3box-control.service"
 
 in_root systemctl enable t3box-firstboot.service t3box.service t3box-control.service t3box-provision.service \
-  t3box-pki.timer t3box-update-confirm.service t3box-data-restore.service t3box-update-deadline.timer \
+  t3box-phone.service t3box-pki.timer t3box-update-confirm.service t3box-data-restore.service t3box-update-deadline.timer \
   t3box-qemu-smoke.service
 # Initramfs must mount a SquashFS root from virtio or SD.
 printf 'squashfs\noverlay\nvirtio_blk\nvirtio_pci\n' >>"$r/etc/initramfs-tools/modules"

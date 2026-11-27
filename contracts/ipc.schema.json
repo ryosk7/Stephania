@@ -145,7 +145,8 @@
         "youtube_ingest_confirmed",
         "restart_attempts",
         "last_error",
-        "program"
+        "program",
+        "sources"
       ],
       "properties": {
         "instance_id": {
@@ -207,6 +208,49 @@
               }
             }
           ]
+        },
+        "sources": {
+          "description": "Non-HDMI sources seen by the compositor (phone tracks), newest frame each.",
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "width",
+              "height",
+              "age_ms",
+              "fresh",
+              "mean_luma"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "age_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "fresh": {
+                "type": "boolean",
+                "description": "Young enough (500 ms) to be composed; stale sources fall back to the layer background."
+              },
+              "mean_luma": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              }
+            }
+          }
         }
       }
     }

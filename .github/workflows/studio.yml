@@ -1,12 +1,13 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'services/phone/**', 'tests/phone/**', 'src/h264_decode.rs', 'src/h264dec_bridge.c', 'src/phone_ingest.rs', 'src/composition.rs', 'build.rs', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'services/phone/**', 'tests/phone/**', 'src/h264_decode.rs', 'src/h264dec_bridge.c', 'src/phone_ingest.rs', 'src/composition.rs', 'build.rs', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
+  packages: read
 concurrency:
   group: studio-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -173,6 +174,35 @@ jobs:
         run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-pki --bin t3box-provision
       - name: LAN TLS end to end
         run: ci/lan-tls-e2e.sh "$PWD/target/debug"
+  # Phone camera path: aiortc sends two H.264 tracks over real WebRTC →
+  # control signaling → t3box-phone (webrtc-rs) → engine ingest → libavcodec
+  # decode → compositor sources, checked by content (tests/phone).
+  phone-webrtc-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          command: >-
+            cargo test --locked -p t3box-phone &&
+            cargo test --locked --lib -- h264_decode phone_ingest composition ipc &&
+            cargo build --release --locked --bin t3box && cargo build --release --locked -p t3box-phone
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
+          python3 -m pip install --break-system-packages -q aiortc numpy
+      - name: Phone WebRTC end to end
+        run: tests/phone/run-e2e.sh target/release
   provisioning-client:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -3,7 +3,7 @@
 # the T3Box services, assembled into the A/B GPT layout of docs/UPDATE.md.
 #
 # Usage (root): os/image/build.sh <out-dir> <bin-dir>
-#   <bin-dir> holds t3box, t3box-provision, t3box-pki, t3box-bootctl built
+#   <bin-dir> holds t3box, t3box-phone, t3box-provision, t3box-pki, t3box-bootctl built
 #   for the target architecture.
 # Environment:
 #   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (local iteration only)
@@ -32,7 +32,7 @@ version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
 components=${T3BOX_IMAGE_COMPONENTS:-main,universe}
 root="$out/rootfs"
 
-for b in t3box t3box-provision t3box-pki t3box-bootctl; do
+for b in t3box t3box-phone t3box-provision t3box-pki t3box-bootctl; do
   [ -x "$bins/$b" ] || { echo "missing $bins/$b" >&2; exit 1; }
 done
 
