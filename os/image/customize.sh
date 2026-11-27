@@ -36,7 +36,11 @@ in_root apt-mark manual $(echo "$runtime" | tr , ' ') >/dev/null
 in_root apt-get purge -y -qq $(echo "$build" | tr , ' ') >/dev/null
 in_root apt-get -o APT::AutoRemove::RecommendsImportant=false -o APT::AutoRemove::SuggestsImportant=false autoremove -y -qq --purge >/dev/null
 in_root apt-get clean
-rm -rf "$r/var/lib/apt/lists/"* "$r/usr/share/doc/"* "$r/usr/share/man/"*
+rm -rf "$r/var/lib/apt/lists/"* "$r/usr/share/man/"*
+# Documentation goes, licences stay: /usr/share/doc/*/copyright must ship
+# with the GPL/LGPL components (docs/LICENSING.md).
+find "$r/usr/share/doc" -mindepth 1 -type f ! -name copyright -delete
+find "$r/usr/share/doc" -mindepth 1 -type d -empty -delete
 # No compilers on the device (§6).
 for c in gcc cc g++ make; do
   if [ -e "$r/usr/bin/$c" ]; then echo "compiler $c left in image" >&2; exit 1; fi

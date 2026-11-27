@@ -13,7 +13,8 @@ Collects what actually ships:
 
 Writes <out>/sbom.spdx.json, <out>/THIRD_PARTY.md and <out>/LICENSES/...,
 and fails if any shipped component has no licence or one outside POLICY.
-Usage: ci/sbom.py <out-dir> [--gems-from-bundle] [--dpkg FILE] [--version V]
+Usage: ci/sbom.py <out-dir> [--scope all|device] [--gems-from-bundle] [--dpkg FILE] [--version V]
+  --scope device  what the OS image ships (no phone app)
 """
 import datetime, hashlib, json, os, re, shutil, subprocess, sys
 
@@ -155,7 +156,10 @@ def main():
     if os.path.isdir(out):
         shutil.rmtree(out)
     os.makedirs(out)
-    comps = rust(out) + npm(out, "apps/studio") + npm(out, "apps/mobile") + gems(out, "--gems-from-bundle" in args)
+    scope = args[args.index("--scope") + 1] if "--scope" in args else "all"
+    if scope not in ("all", "device"):
+        raise SystemExit("--scope must be all or device")
+    comps = rust(out) + npm(out, "apps/studio") + (npm(out, "apps/mobile") if scope == "all" else []) + gems(out, "--gems-from-bundle" in args)
     if "--dpkg" in args:
         comps += dpkg(args[args.index("--dpkg") + 1])
     problems = []

@@ -51,10 +51,12 @@ refusing without an issued token. It powers off and the harness requires
 `SMOKE RESULT PASS`.
 
 ## Not covered (yet)
-- **Raspberry Pi variant:** boot partitions with Pi firmware, the Pi 5
-  kernel and DTBs (Raspberry Pi OS archive, as §6 specifies for the
-  reference) instead of the generic kernel. Binaries for it must then be
-  built against that distribution's libraries.
-- Release signing of bundles and images.
+- **Booting the Raspberry Pi variant** on hardware (Q-BOOT). The variant
+  itself exists: `T3BOX_IMAGE_VARIANT=pi` uses Ubuntu's `linux-image-raspi`
+  (Pi 5 support), puts `vmlinuz`, `initrd.img`, `bcm2712-rpi-5-b.dtb`,
+  `overlays/`, `config.txt` and a per-slot `cmdline.txt` into each boot
+  slot, and is checked structurally by `ci/pi-image-check.sh` (nightly
+  job `image-pi`, and every release). It deviates from §6's Raspberry Pi
+  OS reference so that the binaries keep the build image's library sonames.
 - Anything hardware: VideoCore, RP1, HDMI capture, radios, tryboot
   (docs/QUALIFICATION.md).

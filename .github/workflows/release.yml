@@ -1,0 +1,96 @@
+name: Release
+# Tag v<version> → signed release artifacts (§7) as a draft GitHub release.
+# Signing material comes only from repository secrets; without them the run
+# fails before anything is published (never an unsigned release):
+#   T3BOX_RELEASE_SIGNING_KEY  Ed25519 PEM (installer manifest, SHA256SUMS)
+#   T3BOX_RAUC_CA_CERT         release CA certificate, built into the image keyring
+#   T3BOX_RAUC_SIGNING_CERT, T3BOX_RAUC_SIGNING_KEY  code-signing pair for bundles
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build (dry run without publishing when not a tag)
+        required: true
+permissions:
+  contents: write
+  packages: read
+jobs:
+  release:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Signing material
+        env:
+          RELEASE_KEY: ${{ secrets.T3BOX_RELEASE_SIGNING_KEY }}
+          RAUC_CA: ${{ secrets.T3BOX_RAUC_CA_CERT }}
+          RAUC_CERT: ${{ secrets.T3BOX_RAUC_SIGNING_CERT }}
+          RAUC_KEY: ${{ secrets.T3BOX_RAUC_SIGNING_KEY }}
+        run: |
+          for v in RELEASE_KEY RAUC_CA RAUC_CERT RAUC_KEY; do
+            [ -n "${!v}" ] || { echo "::error::release secret for $v is not configured; refusing to build an unsigned release"; exit 1; }
+          done
+          k="$RUNNER_TEMP/keys"; install -d -m 0700 "$k"
+          printf '%s\n' "$RELEASE_KEY" >"$k/release-signing.pem"
+          printf '%s\n' "$RAUC_CA" >"$k/rauc-ca.pem"
+          printf '%s\n' "$RAUC_CERT" >"$k/rauc-signing.pem"
+          printf '%s\n' "$RAUC_KEY" >"$k/rauc-signing.key"
+          chmod 0600 "$k"/*
+          openssl pkey -in "$k/release-signing.pem" -pubout -out "$k/release-signing.pub"
+      - id: v
+        run: |
+          v="${{ github.event.inputs.version || github.ref_name }}"; v="${v#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          profile: arm64-image
+          command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build Studio
+        working-directory: apps/studio
+        run: npm ci --no-audit --no-fund && npm run build
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
+      - name: Pi image
+        run: |
+          sudo env T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_IMAGE_VARIANT=pi \
+            T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" \
+            os/image/build.sh "$RUNNER_TEMP/image" target/release
+          ci/pi-image-check.sh "$RUNNER_TEMP/image"
+      - name: Installer ZIP
+        run: |
+          sudo env T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+            os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
+      - name: Assemble and verify
+        run: |
+          env T3BOX_RELEASE_VERSION="${{ steps.v.outputs.version }}" T3BOX_RELEASE_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+            T3BOX_RAUC_CERT="$RUNNER_TEMP/keys/rauc-signing.pem" T3BOX_RAUC_KEY="$RUNNER_TEMP/keys/rauc-signing.key" \
+            SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" os/release/assemble.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "$RUNNER_TEMP/dist"
+          os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/keys/release-signing.pub" "$RUNNER_TEMP/keys/rauc-ca.pem"
+          rm -rf "$RUNNER_TEMP/keys"
+      - name: Draft GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "T3Box ${{ steps.v.outputs.version }}" \
+            --notes "Verify: os/release/verify.sh with the published release-signing.pub. Not hardware-qualified unless docs/QUALIFICATION.md lists results for this version." \
+            "$RUNNER_TEMP"/dist/*
+      - if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: ${{ runner.temp }}/dist
+          retention-days: 7
