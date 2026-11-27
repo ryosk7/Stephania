@@ -16,6 +16,7 @@ WorkingDirectory=/opt/t3box/control
 EnvironmentFile=/etc/t3box/control.env
 Environment=RACK_ENV=production
 Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
+Environment=T3BOX_STUDIO_DIST=/opt/t3box/studio
 Environment=T3BOX_CONTROL_DB=/var/lib/t3box/control/control.db
 # Trusted LAN: TLS on 9443 with the device-CA certificate (t3box-pki);
 # accepts only owner-issued tokens. Plain HTTP stays on loopback.
