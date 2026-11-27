@@ -64,6 +64,11 @@ for m in $mods; do
   for d in $deps; do install -D -m 0644 "$img/rootfs$d" "$ir$d"; done
 done
 cp "$img/rootfs/lib/modules/$kver/modules.order" "$img/rootfs/lib/modules/$kver/modules.builtin"* "$ir/lib/modules/$kver/" 2>/dev/null || true
+# Store modules uncompressed: the initramfs is itself compressed, and a
+# plain .ko loads with any modprobe/insmod regardless of zstd/xz support.
+find "$ir/lib/modules/$kver" -name '*.ko.zst' -exec zstd -dq --rm {} \;
+find "$ir/lib/modules/$kver" -name '*.ko.xz' -exec xz -d {} \;
+sed -i -E 's/\.ko\.(zst|xz)$/.ko/' "$ir/lib/modules/$kver/modules.order" 2>/dev/null || true
 depmod -b "$ir" "$kver"
 
 install -m 0755 "$repo/os/installer/t3box-install" "$ir/init"
