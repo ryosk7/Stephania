@@ -3,6 +3,8 @@ on:
   push:
     branches: [main, test/virtual-lab]
   pull_request:
+  schedule:
+    - cron: '23 18 * * *'
   workflow_dispatch:
     inputs:
       soak:
@@ -28,6 +30,9 @@ jobs:
       reason: ${{ steps.plan.outputs.reason }}
       transport: ${{ steps.plan.outputs.transport }}
       quality: ${{ steps.plan.outputs.quality }}
+      rust: ${{ steps.changes.outputs.rust == 'true' || steps.changes.outputs.media == 'true' }}
+      media: ${{ steps.changes.outputs.media }}
+      selection: ${{ steps.changes.outputs.reason }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +41,7 @@ jobs:
         run: |
           python3 ci/test-ci-contracts.py
           python3 ci/plan.py --self-test
+          python3 ci/changes.py --self-test
           python3 -m compileall -q ci
           for f in ci/*.sh tests/*.sh tests/virtual-lab/*.sh; do bash -n "$f"; done
           python3 -m compileall -q tests/virtual-lab
@@ -56,10 +62,15 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python3 ci/plan.py
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: python3 ci/changes.py
 
   rust-check:
     needs: plan
-    if: needs.plan.outputs.full == 'true'
+    if: needs.plan.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -70,15 +81,17 @@ jobs:
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - uses: ./.github/actions/cached-build
         with:
+          profile: x64-check
           command: |
+            cargo clippy --all-targets --locked --all-features -- -D warnings
+            cargo clippy --locked -p t3box-phone --all-targets -- -D warnings
             cargo test --locked --all-features -- --skip accelerated_ci::
             cargo test --locked --no-default-features
-            cargo clippy --all-targets --locked --all-features -- -D warnings
-            cargo build --release --locked --no-default-features --bin t3box
+            cargo test --locked -p t3box-phone
 
   arm64-build:
     needs: plan
-    if: needs.plan.outputs.full == 'true'
+    if: needs.plan.outputs.media == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
@@ -89,6 +102,7 @@ jobs:
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - uses: ./.github/actions/cached-build
         with:
+          profile: arm64-release
           command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
       - uses: actions/upload-artifact@v4
         with:
@@ -102,7 +116,7 @@ jobs:
 
   arm64-logical:
     needs: plan
-    if: needs.plan.outputs.full == 'true'
+    if: needs.plan.outputs.media == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
@@ -113,6 +127,7 @@ jobs:
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - uses: ./.github/actions/cached-build
         with:
+          profile: arm64-test
           command: |
             cargo test --release --locked --all-features --no-run
             mkdir -p fast-results
@@ -134,7 +149,7 @@ jobs:
 
   arm64-transport:
     needs: [plan, arm64-build]
-    if: needs.plan.outputs.full == 'true'
+    if: needs.plan.outputs.media == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -171,7 +186,7 @@ jobs:
     # Opt-in live compositor: HDMI fast path, frame-boundary acknowledged
     # scene.apply over IPC, and a virtual phone track, verified pixel-wise.
     needs: [plan, arm64-build]
-    if: needs.plan.outputs.full == 'true'
+    if: needs.plan.outputs.media == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
@@ -193,7 +208,7 @@ jobs:
 
   arm64-quality:
     needs: [plan, arm64-build]
-    if: needs.plan.outputs.full == 'true'
+    if: needs.plan.outputs.media == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -275,17 +290,19 @@ jobs:
           QUALITY: ${{ needs.arm64-quality.result }}
           SOAK: ${{ needs.arm64-soak.result }}
           SOAK_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.soak }}
+          RUST_SELECTED: ${{ needs.plan.outputs.rust }}
+          MEDIA_SELECTED: ${{ needs.plan.outputs.media }}
+          SELECTION: ${{ needs.plan.outputs.selection }}
         run: |
           test "$PLAN" = success
           echo "Coverage selection: $REASON" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$SOAK_REQUESTED" == true ]]; then test "$SOAK" = success; else test "$SOAK" = skipped; fi
-          if [[ "$FULL" == true ]]; then
-            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$QUALITY"; do test "$result" = success; done
-          else
-            test "$FULL" = false
-            test "$REASON" = docs-only
-            for result in "$RUST" "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$QUALITY"; do test "$result" = skipped; done
-          fi
+          echo "Change selection: $SELECTION" >> "$GITHUB_STEP_SUMMARY"
+          # Every job must have run and passed when its area was selected,
+          # and must have been skipped otherwise (nothing silently missing).
+          expect() { if [[ "$1" == true ]]; then test "$2" = success; else test "$2" = skipped; fi; }
+          expect "$RUST_SELECTED" "$RUST"
+          for result in "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$QUALITY"; do expect "$MEDIA_SELECTED" "$result"; done
 
   arm64-soak:
     if: github.event_name == 'workflow_dispatch' && inputs.soak

@@ -1,23 +1,36 @@
 name: Generic cached build environment
-description: Compile inside generic GHCR build image with private Cargo and sccache directories
+description: >-
+  Compile inside the generic GHCR build image with a warm Cargo registry,
+  sccache and target directory. Caches are keyed by `profile` (shared by
+  every job that builds the same way), restored everywhere and saved only
+  from main, so pull requests start from main's build and recompile only
+  what they changed (ci/README.md).
 inputs:
   command:
     description: Cargo commands to execute
     required: true
+  profile:
+    description: Cache profile shared by jobs with compatible builds
+    required: false
+    default: default
 runs:
   using: composite
   steps:
+    - id: key
+      shell: bash
+      run: |
+        echo "prefix=rust-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
-      id: compiler-cache
+      id: restore
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           ~/.cache/t3box-sccache
-        key: native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+          target
+        key: ${{ steps.key.outputs.prefix }}-${{ github.sha }}
         restore-keys: |
-          native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-${{ github.workflow }}-${{ github.job }}-
-          native-build-${{ runner.arch }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}-
+          ${{ steps.key.outputs.prefix }}-
     - shell: bash
       env:
         BUILD_COMMAND: ${{ inputs.command }}
@@ -25,20 +38,23 @@ runs:
         set -Eeuo pipefail
         start=$SECONDS
         ref="$(bash ci/images/pull.sh build)"
-        echo "Build image preparation: $((SECONDS-start))s" >> "$GITHUB_STEP_SUMMARY"
+        echo "Build image preparation: $((SECONDS-start))s (cache: ${{ steps.restore.outputs.cache-matched-key || 'cold' }})" >> "$GITHUB_STEP_SUMMARY"
         start=$SECONDS
         mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.cache/t3box-sccache" target
         docker run --rm --user "$(id -u):$(id -g)" \
           -e HOME=/tmp -e CARGO_HOME=/cargo -e RUSTC_WRAPPER=sccache -e SCCACHE_DIR=/sccache -e SCCACHE_CACHE_SIZE=1G \
+          -e CARGO_INCREMENTAL=0 \
           -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" \
           -v "$HOME/.cache/t3box-sccache:/sccache" \
           -v "$PWD:/work" -w /work "$ref" bash -Eeuo pipefail -c 'trap "sccache --show-stats" EXIT; eval "$1"' _ "$BUILD_COMMAND"
         echo "Build/test command: $((SECONDS-start))s" >> "$GITHUB_STEP_SUMMARY"
+    # Only main writes caches: PR builds never evict main's warm state.
     - uses: actions/cache/save@v4
-      if: steps.compiler-cache.outputs.cache-hit != 'true'
+      if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           ~/.cache/t3box-sccache
-        key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+          target
+        key: ${{ steps.key.outputs.prefix }}-${{ github.sha }}

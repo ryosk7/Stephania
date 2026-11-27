@@ -58,6 +58,7 @@ jobs:
           key: ${{ steps.boot-cache.outputs.cache-primary-key }}
       - uses: ./.github/actions/cached-build
         with:
+          profile: arm64-probe
           command: cargo build --release --locked --no-default-features --features native-capture --bin t3box-native-probe
       - run: bash ci/images/pull.sh qemu-tools
       - name: Kernel capture gate (60 seconds including overlay)

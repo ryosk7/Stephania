@@ -1,10 +1,11 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'services/phone/**', 'tests/phone/**', 'src/h264_decode.rs', 'src/h264dec_bridge.c', 'src/phone_ingest.rs', 'src/composition.rs', 'build.rs', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'services/phone/**', 'tests/phone/**', 'src/h264_decode.rs', 'src/h264dec_bridge.c', 'src/phone_ingest.rs', 'src/composition.rs', 'build.rs', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+  schedule:
+    - cron: '23 18 * * *'
+  workflow_dispatch:
 permissions:
   contents: read
   packages: read
@@ -12,7 +13,55 @@ concurrency:
   group: studio-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      control: ${{ steps.c.outputs.control }}
+      studio: ${{ steps.c.outputs.studio }}
+      provisioning: ${{ steps.c.outputs.provisioning }}
+      mobile: ${{ steps.c.outputs.mobile }}
+      ble: ${{ steps.c.outputs.ble }}
+      wifi: ${{ steps.c.outputs.wifi }}
+      lan: ${{ steps.c.outputs.lan }}
+      phone: ${{ steps.c.outputs.phone }}
+      bins: ${{ steps.c.outputs.control == 'true' || steps.c.outputs.studio == 'true' || steps.c.outputs.provisioning == 'true' || steps.c.outputs.mobile == 'true' || steps.c.outputs.wifi == 'true' || steps.c.outputs.lan == 'true' || steps.c.outputs.phone == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: c
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: python3 ci/changes.py
+  # Every x86_64 binary the jobs below need, built once (ci/build-bins.sh)
+  # from main's warm target directory.
+  bins:
+    needs: changes
+    if: needs.changes.outputs.bins == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          profile: x64-bins
+          command: ci/build-bins.sh ci-bins
+      - run: tar -cf ci-bins.tar ci-bins
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-bins-x64
+          path: ci-bins.tar
+          retention-days: 1
+          compression-level: 1
   control:
+    needs: [changes, bins]
+    if: needs.changes.outputs.control == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -22,17 +71,10 @@ jobs:
           ruby-version: '3.3'
           working-directory: services/control
           bundler-cache: true
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: control-engine-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      # Diagnostics-only engine build: exercises the real IPC server without
-      # native media libraries. Media coverage stays in ci.yml.
-      - name: Build engine for IPC integration
-        run: cargo build --locked --no-default-features --bin t3box
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - name: Resolved Gemfile.lock (commit this until it is tracked)
         if: hashFiles('services/control/Gemfile.lock') != ''
         working-directory: services/control
@@ -80,12 +122,14 @@ jobs:
       - name: Integration test must not be skipped
         working-directory: services/control
         env:
-          T3BOX_ENGINE_BIN: ${{ github.workspace }}/target/debug/t3box
+          T3BOX_ENGINE_BIN: ${{ github.workspace }}/ci-bins/t3box-diag
         shell: bash
         run: |
           bundle exec ruby test/engine_integration_test.rb --verbose | tee integration.log
           if grep -q ' S$\|skipped' integration.log; then echo "integration test skipped" >&2; exit 1; fi
   studio:
+    needs: [changes]
+    if: needs.changes.outputs.studio == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -107,6 +151,8 @@ jobs:
   # Browser end-to-end: real Rust engine (IPC) + Puma control plane serving
   # the built Studio, driven by Playwright Chromium with two browser contexts.
   studio-e2e:
+    needs: [changes, bins]
+    if: needs.changes.outputs.studio == 'true' || needs.changes.outputs.control == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -116,15 +162,10 @@ jobs:
           ruby-version: '3.3'
           working-directory: services/control
           bundler-cache: true
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: control-engine-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - name: Build engine for IPC
-        run: cargo build --locked --no-default-features --bin t3box
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -139,7 +180,7 @@ jobs:
       - name: Playwright Studio tests
         working-directory: apps/studio
         env:
-          T3BOX_ENGINE_BIN: ${{ github.workspace }}/target/debug/t3box
+          T3BOX_ENGINE_BIN: ${{ github.workspace }}/ci-bins/t3box-diag
         run: npx playwright test
       - if: failure()
         uses: actions/upload-artifact@v4
@@ -153,6 +194,8 @@ jobs:
   # → TLS control plane (real Puma) pinned to the BLE-delivered CA →
   # revocation. ci/lan-tls-e2e.sh.
   lan-tls-e2e:
+    needs: [changes, bins]
+    if: needs.changes.outputs.lan == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -162,36 +205,27 @@ jobs:
           ruby-version: '3.3'
           working-directory: services/control
           bundler-cache: true
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: lan-tls-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
       - run: sudo pip3 install --break-system-packages -q cryptography
-      - name: Build device PKI and provisioning (virtual network backend)
-        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-pki --bin t3box-provision
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - name: LAN TLS end to end
-        run: ci/lan-tls-e2e.sh "$PWD/target/debug"
+        run: ci/lan-tls-e2e.sh "$PWD/ci-bins"
   # Phone camera path: aiortc sends two H.264 tracks over real WebRTC →
   # control signaling → t3box-phone (webrtc-rs) → engine ingest → libavcodec
   # decode → compositor sources, checked by content (tests/phone).
   phone-webrtc-e2e:
+    needs: [changes, bins]
+    if: needs.changes.outputs.phone == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Authenticate read-only GHCR access
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - uses: ./.github/actions/cached-build
+      - uses: actions/download-artifact@v4
         with:
-          command: >-
-            cargo test --locked -p t3box-phone &&
-            cargo test --locked --lib -- h264_decode phone_ingest composition ipc &&
-            cargo build --release --locked --bin t3box && cargo build --release --locked -p t3box-phone
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
@@ -202,21 +236,18 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
           python3 -m pip install --break-system-packages -q aiortc numpy
       - name: Phone WebRTC end to end
-        run: tests/phone/run-e2e.sh target/release
+        run: tests/phone/run-e2e.sh ci-bins
   provisioning-client:
+    needs: [changes, bins]
+    if: needs.changes.outputs.provisioning == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: provision-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - name: Build device provisioning service (virtual network backend)
-        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -230,12 +261,14 @@ jobs:
         working-directory: packages/provisioning-client
         shell: bash
         env:
-          T3BOX_PROVISION_BIN: ${{ github.workspace }}/target/debug/t3box-provision
+          T3BOX_PROVISION_BIN: ${{ github.workspace }}/ci-bins/t3box-provision
         run: |
           npx vitest run --reporter=verbose | tee vitest.log
           grep -q 'interop with Rust t3box-provision' vitest.log
           if grep -qiE 'skipped|↓' vitest.log; then echo "interop test skipped" >&2; exit 1; fi
   setup-page:
+    needs: [changes]
+    if: needs.changes.outputs.provisioning == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -253,19 +286,16 @@ jobs:
         run: npm test
       - run: cat dist/SHA256SUMS
   mobile:
+    needs: [changes, bins]
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: provision-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - name: Build device provisioning service (virtual network backend)
-        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -279,7 +309,7 @@ jobs:
         working-directory: apps/mobile
         shell: bash
         env:
-          T3BOX_PROVISION_BIN: ${{ github.workspace }}/target/debug/t3box-provision
+          T3BOX_PROVISION_BIN: ${{ github.workspace }}/ci-bins/t3box-provision
         run: |
           npx vitest run --reporter=verbose | tee vitest.log
           grep -q 'BlePlxTransport against Rust device core' vitest.log
@@ -291,6 +321,8 @@ jobs:
           EXPO_OFFLINE: '1'
         run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/t3box-export"
   ble-e2e:
+    needs: changes
+    if: needs.changes.outputs.ble == 'true'
     # Real BlueZ stack with two virtual LE controllers (hci_vhci + btvirt).
     # One fresh VM per variant: btvirt sessions leave BlueZ/kernel state
     # behind that a second session on the same host can trip over.
@@ -307,13 +339,12 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq bluez bluez-test-tools libdbus-1-dev pkg-config >/dev/null
       - run: sudo pip3 install --break-system-packages -q bleak==3.1.0 cryptography
-      - uses: actions/cache@v4
+      # Host build (bluer needs libdbus): main's target directory, saved
+      # only from main so PRs never pin a stale one.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ble-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          shared-key: ble-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build device core and BLE adapter
         run: |
           cargo build --locked --no-default-features --features ci-virtual --bin t3box-provision
@@ -328,6 +359,8 @@ jobs:
       - name: BLE end-to-end v2 (claim/scan/join, bluetoothd restart self-heal)
         run: BLE_E2E_LOGS=$RUNNER_TEMP tests/ble/run-e2e.sh target/debug ${{ matrix.mode }}
   wifi-nm-e2e:
+    needs: [changes, bins]
+    if: needs.changes.outputs.wifi == 'true'
     # Real NetworkManager over D-Bus on virtual radios (mac80211_hwsim):
     # hostapd WPA2 AP + dnsmasq on wlan1, NetworkManager on wlan0 only.
     runs-on: ubuntu-24.04
@@ -336,14 +369,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq network-manager hostapd dnsmasq-base iw >/dev/null
       - run: sudo pip3 install --break-system-packages -q cryptography
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: nm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - name: Build provisioning service with the NetworkManager backend
-        run: cargo build --locked --no-default-features --features networkmanager --bin t3box-provision
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
       - name: Wi-Fi join, PSK persistence and auto-reconnect via NetworkManager
-        run: NM_E2E_LOGS=$RUNNER_TEMP tests/wifi/run-nm-e2e.sh target/debug
+        run: NM_E2E_LOGS=$RUNNER_TEMP tests/wifi/run-nm-e2e.sh ci-bins
