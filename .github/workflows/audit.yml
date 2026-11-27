@@ -1,0 +1,94 @@
+name: Supply chain
+# Advisories, licence policy and the SBOM (docs/LICENSING.md). Runs when a
+# lockfile or the policy changes, nightly (new advisories appear without any
+# change here), and on demand.
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - '**/Cargo.toml'
+      - deny.toml
+      - '**/package-lock.json'
+      - services/control/Gemfile.lock
+      - ci/sbom.py
+      - .github/workflows/audit.yml
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - deny.toml
+      - '**/package-lock.json'
+      - services/control/Gemfile.lock
+      - ci/sbom.py
+  schedule:
+    - cron: '41 19 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+          arguments: --all-features
+  ruby:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/control
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - run: gem install bundler-audit --no-document
+      - run: bundle-audit check --update
+  npm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [apps/studio, apps/mobile, packages/provisioning-client, tools/setup-page]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Shipped (production) dependencies only; high and critical fail.
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: ${{ matrix.dir }}
+  sbom:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/studio
+      - run: npm ci --no-audit --no-fund
+        working-directory: packages/provisioning-client
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/mobile
+      - name: Inventory, licence policy and SPDX SBOM
+        run: python3 ci/sbom.py "$RUNNER_TEMP/sbom" --gems-from-bundle --version "${GITHUB_SHA::12}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom
+          retention-days: 14
