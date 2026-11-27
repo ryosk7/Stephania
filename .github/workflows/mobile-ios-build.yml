@@ -1,17 +1,14 @@
 name: Mobile iOS build
 # Full simulator build of Stephania Connect with its native modules
-# (accessory setup, pinned-fetch, camera). It runs only when the native iOS
-# side or its dependencies change, on main for those paths, and on demand.
-# arm64 simulator only; CocoaPods downloads are cached. Most of the app is
-# Swift (Expo modules), which a C compiler cache cannot speed up.
+# (accessory setup, pinned-fetch, camera): about 15 minutes on a macOS
+# runner, so it is not a pull-request check (those stay within about three
+# minutes). It runs on main when the native iOS side or its dependencies
+# change, weekly, and on demand. Swift-only cores are still tested on pull
+# requests (studio.yml: mobile-ios-trust, mobile-ios-camera).
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - apps/mobile/modules/*/ios/**
-      - apps/mobile/app.json
-      - apps/mobile/package-lock.json
-      - .github/workflows/mobile-ios-build.yml
+  schedule:
+    - cron: '41 19 * * 0'
   push:
     branches: [main]
     paths:
