@@ -1,0 +1,3 @@
+#!/bin/sh
+# RAUC pre-install handler: never update while a stream is requested.
+exec /usr/local/bin/t3box-bootctl guard

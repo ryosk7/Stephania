@@ -1,0 +1,57 @@
+name: OS and updates
+on:
+  push:
+    branches: [main]
+    paths: ['os/**', 'src/bootctl.rs', 'src/bin/t3box-bootctl.rs', 'src/ipc.rs', 'ci/update-e2e.sh', 'ci/fake_engine.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/os.yml']
+  pull_request:
+    paths: ['os/**', 'src/bootctl.rs', 'src/bin/t3box-bootctl.rs', 'src/ipc.rs', 'ci/update-e2e.sh', 'ci/fake_engine.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/os.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: os-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Real RAUC (verity bundles, X.509 signatures, pre-install handler) on
+  # loop devices; the Pi 5 tryboot firmware rule is emulated. Hardware
+  # tryboot behaviour remains a physical qualification item.
+  ab-update-e2e:
+    # 22.04: its kernel reports dm-verity status as 'V'; kernels >= 6.19
+    # append an FEC field ('V -') that RAUC v1.15 rejects (see docs/UPDATE.md).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: os-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # RAUC v1.15 pinned and built from source (installs its own D-Bus
+      # policy).
+      # Units in systemd/ are verified by studio.yml.
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq squashfs-tools dosfstools meson ninja-build pkg-config \
+            libglib2.0-dev libssl-dev libcurl4-openssl-dev libjson-glib-dev libnl-genl-3-dev libdbus-1-dev libfdisk-dev >/dev/null
+          uname -r
+      - name: Build RAUC v1.15
+        run: |
+          git clone -q --depth 1 --branch v1.15 https://github.com/rauc/rauc /tmp/rauc
+          git -C /tmp/rauc log -1 --format='RAUC source %H'
+          grep -rn -B8 -A2 "instead of" /tmp/rauc/src/*.c | grep -B8 -A2 -i "verity" | head -40 || true
+          meson setup /tmp/rauc/build /tmp/rauc --prefix=/usr >/tmp/rauc-meson.log || { cat /tmp/rauc-meson.log; exit 1; }
+          ninja -C /tmp/rauc/build >/dev/null
+          sudo ninja -C /tmp/rauc/build install >/dev/null
+          sudo systemctl reload dbus || sudo systemctl restart dbus
+          rauc --version
+      - name: Boot-control unit tests
+        run: cargo test --locked --no-default-features --lib bootctl
+      - run: cargo build --locked --no-default-features --bin t3box-bootctl
+      - name: A/B update end to end (verity bundles)
+        run: sudo env PATH="$PATH" ci/update-e2e.sh target/debug/t3box-bootctl

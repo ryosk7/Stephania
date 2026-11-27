@@ -21,6 +21,7 @@ pub mod provisioning;
 pub mod provisioning_gatt;
 pub mod pki;
 pub mod management_tokens;
+pub mod bootctl;
 #[cfg(unix)]
 pub mod nm;
 #[cfg(all(unix, feature = "networkmanager"))]

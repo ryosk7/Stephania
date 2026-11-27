@@ -1,0 +1,8 @@
+#!/bin/sh
+# Install a signed bundle into the inactive slot pair and boot it once
+# (tryboot). The trial is committed by t3box-update-confirm.service after
+# local health checks, or rolled back by the firmware on any failure.
+set -eu
+[ $# -eq 1 ] || { echo "usage: t3box-update <bundle.raucb>" >&2; exit 2; }
+rauc install "$1"
+exec systemctl reboot '0 tryboot'
