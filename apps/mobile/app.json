@@ -32,7 +32,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Uses the camera to read the T3Box setup QR code.",
+          "cameraPermission": "Uses the camera to read the T3Box setup QR code and to send your camera picture to your T3Box.",
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true

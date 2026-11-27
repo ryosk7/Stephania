@@ -372,6 +372,55 @@ jobs:
       - name: PinnedTrust against device-PKI fixtures (Security.framework)
         working-directory: apps/mobile/modules/t3box-pinned-fetch/ios/PinnedTrust
         run: swift test 2>&1 | tee swift-test.log; grep -E "Executed [0-9]+ tests?, with 0 failures" swift-test.log
+  # iOS camera sender core (modules/t3box-camera/ios/CameraSender): real
+  # libwebrtc on macOS, synthetic frames, in-process receiver restricted
+  # like t3box-phone. The produced offer is then fed to the real
+  # t3box-phone on Linux (phone-ios-offer).
+  mobile-ios-camera:
+    needs: changes
+    if: (needs.changes.outputs.mobile_native == 'true' || needs.changes.outputs.phone == 'true') && github.event_name != 'push'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: apps/mobile/modules/t3box-camera/ios/CameraSender/.build
+          key: camera-sender-${{ runner.os }}-${{ hashFiles('apps/mobile/modules/t3box-camera/ios/CameraSender/Package.swift') }}
+      - name: Sender core against libwebrtc (H.264 baseline, dual tracks, live plans)
+        working-directory: apps/mobile/modules/t3box-camera/ios/CameraSender
+        env:
+          T3BOX_OFFER_OUT: ${{ runner.temp }}/ios-offer.json
+        run: |
+          swift test 2>&1 | tee swift-test.log
+          grep -E "Executed [0-9]+ tests?, with 0 failures" swift-test.log
+          ! grep -E "skipped" swift-test.log
+          test -s "$T3BOX_OFFER_OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-offer
+          path: ${{ runner.temp }}/ios-offer.json
+          retention-days: 3
+  phone-ios-offer:
+    needs: [changes, bins, mobile-ios-camera]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-bins-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-offer
+      - run: tar -xf ci-bins.tar
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - name: libwebrtc offer from the iOS sender accepted by t3box-phone
+        run: tests/phone/ios-offer.sh ci-bins ios-offer.json
   ble-e2e:
     needs: changes
     if: needs.changes.outputs.ble == 'true'

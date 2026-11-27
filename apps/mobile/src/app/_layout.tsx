@@ -9,6 +9,7 @@ export default function Layout() {
       <Stack.Screen name="wifi" options={{title: 'Wi-Fi setup'}} />
       <Stack.Screen name="dashboard" options={{title: 'Control'}} />
       <Stack.Screen name="open-on-pc" options={{title: 'Open on PC'}} />
+      <Stack.Screen name="camera" options={{title: 'Camera'}} />
     </Stack>
   );
 }

@@ -96,6 +96,7 @@ export default function Dashboard() {
         </View>
       ))}
 
+      <Button title="Send this phone's camera" disabled={!client} onPress={() => router.push({pathname: '/camera', params: {device}})} />
       <Button title="Open in a PC browser" disabled={!client} onPress={() => router.push({pathname: '/open-on-pc', params: {device}})} />
       {message !== '' && <Text style={s.p}>{message}</Text>}
     </ScrollView>
