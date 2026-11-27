@@ -1,0 +1,38 @@
+name: x86_64 e2e binaries
+description: >-
+  Provides ci-bins/ (ci/build-bins.sh) and ci-bins.tar. Content-addressed:
+  the key hashes every input of the build, so when a PR has not changed any
+  Rust input the binaries built on main are reused as-is (identical inputs
+  ⇒ identical binaries) and nothing is compiled. Otherwise they are built
+  from main's warm target directory.
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: echo "key=ci-bins-x64-${{ hashFiles('src/**', 'services/phone/**', 'services/ble/Cargo.toml', 'Cargo.toml', 'Cargo.lock', 'build.rs', 'ci/build-bins.sh', 'ci/images/build.Dockerfile') }}" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v4
+      id: reuse
+      with:
+        path: ci-bins.tar
+        key: ${{ steps.key.outputs.key }}
+    - if: steps.reuse.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GHCR_TOKEN: ${{ github.token }}
+      run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+    - if: steps.reuse.outputs.cache-hit != 'true'
+      uses: ./.github/actions/cached-build
+      with:
+        profile: x64-bins
+        command: ci/build-bins.sh ci-bins
+    - shell: bash
+      run: |
+        if [ -f ci-bins.tar ] && [ ! -d ci-bins ]; then tar -xf ci-bins.tar; else tar -cf ci-bins.tar ci-bins; fi
+        echo "ci-bins: ${{ steps.reuse.outputs.cache-hit == 'true' && 'reused from main (no Rust input changed)' || 'built' }}" >> "$GITHUB_STEP_SUMMARY"
+        ls -la ci-bins
+    - if: steps.reuse.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      uses: actions/cache/save@v4
+      with:
+        path: ci-bins.tar
+        key: ${{ steps.key.outputs.key }}
