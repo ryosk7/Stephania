@@ -13,9 +13,11 @@ token=load-test-token-0123456789abcdef0123
 port=9494
 pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; sudo systemctl stop t3box-load-puma.scope 2>/dev/null || true; wait 2>/dev/null || true; }
-trap cleanup EXIT
+diag() { echo "--- engine log"; tail -30 "$out/engine.log" 2>/dev/null; for f in "$out"/puma-yjit*.log; do echo "--- $f"; tail -30 "$f"; done; ls -la "$work"; }
+trap 'rc=$?; [ "$rc" = 0 ] || diag; cleanup' EXIT
 T3BOX_ENGINE_SOCKET="$work/engine.sock" T3BOX_OUTPUT="" "$bin" >"$out/engine.log" 2>&1 & pids+=($!)
-for _ in $(seq 50); do [ -S "$work/engine.sock" ] && break; sleep 0.1; done
+for _ in $(seq 100); do [ -S "$work/engine.sock" ] && break; sleep 0.1; done
+[ -S "$work/engine.sock" ] || { echo "engine did not create its IPC socket"; exit 1; }
 
 results=()
 for yjit in 0 1; do
@@ -28,7 +30,7 @@ for yjit in 0 1; do
   pids+=($!)
   for _ in $(seq 100); do curl -fs -o /dev/null -H "Authorization: Bearer $token" "http://127.0.0.1:$port/api/v1/capabilities" && break; sleep 0.2; done
   echo "status probe: $(curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:$port/api/v1/status")"
-  ps -o user,pid,cmd -C ruby,t3box | head -5
+  kill -0 "${pids[0]}" || { echo "engine exited"; exit 1; }
   # Warm-up, then the measured run.
   python3 ci/control_load.py "http://127.0.0.1:$port" "$token" 3 4 warmup 0 >/dev/null
   r=$(python3 ci/control_load.py "http://127.0.0.1:$port" "$token" 20 4 "yjit=$yjit")
@@ -39,4 +41,4 @@ for yjit in 0 1; do
   sudo systemctl stop t3box-load-puma.scope
   sleep 1
 done
-printf '%s\n' "${results[@]}" | python3 ci/control_load_report.py "$out" || { echo "--- engine log"; tail -20 "$out/engine.log"; echo "--- puma log"; tail -20 "$out/puma-yjit0.log"; exit 1; }
+printf '%s\n' "${results[@]}" | python3 ci/control_load_report.py "$out" 
