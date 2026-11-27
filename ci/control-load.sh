@@ -37,17 +37,4 @@ for yjit in 0 1; do
   sudo systemctl stop t3box-load-puma.scope
   sleep 1
 done
-printf '%s\n' "${results[@]}" | python3 -c '
-import json, sys
-rows = [json.loads(l) for l in sys.stdin if l.strip()]
-json.dump(rows, open(sys.argv[1] + "/control-load.json", "w"), indent=1)
-md = ["| Run | req/s | p50 ms | p95 ms | p99 ms | max ms | errors | SSE held | 9th stream | memory peak MiB |", "|---|---|---|---|---|---|---|---|---|---|"]
-for r in rows:
-    md.append(f"| {r[\"label\"]} | {r[\"rps\"]} | {r[\"p50_ms\"]} | {r[\"p95_ms\"]} | {r[\"p99_ms\"]} | {r[\"max_ms\"]} | {r[\"errors\"]} | {r[\"streams_open\"]}/8 | {r[\"extra_stream_status\"]} | {r[\"memory_peak_mib\"]} |")
-open(sys.argv[1] + "/control-load.md", "w").write("\n".join(md) + "\n")
-print("\n".join(md))
-bad = [r["label"] for r in rows if r["errors"] or r["streams_open"] != 8 or r["extra_stream_status"] != 429 or r["p99_ms"] > 250]
-if bad:
-    sys.exit("FAIL load gate: " + ", ".join(bad))
-print("PASS no errors, 8 streams held, 9th refused with 429, p99 < 250 ms within the section 9 cgroup")
-' "$out"
+printf '%s\n' "${results[@]}" | python3 ci/control_load_report.py "$out"
