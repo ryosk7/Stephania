@@ -55,7 +55,7 @@ jobs:
           CCACHE_DEPEND: 'true'
           CCACHE_INODECACHE: 'true'
         run: |
-          export CCACHE_DIR="$HOME/Library/Caches/ccache"
+          export CCACHE_DIR="$HOME/Library/Caches/ccache" CCACHE_BINARY="$(command -v ccache)" USE_CCACHE=1
           npx expo prebuild --platform ios --clean --no-install
           node -e "const f='ios/Podfile.properties.json',p=require('./'+f);p['apple.ccacheEnabled']='true';require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
           (cd ios && pod install >/dev/null)
