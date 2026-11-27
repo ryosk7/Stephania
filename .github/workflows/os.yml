@@ -41,6 +41,7 @@ jobs:
         run: |
           git clone -q --depth 1 --branch v1.15 https://github.com/rauc/rauc /tmp/rauc
           git -C /tmp/rauc log -1 --format='RAUC source %H'
+          grep -rn -B12 -A3 "Unexpected dm-verity status" /tmp/rauc/src || true
           meson setup /tmp/rauc/build /tmp/rauc --prefix=/usr/local >/tmp/rauc-meson.log || { cat /tmp/rauc-meson.log; exit 1; }
           ninja -C /tmp/rauc/build >/dev/null
           sudo install -m 0755 /tmp/rauc/build/rauc /usr/local/bin/rauc
