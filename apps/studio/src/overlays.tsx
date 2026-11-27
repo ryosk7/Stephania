@@ -50,19 +50,19 @@ export function AssetLibrary({api, canEdit, v2, onAdd, onMessage}: {
   useEffect(() => { void run(load); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <section aria-label="assets" className="assets">
-      <h3>画像アセット</h3>
-      {canEdit && <label className="file">PNGをアップロード <input type="file" accept="image/png" onChange={e => {
+      <h3>Image assets</h3>
+      {canEdit && <label className="file">Upload PNG <input type="file" accept="image/png" onChange={e => {
         const f = e.target.files?.[0];
         e.target.value = '';
-        if (f) void run(async () => { const a = await api.uploadAsset(f, f.name); await load(); onMessage(`アップロードしました（${a.id}）`); });
+        if (f) void run(async () => { const a = await api.uploadAsset(f, f.name); await load(); onMessage(`Uploaded (${a.id})`); });
       }}/></label>}
       <ul>
         {assets.map(a => (
           <li key={a.id} data-testid={'asset-' + a.id}>
             {urls[a.id] && <img src={urls[a.id]} alt={a.name} width={48} height={Math.max(1, Math.round(48 * a.height / a.width))}/>}
             <span>{a.name} <small>{a.width}×{a.height}</small></span>
-            {canEdit && <button disabled={!v2} title={v2 ? '' : 'v2 シーンのみ'} onClick={() => onAdd(a)}>シーンに追加</button>}
-            {canEdit && <button aria-label={'delete asset ' + a.name} onClick={() => void run(async () => { await api.deleteAsset(a.id); await load(); onMessage('削除しました'); })}>削除</button>}
+            {canEdit && <button disabled={!v2} title={v2 ? '' : 'v2 scenes only'} onClick={() => onAdd(a)}>Add to scene</button>}
+            {canEdit && <button aria-label={'delete asset ' + a.name} onClick={() => void run(async () => { await api.deleteAsset(a.id); await load(); onMessage('Deleted'); })}>Delete</button>}
           </li>
         ))}
       </ul>
@@ -86,45 +86,45 @@ export function TemplatePanel({api, canEdit, v2, onAdd, onMessage}: {
 
   return (
     <section aria-label="templates" className="templates">
-      <h3>テキスト・テンプレート</h3>
-      <label>テンプレート <select value={def.id} onChange={e => { const d = all.find(t => t.id === e.target.value)!; setChosen(d.id); setVars(initialVars(d)); }}>
+      <h3>Text templates</h3>
+      <label>Template <select value={def.id} onChange={e => { const d = all.find(t => t.id === e.target.value)!; setChosen(d.id); setVars(initialVars(d)); }}>
         {all.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
       {def.vars.map(v => (
         <label key={v.key}>{v.label} <input value={vars[v.key] ?? ''} maxLength={200} onChange={e => setVars({...vars, [v.key]: e.target.value})}/></label>
       ))}
-      <button disabled={!v2} title={v2 ? '' : 'v2 シーンのみ'} onClick={() => void run(async () => {
+      <button disabled={!v2} title={v2 ? '' : 'v2 scenes only'} onClick={() => void run(async () => {
         const a = await renderTemplate(api, def, vars);
         onAdd(a, def, vars);
-        onMessage(`「${def.name}」を追加しました`);
-      })}>テンプレートを追加</button>
+        onMessage(`Added "${def.name}"`);
+      })}>Add template</button>
       <details>
-        <summary>開発者モード: SVG テンプレート</summary>
-        <p>{'{{変数名}}'} が置き換わります。スクリプト・イベント属性・外部参照は使えません（ブラウザ内で画像として描画されます）。</p>
+        <summary>Developer mode: SVG template</summary>
+        <p>{'{{variable}}'} is replaced. Scripts, event attributes and external references are not allowed (rendered as an image in the browser).</p>
         <label>ID <input value={dev.id} onChange={e => setDev({...dev, id: e.target.value})} placeholder="my-badge"/></label>
-        <label>名前 <input value={dev.name} onChange={e => setDev({...dev, name: e.target.value})}/></label>
+        <label>Name <input value={dev.name} onChange={e => setDev({...dev, name: e.target.value})}/></label>
         <textarea aria-label="template svg" value={dev.svg} onChange={e => setDev({...dev, svg: e.target.value})}
           placeholder={'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="120">…{{speaker.name}}…</svg>'}/>
-        <label>変数 (JSON) <input value={dev.vars} onChange={e => setDev({...dev, vars: e.target.value})} placeholder='[{"key":"speaker.name","label":"名前","initial":""}]'/></label>
+        <label>Variables (JSON) <input value={dev.vars} onChange={e => setDev({...dev, vars: e.target.value})} placeholder='[{"key":"speaker.name","label":"Name","initial":""}]'/></label>
         <button onClick={() => void run(async () => {
           const problem = checkDeveloperSvg(dev.svg);
           if (problem) { onMessage(problem); return; }
           const size = svgSize(dev.svg);
-          if (!size) { onMessage('<svg> に width と height（1920×1080 以内）を指定してください'); return; }
+          if (!size) { onMessage('Give <svg> a width and height (at most 1920×1080)'); return; }
           let v: TemplateDef['vars'];
-          try { v = JSON.parse(dev.vars); } catch { onMessage('変数の JSON が正しくありません'); return; }
+          try { v = JSON.parse(dev.vars); } catch { onMessage('Invalid variables JSON'); return; }
           await api.saveTemplate({id: dev.id, name: dev.name, width: size.width, height: size.height, svg: dev.svg, vars: v});
           await load();
           setChosen(dev.id);
           setVars(Object.fromEntries(v.map(x => [x.key, x.initial])));
-          onMessage('テンプレートを保存しました');
-        })}>テンプレートを保存</button>
+          onMessage('Template saved');
+        })}>Save template</button>
       </details>
     </section>
   );
 }
 
 const FITS: Fit[] = ['stretch', 'contain', 'cover'];
-const FIT_NAMES: Record<Fit, string> = {stretch: '引き伸ばし', contain: '全体を表示', cover: '画面を埋める'};
+const FIT_NAMES: Record<Fit, string> = {stretch: 'Stretch', contain: 'Contain', cover: 'Cover'};
 
 export function V2Props({api, layer, canEdit, onChange, onMessage}: {
   api: Api; layer: Layer; canEdit: boolean; onChange: (c: Partial<Layer>) => void; onMessage: (m: string) => void;
@@ -138,26 +138,26 @@ export function V2Props({api, layer, canEdit, onChange, onMessage}: {
   const pct = (v: number) => Math.round(v / 100);
   return (
     <div className="v2props">
-      <label>不透明度 <input type="range" aria-label="opacity slider" min={0} max={100} value={layer.opacity ?? 100} disabled={!canEdit}
+      <label>Opacity <input type="range" aria-label="opacity slider" min={0} max={100} value={layer.opacity ?? 100} disabled={!canEdit}
         onChange={e => onChange({opacity: Number(e.target.value)})}/>
         <input type="number" aria-label="opacity" min={0} max={100} value={layer.opacity ?? 100} disabled={!canEdit}
           onChange={e => onChange({opacity: Number(e.target.value)})}/>%</label>
-      <label>回転 <input type="number" aria-label="rotation" min={-180} max={180} value={layer.rotation ?? 0} disabled={!canEdit}
+      <label>Rotation <input type="number" aria-label="rotation" min={-180} max={180} value={layer.rotation ?? 0} disabled={!canEdit}
         onChange={e => onChange({rotation: Number(e.target.value)})}/>°</label>
       {layer.type !== 'color' && (
-        <label>フィット <select aria-label="fit" value={(layer as VideoLayer | ImageLayer).fit ?? 'stretch'} disabled={!canEdit} onChange={e => onChange({fit: e.target.value as Fit})}>
+        <label>Fit <select aria-label="fit" value={(layer as VideoLayer | ImageLayer).fit ?? 'stretch'} disabled={!canEdit} onChange={e => onChange({fit: e.target.value as Fit})}>
           {FITS.map(f => <option key={f} value={f}>{FIT_NAMES[f]}</option>)}</select></label>
       )}
       {isVideo(layer) && (['left', 'top', 'right', 'bottom'] as const).map(k => (
-        <label key={k}>{{left: '左', top: '上', right: '右', bottom: '下'}[k]}トリミング <input type="number" aria-label={'crop ' + k} min={0} max={90} value={pct(crop[k])} disabled={!canEdit}
+        <label key={k}>Crop {k} <input type="number" aria-label={'crop ' + k} min={0} max={90} value={pct(crop[k])} disabled={!canEdit}
           onChange={e => onChange({crop: {...crop, [k]: Math.round(Number(e.target.value) * 100)}} as Partial<VideoLayer>)}/>%</label>
       ))}
       {layer.type === 'color' && (
-        <label>色 <input type="color" aria-label="color" value={layer.color.toLowerCase()} disabled={!canEdit} onChange={e => onChange({color: e.target.value})}/></label>
+        <label>Colour <input type="color" aria-label="color" value={layer.color.toLowerCase()} disabled={!canEdit} onChange={e => onChange({color: e.target.value})}/></label>
       )}
       {tpl && (() => {
         const def = templateFor(tpl.id, custom);
-        if (!def) return <p>テンプレート「{tpl.id}」が見つかりません</p>;
+        if (!def) return <p>Template "{tpl.id}" not found</p>;
         return (
           <fieldset>
             <legend>{def.name}</legend>
@@ -168,9 +168,9 @@ export function V2Props({api, layer, canEdit, onChange, onMessage}: {
               try {
                 const a = await renderTemplate(api, def, vars);
                 onChange({asset: a.id, template: reference(def, vars)} as Partial<ImageLayer>);
-                onMessage('テンプレートを再描画しました（保存・適用で反映）');
+                onMessage('Template re-rendered (save and apply to use it)');
               } catch (e) { onMessage(String(e)); }
-            })()}>再描画</button>}
+            })()}>Re-render</button>}
           </fieldset>
         );
       })()}

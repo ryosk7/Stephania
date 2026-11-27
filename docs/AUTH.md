@@ -59,7 +59,7 @@ The counters are in memory (reset on restart); at most 4096 keys are kept.
 
 ## Studio
 
-The Studio signs in with an account; a "管理トークンで接続" fallback is
+The Studio signs in with an account; a "Connect with the admin token" fallback is
 kept for first-time setup and maintenance. Routes: `#/` dashboard,
 `#/studio` scenes and layout, `#/audio` program audio, `#/settings`
 password and (admins) users.

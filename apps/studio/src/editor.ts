@@ -24,7 +24,7 @@ export function migrateToV2(s: Scene): Scene {
 }
 
 export function layerLabel(l: Layer): string {
-  return isVideo(l) ? l.source : l.type === 'image' ? (l.template ? 'テンプレート:' + l.template.id : '画像') : '色 ' + l.color;
+  return isVideo(l) ? l.source : l.type === 'image' ? (l.template ? 'template:' + l.template.id : 'image') : 'colour ' + l.color;
 }
 
 export const CANVAS = {width: 1920, height: 1080} as const;

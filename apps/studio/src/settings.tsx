@@ -5,7 +5,7 @@ import React, {useEffect, useState} from 'react';
 import type {createClient, Me, Role, User} from './api/client';
 
 type Api = ReturnType<typeof createClient>;
-const ROLE_NAMES: Record<Role, string> = {admin: '管理者', operator: 'オペレーター'};
+const ROLE_NAMES: Record<Role, string> = {admin: 'Admin', operator: 'Operator'};
 
 export function Settings({api, me, onMessage}: {api: Api; me: Me; onMessage: (m: string) => void}) {
   const [users, setUsers] = useState<User[]>([]);
@@ -28,38 +28,38 @@ export function Settings({api, me, onMessage}: {api: Api; me: Me; onMessage: (m:
     <div data-testid="settings">
       {me.kind === 'user' && (
         <section aria-label="password">
-          <h2>パスワード変更</h2>
-          <form onSubmit={e => { e.preventDefault(); void run(async () => { await api.changePassword(pw.current, pw.next); setPw({current: '', next: ''}); onMessage('パスワードを変更しました（他の端末はサインアウトされました）'); }); }}>
-            <label>現在のパスワード <input type="password" autoComplete="current-password" value={pw.current} onChange={e => setPw({...pw, current: e.target.value})}/></label>
-            <label>新しいパスワード <input type="password" autoComplete="new-password" minLength={10} value={pw.next} onChange={e => setPw({...pw, next: e.target.value})}/></label>
-            <button type="submit">変更</button>
+          <h2>Change password</h2>
+          <form onSubmit={e => { e.preventDefault(); void run(async () => { await api.changePassword(pw.current, pw.next); setPw({current: '', next: ''}); onMessage('Password changed (other devices were signed out)'); }); }}>
+            <label>Current password <input type="password" autoComplete="current-password" value={pw.current} onChange={e => setPw({...pw, current: e.target.value})}/></label>
+            <label>New password <input type="password" autoComplete="new-password" minLength={10} value={pw.next} onChange={e => setPw({...pw, next: e.target.value})}/></label>
+            <button type="submit">Change</button>
           </form>
         </section>
       )}
       {admin && (
         <section aria-label="users">
-          <h2>ユーザー</h2>
+          <h2>Users</h2>
           <table>
-            <thead><tr><th>ユーザー名</th><th>権限</th><th>状態</th><th/></tr></thead>
+            <thead><tr><th>Username</th><th>Role</th><th>State</th><th/></tr></thead>
             <tbody>
               {users.map(u => (
                 <tr key={u.id} data-testid={'user-' + u.username}>
                   <td>{u.username}</td>
-                  <td><select aria-label={'role ' + u.username} value={u.role} onChange={e => change(u, {role: e.target.value as Role}, '権限を変更しました')}>
+                  <td><select aria-label={'role ' + u.username} value={u.role} onChange={e => change(u, {role: e.target.value as Role}, 'Role changed')}>
                     {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}</select></td>
-                  <td><label>無効 <input type="checkbox" checked={u.disabled} onChange={e => change(u, {disabled: e.target.checked}, e.target.checked ? '無効にしました' : '有効にしました')}/></label></td>
-                  <td><button aria-label={'delete ' + u.username} disabled={me.user_id === u.id} onClick={() => void run(async () => { await api.deleteUser(u.id); await load(); onMessage('削除しました'); })}>削除</button></td>
+                  <td><label>Disabled <input type="checkbox" checked={u.disabled} onChange={e => change(u, {disabled: e.target.checked}, e.target.checked ? 'Disabled' : 'Enabled')}/></label></td>
+                  <td><button aria-label={'delete ' + u.username} disabled={me.user_id === u.id} onClick={() => void run(async () => { await api.deleteUser(u.id); await load(); onMessage('Deleted'); })}>Delete</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <h3>ユーザー追加</h3>
-          <form onSubmit={e => { e.preventDefault(); void run(async () => { await api.createUser(form.username, form.password, form.role); setForm({username: '', password: '', role: 'operator'}); await load(); onMessage('ユーザーを追加しました'); }); }}>
-            <label>ユーザー名 <input value={form.username} autoComplete="off" onChange={e => setForm({...form, username: e.target.value})}/></label>
-            <label>初期パスワード <input type="password" autoComplete="new-password" value={form.password} onChange={e => setForm({...form, password: e.target.value})}/></label>
-            <label>権限 <select value={form.role} onChange={e => setForm({...form, role: e.target.value as Role})}>
+          <h3>Add user</h3>
+          <form onSubmit={e => { e.preventDefault(); void run(async () => { await api.createUser(form.username, form.password, form.role); setForm({username: '', password: '', role: 'operator'}); await load(); onMessage('User added'); }); }}>
+            <label>Username <input value={form.username} autoComplete="off" onChange={e => setForm({...form, username: e.target.value})}/></label>
+            <label>Initial password <input type="password" autoComplete="new-password" value={form.password} onChange={e => setForm({...form, password: e.target.value})}/></label>
+            <label>Role <select value={form.role} onChange={e => setForm({...form, role: e.target.value as Role})}>
               {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}</select></label>
-            <button type="submit">追加</button>
+            <button type="submit">Add</button>
           </form>
         </section>
       )}
