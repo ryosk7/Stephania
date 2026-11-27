@@ -2,8 +2,8 @@
 Description=T3Box management plane (Sinatra/Puma)
 # Independent of the engine: control may restart or die without affecting
 # media. Wants= (not Requires=) so an engine restart never stops control.
-Wants=t3box.service
-After=t3box.service
+Wants=t3box.service t3box-pki.service
+After=t3box.service t3box-pki.service
 
 [Service]
 Type=simple
@@ -17,6 +17,11 @@ EnvironmentFile=/etc/t3box/control.env
 Environment=RACK_ENV=production
 Environment=T3BOX_ENGINE_SOCKET=/run/t3box/engine.sock
 Environment=T3BOX_CONTROL_DB=/var/lib/t3box/control/control.db
+# Trusted LAN: TLS on 9443 with the device-CA certificate (t3box-pki);
+# accepts only owner-issued tokens. Plain HTTP stays on loopback.
+Environment=T3BOX_PKI_DIR=/var/lib/t3box/pki
+Environment=T3BOX_CONTROL_TLS_PORT=9443
+Environment=T3BOX_CONTROL_TOKENS_FILE=/var/lib/t3box/tokens/tokens.json
 StateDirectory=t3box/control
 StateDirectoryMode=0700
 ExecStart=/usr/bin/bundle exec puma -C config/puma.rb config.ru

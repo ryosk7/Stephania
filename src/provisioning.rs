@@ -579,6 +579,13 @@ pub fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
     Some(out)
 }
 
+pub fn unhex_vec(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.is_ascii() {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

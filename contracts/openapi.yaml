@@ -3,12 +3,18 @@ info:
   title: T3Box Control API
   version: 0.1.0
   description: |
-    Management plane served by services/control (Sinatra). Loopback-only and
-    bearer-token protected until trusted LAN TLS and authenticated enrollment
-    exist. No media passes through this API. Only the operations below are
+    Management plane served by services/control (Sinatra). Plain HTTP is
+    loopback-only (bootstrap token). On the LAN it is served only over TLS
+    with the device-CA certificate (port 9443), Host must be a certified
+    device name/address, cross-origin requests are rejected, and only
+    owner-issued tokens (BLE management.enroll) are accepted. No media
+    passes through this API. Only the operations below are
     implemented; the full target surface is in docs/MASTER-ARCHITECTURE.md §18.
 servers:
   - url: http://127.0.0.1:9292/api/v1
+  - url: https://{device}.local:9443/api/v1
+    variables:
+      device: {default: t3box}
 security:
   - bearer: []
 paths:
@@ -228,7 +234,7 @@ components:
             code:
               type: string
               description: |
-                unauthorized(401) not_configured(503) forbidden_host(403) invalid_json(400)
+                unauthorized(401) not_configured(503) forbidden_host(403) forbidden_origin(403) invalid_json(400)
                 invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)

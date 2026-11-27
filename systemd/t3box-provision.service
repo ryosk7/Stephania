@@ -16,6 +16,12 @@ Environment=T3BOX_NETWORK_BACKEND=nm
 # First-boot setup file copied next to the OS (see tools/setup-page).
 Environment=T3BOX_SETUP_FILE=/boot/firmware/t3box-setup.txt
 ReadWritePaths=-/boot/firmware
+# LAN enrollment (management.enroll): reads the endpoint published by
+# t3box-pki and stores issued token hashes for the control plane. The
+# tokens directory is setgid t3box-control (t3box.tmpfiles.conf).
+Environment=T3BOX_PKI_DIR=/var/lib/t3box/pki
+Environment=T3BOX_MANAGEMENT_TOKENS=/var/lib/t3box/tokens/tokens.json
+ReadWritePaths=/var/lib/t3box/tokens
 # Only the BLE adapter (t3box-ble, uid 854 in t3box.sysusers.conf) may use
 # the socket besides root.
 Environment=T3BOX_IPC_ALLOWED_UIDS=854

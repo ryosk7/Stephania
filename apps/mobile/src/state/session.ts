@@ -3,7 +3,7 @@
 // platform secure store (Keychain / Keystore), never in plain storage.
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
-import {fromHex, toHex, type ProvisioningSession} from '@t3box/provisioning-client';
+import {fromHex, toHex, type ManagementEnrollment, type ProvisioningSession} from '@t3box/provisioning-client';
 
 let setupSecret: Uint8Array | undefined;
 let active: {deviceId: string; name: string; session: ProvisioningSession} | undefined;
@@ -33,4 +33,16 @@ export async function ownerId(): Promise<string> {
     await SecureStore.setItemAsync('t3box.owner_id', id);
   }
   return id;
+}
+
+const enrollmentKey = (deviceId: string) => 't3box.lan.' + toHex(new TextEncoder().encode(deviceId));
+
+/** LAN access token + CA pin from management.enroll (secure store only). */
+export async function saveEnrollment(deviceId: string, e: ManagementEnrollment) {
+  await SecureStore.setItemAsync(enrollmentKey(deviceId), JSON.stringify(e), {keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY});
+}
+
+export async function loadEnrollment(deviceId: string): Promise<ManagementEnrollment | null> {
+  const v = await SecureStore.getItemAsync(enrollmentKey(deviceId));
+  return v ? (JSON.parse(v) as ManagementEnrollment) : null;
 }

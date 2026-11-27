@@ -1,10 +1,10 @@
 name: Studio foundation
 on:
   pull_request:
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
   push:
     branches: [main]
-    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
+    paths: ['apps/studio/**', 'services/control/**', 'packages/**', 'apps/mobile/**', 'tools/setup-page/**', 'contracts/**', 'src/ipc.rs', 'src/scene.rs', 'src/main.rs', 'src/provisioning*.rs', 'src/nm.rs', 'src/bin/t3box-provision.rs', 'services/ble/**', 'tests/ble/**', 'tests/wifi/**', 'src/nm_dbus.rs', 'src/pki.rs', 'src/management_tokens.rs', 'src/bin/t3box-pki.rs', 'ci/lan-tls-e2e.sh', 'ci/lan_enroll.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/studio.yml']
 permissions:
   contents: read
 concurrency:
@@ -44,6 +44,7 @@ jobs:
           bundle exec ruby test/control_test.rb
           bundle exec ruby test/storage_test.rb
           bundle exec ruby test/events_test.rb
+          bundle exec ruby test/lan_access_test.rb
       - name: Server-Sent Events through real Puma
         working-directory: services/control
         env:
@@ -147,6 +148,31 @@ jobs:
             apps/studio/playwright-report
             apps/studio/test-results
           retention-days: 7
+  # Trusted LAN: device PKI → owner enrollment over the provisioning socket
+  # → TLS control plane (real Puma) pinned to the BLE-delivered CA →
+  # revocation. ci/lan-tls-e2e.sh.
+  lan-tls-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: lan-tls-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: sudo pip3 install --break-system-packages -q cryptography
+      - name: Build device PKI and provisioning (virtual network backend)
+        run: cargo build --locked --no-default-features --features ci-virtual --bin t3box-pki --bin t3box-provision
+      - name: LAN TLS end to end
+        run: ci/lan-tls-e2e.sh "$PWD/target/debug"
   provisioning-client:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -21,8 +21,9 @@
 //! the returned bytes, fragmented with [`crate::provisioning::fragment`]
 //! under the request's message id.
 
+use crate::management_tokens::TokenStore;
 use crate::provisioning::{
-    hex, open, parse_wifi_configuration, unhex, ClaimError, FrameError, NetworkState, Ownership, OwnershipManager,
+    hex, open, seal, parse_wifi_configuration, unhex, ClaimError, FrameError, NetworkState, Ownership, OwnershipManager,
     Reassembler, WifiConfiguration,
 };
 use serde_json::{json, Map, Value};
@@ -160,6 +161,15 @@ pub struct RpcService<N: NetworkBackend, S: OwnershipStore> {
     network_error: Option<&'static str>,
     pub model: String,
     pub firmware: String,
+    management: Option<Management>,
+}
+
+/// LAN management enrollment: where the device PKI publishes its endpoint
+/// (crate::pki) and where issued token hashes are stored.
+#[derive(Debug, Clone)]
+pub struct Management {
+    pub pki_dir: std::path::PathBuf,
+    pub tokens: TokenStore,
 }
 
 fn exact(req: &Map<String, Value>, keys: &[&str]) -> Result<(), RpcError> {
@@ -193,7 +203,17 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             network_error: None,
             model: "t3box-pi5".into(),
             firmware: env!("CARGO_PKG_VERSION").into(),
+            management: None,
         }
+    }
+
+    pub fn with_management(mut self, management: Management) -> Self {
+        self.management = Some(management);
+        self
+    }
+
+    fn endpoint(&self) -> Option<crate::pki::Endpoint> {
+        self.management.as_ref().and_then(|m| crate::pki::Endpoint::load(&m.pki_dir))
     }
 
     pub fn ownership(&self) -> &Ownership { self.ownership.state() }
@@ -311,10 +331,24 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
                     None => json!({"state": network_name(self.network_state)}),
                 }, false))
             }
-            // Fail closed until trusted TLS and device identity exist.
+            // Unauthenticated hint only; URLs and the CA pin are delivered
+            // sealed by management.enroll so a BLE man-in-the-middle cannot
+            // substitute them.
             "management.endpoint" => {
                 exact(&req, &["op"])?;
-                Ok((json!({"urls": [], "certificate_sha256": null}), false))
+                Ok((json!({"available": self.endpoint().is_some()}), false))
+            }
+            "management.enroll" => {
+                exact(&req, &["op", "proof"])?;
+                let proof = hex_field::<32>(&req, "proof")?;
+                let nonce = self.ownership.authorize("management.enroll", b"", &proof, now)?;
+                let key = *self.ownership.owner_key().ok_or(RpcError("not_owner"))?;
+                let endpoint = self.endpoint().ok_or(RpcError("management_unavailable"))?;
+                let tokens = &self.management.as_ref().ok_or(RpcError("management_unavailable"))?.tokens;
+                let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let issued = tokens.issue(now_unix).map_err(|_| RpcError("storage_failed"))?;
+                let plain = json!({"token": issued.token, "token_id": issued.id, "urls": endpoint.urls(), "ca_sha256": endpoint.ca_sha256});
+                Ok((json!({"sealed": hex(&seal(&key, &nonce, "management.enroll", plain.to_string().as_bytes()))}), true))
             }
             _ => Err(RpcError("unknown_op")),
         }
@@ -357,6 +391,10 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
     /// Called by the GPIO handler when the reset button is held at boot.
     pub fn physical_reset(&mut self) -> Result<(), RpcError> {
         self.ownership.factory_reset(true)?;
+        // A new owner must not inherit the previous owner's LAN access.
+        if let Some(m) = &self.management {
+            m.tokens.clear().map_err(|_| RpcError("storage_failed"))?;
+        }
         self.store.save(self.ownership.state()).map_err(|_| RpcError("storage_failed"))?;
         self.network_state = NetworkState::Disconnected;
         self.network_error = None;
@@ -457,7 +495,7 @@ mod tests {
         assert_eq!(r, json!({"state":"CONNECTED"}));
         assert_eq!(s.network().joined[0].security, WifiSecurity::WpaPsk("correct horse".into()));
         assert_eq!(p.send(&mut s, json!({"op":"network.status"}), now), json!({"state":"CONNECTED"}));
-        assert_eq!(p.send(&mut s, json!({"op":"management.endpoint"}), now)["urls"], json!([]));
+        assert_eq!(p.send(&mut s, json!({"op":"management.endpoint"}), now), json!({"available": false}));
     }
 
     #[test]
@@ -609,4 +647,52 @@ mod tests {
         assert_eq!(store.load(), Ownership::RecoveryRequired);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn management_enroll_issues_a_sealed_token_and_pin_only_to_the_owner() {
+        let dir = std::env::temp_dir().join(format!("t3box-enroll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tokens = TokenStore { path: dir.join("tokens.json") };
+        let mut s = svc(FakeNetwork::default()).with_management(Management { pki_dir: dir.join("pki"), tokens: tokens.clone() });
+        let mut phone = Phone::new("aa:bb");
+        let now = Instant::now();
+        let key = phone.claim(&mut s, now);
+
+        // No PKI yet: fails closed, nothing issued.
+        assert_eq!(phone.send(&mut s, json!({"op":"management.endpoint"}), now), json!({"available": false}));
+        let n = phone.nonce(&mut s, now);
+        let proof = operation_proof(&key, &n, "management.enroll", b"");
+        assert_eq!(phone.send(&mut s, json!({"op":"management.enroll","proof":hex(&proof)}), now), json!({"error":"management_unavailable"}));
+        assert_eq!(tokens.count(), 0);
+
+        let (_, endpoint) = crate::pki::ensure(&dir.join("pki"), "t3box", &["192.168.0.9".parse().unwrap()], 9443, std::time::SystemTime::now()).unwrap();
+        assert_eq!(phone.send(&mut s, json!({"op":"management.endpoint"}), now), json!({"available": true}));
+
+        // Wrong key: rejected.
+        let n = phone.nonce(&mut s, now);
+        let bad = operation_proof(&[7u8; 32], &n, "management.enroll", b"");
+        assert_eq!(phone.send(&mut s, json!({"op":"management.enroll","proof":hex(&bad)}), now), json!({"error":"bad_proof"}));
+
+        let n = phone.nonce(&mut s, now);
+        let proof = operation_proof(&key, &n, "management.enroll", b"");
+        let req = json!({"op":"management.enroll","proof":hex(&proof)});
+        let r = phone.send_with_id(&mut s, 77, &req, now);
+        let sealed = crate::provisioning::unhex_vec(r["sealed"].as_str().unwrap()).unwrap();
+        let plain: Value = serde_json::from_slice(&open(&key, &n, "management.enroll", &sealed).unwrap()).unwrap();
+        assert_eq!(plain["ca_sha256"], json!(endpoint.ca_sha256));
+        assert_eq!(plain["urls"], json!(endpoint.urls()));
+        let token = plain["token"].as_str().unwrap();
+        assert!(token.starts_with("t3b_"));
+        assert!(!String::from_utf8_lossy(&sealed).contains(&token[4..]));
+        // Identical retry after a lost indication: same token, issued once.
+        assert_eq!(phone.send_with_id(&mut s, 77, &req, now), r);
+        assert_eq!(tokens.count(), 1);
+
+        // A factory reset revokes every LAN token.
+        s.physical_reset().unwrap();
+        assert_eq!(tokens.count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
 }

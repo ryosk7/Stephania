@@ -163,7 +163,7 @@ class EventsEndpointTest < Minitest::Test
     assert_equal 200, last_response.status
     deadline = Time.now + 3
     text = +""
-    until SSE.parse(text).map(&:first).include?("engine.connected") || Time.now > deadline
+    until (%w[engine.connected scene.updated] - SSE.parse(text).map(&:first)).empty? || Time.now > deadline
       text << chunks.pop(timeout: 0.2).to_s
     end
     events = SSE.parse(text)

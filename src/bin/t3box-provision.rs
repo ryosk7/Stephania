@@ -33,7 +33,8 @@ mod unix {
     use t3box::ipc::{self, PeerPolicy};
     use t3box::nm::{NetworkManagerBackend, Nmcli};
     use t3box::provisioning::{hex, import_setup_file, load_or_create_setup_secret, OwnershipManager, SetupImport};
-    use t3box::provisioning_gatt::{FileOwnershipStore, NetworkBackend, OwnershipStore, RpcService, ScanResult};
+    use t3box::management_tokens::TokenStore;
+    use t3box::provisioning_gatt::{FileOwnershipStore, Management, NetworkBackend, OwnershipStore, RpcService, ScanResult};
 
     fn env_path(key: &str, default: &str) -> PathBuf {
         std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| default.into())
@@ -71,6 +72,12 @@ mod unix {
         let secret = load_or_create_setup_secret(&secret_path).map_err(|e| format!("setup secret: {e}"))?;
         let ownership = OwnershipManager::new(secret, state);
         eprintln!("t3box-provision: ownership {}", ownership.reported_state());
+        // LAN enrollment (management.enroll): endpoint from t3box-pki, token
+        // hashes shared with the control plane. Missing PKI fails closed.
+        let management = Management {
+            pki_dir: env_path("T3BOX_PKI_DIR", "/data/t3box/pki"),
+            tokens: TokenStore { path: env_path("T3BOX_MANAGEMENT_TOKENS", "/data/t3box/tokens/tokens.json") },
+        };
         let backend = std::env::var("T3BOX_NETWORK_BACKEND").unwrap_or_else(|_| "nm".into());
         match backend.as_str() {
             // Default: NetworkManager over D-Bus (stores the PSK for reboot
@@ -79,7 +86,7 @@ mod unix {
             "nm" => {
                 let iface = std::env::var("T3BOX_WIFI_INTERFACE").unwrap_or_else(|_| "wlan0".into());
                 let backend = t3box::nm_dbus::NetworkManagerDbus::new(&iface)?;
-                serve(&socket, &policy, RpcService::new(ownership, backend, store))
+                serve(&socket, &policy, RpcService::new(ownership, backend, store).with_management(management))
             }
             "nmcli" => {
                 let secrets_dir = env_path("T3BOX_PROVISION_RUNTIME", "/run/t3box/provision");
@@ -87,10 +94,10 @@ mod unix {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&secrets_dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("runtime dir: {e}"))?;
                 let iface = std::env::var("T3BOX_WIFI_INTERFACE").unwrap_or_else(|_| "wlan0".into());
-                serve(&socket, &policy, RpcService::new(ownership, NetworkManagerBackend { runner: Nmcli, interface: iface, secrets_dir }, store))
+                serve(&socket, &policy, RpcService::new(ownership, NetworkManagerBackend { runner: Nmcli, interface: iface, secrets_dir }, store).with_management(management))
             }
             #[cfg(feature = "ci-virtual")]
-            "virtual" => serve(&socket, &policy, RpcService::new(ownership, VirtualNetwork, store)),
+            "virtual" => serve(&socket, &policy, RpcService::new(ownership, VirtualNetwork, store).with_management(management)),
             other => Err(format!("unsupported T3BOX_NETWORK_BACKEND: {other}")),
         }
     }

@@ -1,7 +1,7 @@
 // TypeScript phone client (protocol v2) against the real Rust t3box-provision
 // binary. Enabled when T3BOX_PROVISION_BIN points at a ci-virtual build.
 import {spawn, type ChildProcess} from 'node:child_process';
-import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {connect, type Socket} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -57,7 +57,8 @@ describe.skipIf(!bin)('interop with Rust t3box-provision (protocol v2)', () => {
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 't3box-ts-'));
     child = spawn(bin!, [], {env: {...process.env, T3BOX_PROVISION_SOCKET: join(dir, 'p.sock'), T3BOX_CREDENTIALS_DIR: dir,
-      T3BOX_SETUP_FILE: join(dir, 'none'), T3BOX_NETWORK_BACKEND: 'virtual'}, stdio: 'ignore'});
+      T3BOX_SETUP_FILE: join(dir, 'none'), T3BOX_NETWORK_BACKEND: 'virtual', T3BOX_PKI_DIR: join(dir, 'pki'),
+      T3BOX_MANAGEMENT_TOKENS: join(dir, 'tokens.json')}, stdio: 'ignore'});
     for (let i = 0; i < 100 && !existsSync(join(dir, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
     sock = await new Promise<Socket>((resolve, reject) => { const s = connect(join(dir, 'p.sock'), () => resolve(s)); s.on('error', reject); });
   });
@@ -99,6 +100,23 @@ describe.skipIf(!bin)('interop with Rust t3box-provision (protocol v2)', () => {
     const other = new ProvisioningSession(new SocketTransport(sock, 'BB:00:00:00:00:02'));
     other.useOwnerKey(new Uint8Array(32));
     await expect(other.scan()).rejects.toMatchObject({code: 'bad_proof'});
+
+    // LAN enrollment: fails closed until the device PKI has published an
+    // endpoint, then delivers a sealed token + CA pin, replayed on loss.
+    expect(await session.managementAvailable()).toBe(false);
+    await expect(session.enrollManagement()).rejects.toMatchObject({code: 'management_unavailable'});
+    mkdirSync(join(dir, 'pki'));
+    const pin = 'ab'.repeat(32);
+    writeFileSync(join(dir, 'pki', 'endpoint.json'), JSON.stringify({host: 't3box.local', port: 9443, ips: ['192.168.1.2'], urls: [], ca_sha256: pin, not_after_unix: 2e9}));
+    expect(await session.managementAvailable()).toBe(true);
+    t.loseResponseOf(1);
+    const e = await session.enrollManagement();
+    expect(e).toMatchObject({urls: ['https://t3box.local:9443/', 'https://192.168.1.2:9443/'], caSha256: pin});
+    expect(e.token).toMatch(/^t3b_[0-9a-f]{64}$/);
+    const stored = JSON.parse(readFileSync(join(dir, 'tokens.json'), 'utf8')).tokens;
+    expect(stored).toHaveLength(1);
+    expect(JSON.stringify(stored)).not.toContain(e.token.slice(4));
+    await expect(other.enrollManagement()).rejects.toMatchObject({code: 'bad_proof'});
   });
 
   it('does not retry non-retriable device errors', async () => {
