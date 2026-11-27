@@ -8,7 +8,7 @@ and creates a **draft** GitHub release with the §7 artifacts:
 | `t3box-os-pi5.zip` | extract onto a FAT32 card; RAM installer (docs/INSTALL.md) |
 | `t3box-os-pi5.img.xz` | raw A/B image for recovery flashing |
 | `t3box-os-pi5.raucb` | signed verity update bundle (docs/UPDATE.md) |
-| `sbom.spdx.json`, `THIRD_PARTY.md`, `LICENSES.tar.gz` | inventory and licence texts incl. Debian/Ubuntu copyright files (docs/LICENSING.md) |
+| `sbom.spdx.json`, `THIRD_PARTY.md`, `LICENSES.tar.gz` | inventory and licence texts incl. Debian / Raspberry Pi copyright files (docs/LICENSING.md) |
 | `SHA256SUMS`, `SHA256SUMS.sig`, `release-signing.pub` | hashes of everything above, Ed25519-signed |
 
 Signing material exists only as repository secrets
@@ -40,7 +40,7 @@ distribution suite) and filesystems are built with fixed timestamps
 (`SOURCE_DATE_EPOCH` = tag commit time): SquashFS `-mkfs-time/-all-time`,
 FAT `--invariant` with a fixed volume id, ext4 with fixed UUID, hash seed
 and `E2FSPROGS_FAKE_TIME`, sorted reproducible cpio and ZIP. Bit-for-bit
-reproducibility of the whole image is **not** verified: the Debian/Ubuntu
+reproducibility of the whole image is **not** verified: the Debian / Raspberry Pi
 packages are fetched at build time (the archive moves) and native gem
 builds are not checked for determinism. Pin a snapshot mirror
 (`T3BOX_IMAGE_MIRROR`) and rebuild twice to evaluate it.

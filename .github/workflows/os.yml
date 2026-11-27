@@ -76,8 +76,8 @@ jobs:
         run: sudo env PATH="$PATH" ci/update-e2e.sh target/debug/t3box-bootctl
 
   # PR image check: the same image recipe for x86_64, booted with KVM
-  # (seconds instead of minutes of arm64 emulation), using the shared
-  # x64-bins build (ci/build-bins.sh).
+  # (seconds instead of minutes of arm64 emulation), with binaries built
+  # for Debian trixie like the image (ci/build-device-bins.sh).
   image-qemu-x64:
     needs: changes
     if: needs.changes.outputs.os == 'true'
@@ -85,7 +85,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/x64-bins
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          profile: x64-device-bins
+          image: device-build
+          command: ci/build-device-bins.sh device-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -96,7 +104,7 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc zstd xz-utils >/dev/null
+          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc zstd xz-utils >/dev/null
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
@@ -110,7 +118,7 @@ jobs:
       - name: Build image (amd64)
         run: |
           sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" \
-            T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" os/image/build.sh "$RUNNER_TEMP/image" ci-bins
+            T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" os/image/build.sh "$RUNNER_TEMP/image" device-bins
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
       - name: Boot with KVM and run the smoke test
         run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" amd64
@@ -154,6 +162,7 @@ jobs:
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-image
+          image: device-build
           command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
       - uses: actions/setup-node@v4
         with:
@@ -165,7 +174,7 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/apt-archives
@@ -201,6 +210,7 @@ jobs:
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-image
+          image: device-build
           command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
       - uses: actions/setup-node@v4
         with:
@@ -210,7 +220,7 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
       - name: Build the Pi image
         run: sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_VARIANT=pi os/image/build.sh "$RUNNER_TEMP/image" target/release
       - name: Check the boot slots

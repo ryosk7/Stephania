@@ -18,9 +18,9 @@ out=$(mkdir -p "$2" && cd "$2" && pwd)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 key=${T3BOX_INSTALL_SIGNING_KEY:?T3BOX_INSTALL_SIGNING_KEY (Ed25519 PEM) is required}
 arch=${T3BOX_IMAGE_ARCH:-arm64}
-suite=${T3BOX_IMAGE_SUITE:-noble}
-if [ "$arch" = arm64 ]; then default_mirror=http://ports.ubuntu.com/ubuntu-ports; else default_mirror=http://archive.ubuntu.com/ubuntu; fi
-mirror=${T3BOX_IMAGE_MIRROR:-$default_mirror}
+# Same distribution as the image (Debian 13 trixie, os/image/build.sh).
+suite=${T3BOX_IMAGE_SUITE:-trixie}
+mirror=${T3BOX_IMAGE_MIRROR:-http://deb.debian.org/debian}
 version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
 id=${T3BOX_INSTALL_ID:-$(openssl rand -hex 8)}
 . "$repo/os/layout.env"
@@ -33,7 +33,7 @@ kver=$(ls "$img/rootfs/lib/modules" | sort -V | tail -1)
 tools="$out/tools-root"
 rm -rf "$tools"
 mmdebstrap --arch="$arch" --variant=essential --include=busybox-static,fdisk,dosfstools,e2fsprogs,openssl,kmod,libzstd1 \
-  "$suite" "$tools" "$mirror" >/dev/null
+  --keyring=/usr/share/keyrings/debian-archive-keyring.gpg "$suite" "$tools" "deb $mirror $suite main" >/dev/null
 ir="$out/initramfs"
 rm -rf "$ir"; mkdir -p "$ir"/{bin,sbin,etc/t3box,proc,sys,dev,run,mnt,lib,lib64,usr}
 cp "$tools/bin/busybox" "$ir/bin/busybox"

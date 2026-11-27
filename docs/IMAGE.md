@@ -5,12 +5,17 @@ of docs/UPDATE.md. CI (`.github/workflows/os.yml`, job `image-qemu`) builds
 it on arm64 and boots it in QEMU.
 
 ## What it contains
-- mmdebstrap root filesystem (Ubuntu 24.04 "noble", arm64): systemd,
-  NetworkManager, BlueZ, Avahi, RAUC (+ D-Bus service), SQLite, Ruby, the
-  native engine's runtime libraries (x264, libavcodec, ALSA).
-- T3Box binaries built in the same distribution as the image (CI build
-  image `ci/images/build.Dockerfile`, `ubuntu:24.04`) so library sonames
-  match: `t3box` (all native features), `t3box-provision`, `t3box-pki`,
+- Raspberry Pi OS Lite reference (§6): an mmdebstrap root filesystem of
+  Debian 13 "trixie" — the base of Raspberry Pi OS — plus, for the Pi
+  variant, the Raspberry Pi archive (`archive.raspberrypi.com`, key pinned
+  by fingerprint) for the kernel and device trees, the way pi-gen builds
+  Raspberry Pi OS Lite. Packages: systemd, NetworkManager, BlueZ, Avahi,
+  RAUC (+ D-Bus service), SQLite, Ruby, the native engine's runtime
+  libraries (x264, libavcodec 61, ALSA). The QEMU variant uses the same
+  Debian packages with Debian's generic kernel.
+- T3Box binaries built in the same distribution as the image (build image
+  `ci/images/device-build.Dockerfile`, `debian:trixie`) so library sonames
+  match; tests on CI runners keep using `ci/images/build.Dockerfile`: `t3box` (all native features), `t3box-provision`, `t3box-pki`,
   `t3box-bootctl`; control plane in `/opt/t3box/control` with production
   gems; Studio in `/opt/t3box/studio`.
 - Gems with native extensions are compiled with temporary build packages
@@ -40,7 +45,7 @@ over the read-only SquashFS before exec'ing systemd. Persistent state is on
 boot creates the loopback bootstrap token on `/data`.
 
 ## QEMU smoke test (`ci/qemu-smoke.sh`)
-Direct kernel boot (generic `linux-image-virtual` kernel, virtio disk,
+Direct kernel boot (Debian's generic `linux-image-<arch>` kernel, virtio disk,
 `t3box.smoke=1`) runs `t3box-qemu-smoke.service`, which checks: overlay
 over read-only SquashFS and that the lower root cannot be written; data
 partition and bind mount; first-boot token; no compiler; engine, control and
@@ -52,11 +57,13 @@ refusing without an issued token. It powers off and the harness requires
 
 ## Not covered (yet)
 - **Booting the Raspberry Pi variant** on hardware (Q-BOOT). The variant
-  itself exists: `T3BOX_IMAGE_VARIANT=pi` uses Ubuntu's `linux-image-raspi`
-  (Pi 5 support), puts `vmlinuz`, `initrd.img`, `bcm2712-rpi-5-b.dtb`,
-  `overlays/`, `config.txt` and a per-slot `cmdline.txt` into each boot
-  slot, and is checked structurally by `ci/pi-image-check.sh` (nightly
-  job `image-pi`, and every release). It deviates from §6's Raspberry Pi
-  OS reference so that the binaries keep the build image's library sonames.
+  itself exists: `T3BOX_IMAGE_VARIANT=pi` installs Raspberry Pi's
+  `linux-image-rpi-2712` (Pi 5 kernel), puts `vmlinuz`, `initrd.img`,
+  `bcm2712-rpi-5-b.dtb`, `overlays/` (from `/usr/lib/linux-image-<ver>`),
+  `config.txt` and a per-slot `cmdline.txt` into each boot slot, and is
+  checked structurally by `ci/pi-image-check.sh` (nightly job `image-pi`,
+  and every release). Raspberry Pi OS Lite's extra tools (`rpi-eeprom`,
+  `raspi-config`) are not included: the appliance updates through RAUC
+  and has no interactive configuration.
 - Anything hardware: VideoCore, RP1, HDMI capture, radios, tryboot
   (docs/QUALIFICATION.md).

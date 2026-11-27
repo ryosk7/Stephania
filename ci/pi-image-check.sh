@@ -31,5 +31,8 @@ dtb = open(f"{d}/bcm2712-rpi-5-b.dtb", "rb").read()
 assert dtb[:4] == b"\xd0\x0d\xfe\xed" and b"raspberrypi,5-model-b" in dtb, "not a Pi 5 device tree"
 print("PASS kernel is an arm64 Image; DTB is the Raspberry Pi 5 Model B tree")
 PY
-grep -q '^linux-image-raspi\|^linux-image-[0-9.-]*raspi' "$d/dpkg.tsv" || fail "raspi kernel package not installed"
-echo "PASS Raspberry Pi kernel package installed"
+# Raspberry Pi OS reference: the Pi 5 kernel from the Raspberry Pi archive
+# (versions carry "+rpt"), on Debian trixie.
+awk -F'\t' '$1 ~ /^linux-image-.*rpi-2712$/ && $2 ~ /rpt/ {found=1} END {exit !found}' "$d/dpkg.tsv" || fail "Raspberry Pi 2712 kernel package not installed"
+grep -q $'^base-files\t13' "$d/dpkg.tsv" || fail "not Debian 13 (trixie) base-files"
+echo "PASS Raspberry Pi 5 kernel from the Raspberry Pi archive on Debian 13"

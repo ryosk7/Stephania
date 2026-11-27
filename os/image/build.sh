@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# Reference image build (docs/IMAGE.md): Debian-family root filesystem with
-# the T3Box services, assembled into the A/B GPT layout of docs/UPDATE.md.
+# Reference image build (docs/IMAGE.md): Raspberry Pi OS Lite reference
+# (docs/MASTER-ARCHITECTURE.md §6) — Debian 13 trixie plus, for the Pi
+# variant, the Raspberry Pi archive (kernel, device trees), the way pi-gen
+# builds Raspberry Pi OS Lite — with the T3Box services, assembled into the
+# A/B GPT layout of docs/UPDATE.md.
 #
 # Usage (root): os/image/build.sh <out-dir> <bin-dir>
 #   <bin-dir> holds t3box, t3box-phone, t3box-provision, t3box-pki, t3box-bootctl built
-#   for the target architecture.
+#   for the target architecture against Debian trixie
+#   (ci/images/device-build.Dockerfile), so library sonames match.
 # Environment:
-#   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (local iteration only)
-#   T3BOX_IMAGE_SUITE  noble (default: same distribution as the CI runner
-#                      that builds the binaries, so library sonames match;
-#                      see docs/IMAGE.md for the Raspberry Pi OS variant)
-#   T3BOX_IMAGE_MIRROR ports.ubuntu.com (arm64) / archive.ubuntu.com (amd64)
-#   T3BOX_IMAGE_COMPONENTS main,universe
-#   T3BOX_IMAGE_KERNEL linux-image-virtual (generic kernel, QEMU variant)
+#   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (QEMU smoke tests)
+#   T3BOX_IMAGE_SUITE  trixie (default)
+#   T3BOX_IMAGE_MIRROR http://deb.debian.org/debian
+#   T3BOX_IMAGE_RPI_MIRROR http://archive.raspberrypi.com/debian (pi variant)
+#   T3BOX_IMAGE_RPI_KEYRING Raspberry Pi archive keyring (binary); default:
+#                      downloaded and checked against RPI_KEY_FINGERPRINT
+#   T3BOX_IMAGE_COMPONENTS main
+#   T3BOX_IMAGE_KERNEL linux-image-<arch> (QEMU) | linux-image-rpi-2712 (pi)
 #   T3BOX_IMAGE_EXTRA  runtime libraries of the native engine
 #   T3BOX_IMAGE_VERSION version string written to /etc/t3box-version
-#   T3BOX_IMAGE_VARIANT qemu (default: generic kernel, direct kernel boot) |
-#                      pi (Raspberry Pi 5: linux-image-raspi, DTB, overlays,
+#   T3BOX_IMAGE_VARIANT qemu (default: Debian kernel, direct kernel boot) |
+#                      pi (Raspberry Pi 5: Raspberry Pi kernel, DTB, overlays,
 #                      config.txt for the Pi firmware; docs/IMAGE.md)
 #   T3BOX_RAUC_KEYRING  release CA certificate (PEM) RAUC trusts; without it
 #                      the image refuses every bundle
@@ -29,20 +34,19 @@ out=$(mkdir -p "$1" && cd "$1" && pwd)
 bins=$(cd "$2" && pwd)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 arch=${T3BOX_IMAGE_ARCH:-arm64}
-suite=${T3BOX_IMAGE_SUITE:-noble}
-if [ "$arch" = arm64 ]; then default_mirror=http://ports.ubuntu.com/ubuntu-ports; else default_mirror=http://archive.ubuntu.com/ubuntu; fi
-mirror=${T3BOX_IMAGE_MIRROR:-$default_mirror}
+suite=${T3BOX_IMAGE_SUITE:-trixie}
+mirror=${T3BOX_IMAGE_MIRROR:-http://deb.debian.org/debian}
 variant=${T3BOX_IMAGE_VARIANT:-qemu}
 case $variant in
-  qemu) default_kernel=linux-image-virtual ;;
-  pi) [ "$arch" = arm64 ] || { echo "the pi variant is arm64 only" >&2; exit 1; }; default_kernel=linux-image-raspi ;;
+  qemu) default_kernel=linux-image-$arch ;;
+  pi) [ "$arch" = arm64 ] || { echo "the pi variant is arm64 only" >&2; exit 1; }; default_kernel=linux-image-rpi-2712 ;;
   *) echo "unknown T3BOX_IMAGE_VARIANT $variant" >&2; exit 1 ;;
 esac
 kernel=${T3BOX_IMAGE_KERNEL:-$default_kernel}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$(dirname "$0")" log -1 --format=%ct 2>/dev/null || date +%s)}
-extra=${T3BOX_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec60,libavutil58}
+extra=${T3BOX_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec61,libavutil59}
 version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
-components=${T3BOX_IMAGE_COMPONENTS:-main,universe}
+components=${T3BOX_IMAGE_COMPONENTS:-main}
 root="$out/rootfs"
 . "$repo/os/layout.env"
 
@@ -66,9 +70,25 @@ if [ -n "${T3BOX_IMAGE_APT_CACHE:-}" ]; then
     --setup-hook="sync-in '$T3BOX_IMAGE_APT_CACHE' /var/cache/apt/archives/"
     --customize-hook="sync-out /var/cache/apt/archives '$T3BOX_IMAGE_APT_CACHE'")
 fi
-mmdebstrap --arch="$arch" --variant=apt --components="$components" --include="$runtime,$build" "${cache_args[@]}" \
+# Package sources: Debian, plus the Raspberry Pi archive for the Pi
+# variant. The Raspberry Pi key is pinned by fingerprint.
+RPI_KEY_FINGERPRINT=CF8A1AF502A2AA2D763BAE7E82B129927FA3303E
+sources=("deb $mirror $suite $components")
+keyrings=(--keyring=/usr/share/keyrings/debian-archive-keyring.gpg)
+if [ "$variant" = pi ]; then
+  rpi_mirror=${T3BOX_IMAGE_RPI_MIRROR:-http://archive.raspberrypi.com/debian}
+  rpi_keyring=${T3BOX_IMAGE_RPI_KEYRING:-$out/raspberrypi-archive.gpg}
+  if [ -z "${T3BOX_IMAGE_RPI_KEYRING:-}" ]; then
+    curl -fsSL --retry 3 https://archive.raspberrypi.com/debian/raspberrypi.gpg.key | gpg --dearmor >"$rpi_keyring"
+  fi
+  got=$(gpg --show-keys --with-colons "$rpi_keyring" | awk -F: '$1=="fpr"{print $10; exit}')
+  [ "$got" = "$RPI_KEY_FINGERPRINT" ] || { echo "Raspberry Pi archive key fingerprint $got, expected $RPI_KEY_FINGERPRINT" >&2; exit 1; }
+  sources+=("deb $rpi_mirror $suite main")
+  keyrings+=(--keyring="$rpi_keyring")
+fi
+mmdebstrap --arch="$arch" --variant=apt --include="$runtime,$build" "${keyrings[@]}" "${cache_args[@]}" \
   --customize-hook="$repo/os/image/customize.sh \"\$1\" '$repo' '$bins' '$version' '$build' '$runtime'" \
-  "$suite" "$root" "$mirror"
+  "$suite" "$root" "${sources[@]}"
 
 if [ -n "${T3BOX_RAUC_KEYRING:-}" ]; then
   install -m 0644 "$T3BOX_RAUC_KEYRING" "$root/etc/rauc/keyring.pem"
@@ -83,7 +103,9 @@ kver=$(ls "$root/lib/modules" | sort -V | tail -1)
 cp -L "$root/boot/vmlinuz-$kver" "$out/vmlinuz"
 cp -L "$root/boot/initrd.img-$kver" "$out/initrd.img"
 if [ "$variant" = pi ]; then
-  dt="$root/lib/firmware/$kver/device-tree"
+  # Raspberry Pi kernel packages ship device trees and overlays under
+  # /usr/lib/linux-image-<version>.
+  dt="$root/usr/lib/linux-image-$kver"
   [ -f "$dt/broadcom/bcm2712-rpi-5-b.dtb" ] || { echo "no Pi 5 device tree in $dt" >&2; exit 1; }
   cp "$dt/broadcom/bcm2712-rpi-5-b.dtb" "$out/"
   rm -rf "$out/overlays"; cp -r "$dt/overlays" "$out/overlays"

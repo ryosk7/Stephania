@@ -53,6 +53,7 @@ jobs:
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-image
+          image: device-build
           command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
       - uses: actions/setup-node@v4
         with:
@@ -62,7 +63,7 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
+          sudo apt-get install -y -qq debian-archive-keyring gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
       - name: Pi image
         run: |
           sudo env T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_IMAGE_VARIANT=pi \
