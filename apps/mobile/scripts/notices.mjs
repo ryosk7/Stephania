@@ -1,4 +1,4 @@
-// Third-party notices for T3Box Connect: every package that ships in the
+// Third-party notices for Stephania Connect: every package that ships in the
 // app (production dependencies, transitively) with its licence and the
 // licence text found in the package, deduplicated. Shown on the Licences
 // screen; the bundled fonts' OFL-1.1 text is among them (docs/LICENSING.md).
@@ -27,7 +27,7 @@ const seen = new Map();
 const texts = {};
 const packages = [];
 for (const p of [...seen.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))) {
-  if (p.name.startsWith('@t3box/')) continue; // our own code (MIT, LICENSE)
+  if (p.name.startsWith('@stephania/')) continue; // our own code (MIT, LICENSE)
   const pkg = JSON.parse(readFileSync(join(p.path, 'package.json'), 'utf8'));
   const license = typeof pkg.license === 'string' ? pkg.license : pkg.license?.type ?? (pkg.licenses ?? []).map(l => l.type ?? l).join(' OR ') ?? '';
   const files = existsSync(p.path) ? readdirSync(p.path).filter(f => LICENCE_FILE.test(f)).sort() : [];

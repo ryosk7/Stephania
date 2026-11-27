@@ -1,0 +1,28 @@
+[Unit]
+Description=Stephania device PKI (LAN TLS certificate)
+# Re-run by stephania-pki.timer; restarts the control plane only when a new
+# certificate was issued (exit 10).
+Before=stephania-control.service
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
+ExecStart=/bin/sh -c '/usr/local/bin/stephania-pki ensure --key-group stephania-control; rc=$?; if [ "$rc" = 10 ]; then systemctl --no-block try-restart stephania-control.service; exit 0; fi; exit "$rc"'
+StateDirectory=stephania/pki
+StateDirectoryMode=0755
+UMask=0022
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# getifaddrs needs netlink; no sockets are opened otherwise.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_CHOWN

@@ -83,7 +83,7 @@ class AudioApiTest < Minitest::Test
   end
 
   def test_saved_while_engine_down_and_reapplied_on_reconnect
-    Control.engine = EngineClient.new(socket_path: File.join(Dir.tmpdir, "t3box-none-#{Process.pid}.sock"))
+    Control.engine = EngineClient.new(socket_path: File.join(Dir.tmpdir, "stephania-none-#{Process.pid}.sock"))
     put "/api/v1/audio", JSON.generate(inputs: [{id: "hdmi", gain_db: -3}])
     assert_equal 422, last_response.status, "without the engine the HDMI device must be given"
     put "/api/v1/audio", JSON.generate(inputs: [{id: "hdmi", device: "plughw:1,0", gain_db: -3}])

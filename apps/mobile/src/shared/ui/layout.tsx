@@ -1,5 +1,5 @@
 // Screen, TopBar, Card, List, SectionHeading, StatusView, Sheet: structural
-// parts composed by every screen. Drawn by T3Box, not by the platform: no
+// parts composed by every screen. Drawn by Stephania, not by the platform: no
 // native headers, no system alerts, so iOS and Android look the same.
 import {Children, createContext, isValidElement, use, type ReactNode} from 'react';
 import {KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, View} from 'react-native';

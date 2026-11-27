@@ -30,7 +30,7 @@ runs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          ~/.cache/t3box-sccache
+          ~/.cache/stephania-sccache
           target
         key: ${{ steps.key.outputs.prefix }}-${{ github.sha }}
         restore-keys: |
@@ -45,12 +45,12 @@ runs:
         ref="$(bash ci/images/pull.sh "$BUILD_IMAGE")"
         echo "Build image preparation: $((SECONDS-start))s (cache: ${{ steps.restore.outputs.cache-matched-key || 'cold' }})" >> "$GITHUB_STEP_SUMMARY"
         start=$SECONDS
-        mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.cache/t3box-sccache" target
+        mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.cache/stephania-sccache" target
         docker run --rm --user "$(id -u):$(id -g)" \
           -e HOME=/tmp -e CARGO_HOME=/cargo -e RUSTC_WRAPPER=sccache -e SCCACHE_DIR=/sccache -e SCCACHE_CACHE_SIZE=1G \
           -e CARGO_INCREMENTAL=0 \
           -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" \
-          -v "$HOME/.cache/t3box-sccache:/sccache" \
+          -v "$HOME/.cache/stephania-sccache:/sccache" \
           -v "$PWD:/work" -w /work "$ref" bash -Eeuo pipefail -c 'trap "sccache --show-stats" EXIT; eval "$1"' _ "$BUILD_COMMAND"
         echo "Build/test command: $((SECONDS-start))s" >> "$GITHUB_STEP_SUMMARY"
     # Only main writes caches: PR builds never evict main's warm state.
@@ -60,6 +60,6 @@ runs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          ~/.cache/t3box-sccache
+          ~/.cache/stephania-sccache
           target
         key: ${{ steps.key.outputs.prefix }}-${{ github.sha }}

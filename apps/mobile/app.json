@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "T3Box Connect",
-    "slug": "t3box-connect",
+    "name": "Stephania Connect",
+    "slug": "stephania-connect",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "dev.ryosk7.t3box.connect",
+      "bundleIdentifier": "dev.ryosk7.stephania.connect",
       "infoPlist": {
-        "NSLocalNetworkUsageDescription": "Uses the local network to control a T3Box on the same Wi-Fi.",
+        "NSLocalNetworkUsageDescription": "Uses the local network to control a Stephania device on the same Wi-Fi.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }
@@ -24,7 +24,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "dev.ryosk7.t3box.connect"
+      "package": "dev.ryosk7.stephania.connect"
     },
     "plugins": [
       "expo-router",
@@ -32,7 +32,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Uses the camera to read the T3Box setup QR code and to send your camera picture to your T3Box.",
+          "cameraPermission": "Uses the camera to read the Stephania setup QR code and to send your camera picture to your Stephania device.",
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
@@ -43,10 +43,10 @@
         {
           "isBackgroundEnabled": false,
           "neverForLocation": true,
-          "bluetoothAlwaysPermission": "Uses Bluetooth to find and set up a nearby T3Box."
+          "bluetoothAlwaysPermission": "Uses Bluetooth to find and set up a nearby Stephania."
         }
       ]
     ],
-    "scheme": "t3box-connect"
+    "scheme": "stephania-connect"
   }
 }

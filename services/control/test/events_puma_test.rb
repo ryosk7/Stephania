@@ -3,7 +3,7 @@
 # Server-Sent Events against a real Puma process (config/puma.rb), which is
 # what proves chunks are flushed as they are produced, that disconnects free
 # the stream slot, and that 8 open streams do not starve ordinary requests.
-# Requires the bundled Puma; CI sets T3BOX_REQUIRE_PUMA=1 so it cannot skip.
+# Requires the bundled Puma; CI sets STEPHANIA_REQUIRE_PUMA=1 so it cannot skip.
 require "minitest/autorun"
 require "net/http"
 require "json"
@@ -19,14 +19,14 @@ class EventsPumaTest < Minitest::Test
     begin
       Gem::Specification.find_by_name("puma")
     rescue Gem::MissingSpecError
-      flunk "puma is required" if ENV["T3BOX_REQUIRE_PUMA"] == "1"
+      flunk "puma is required" if ENV["STEPHANIA_REQUIRE_PUMA"] == "1"
       skip "puma not installed"
     end
-    @dir = Dir.mktmpdir("t3box-events-puma")
+    @dir = Dir.mktmpdir("stephania-events-puma")
     @port = TCPServer.open("127.0.0.1", 0) { |s| s.addr[1] }
-    env = {"T3BOX_CONTROL_TOKEN" => TOKEN, "T3BOX_CONTROL_PORT" => @port.to_s,
-           "T3BOX_ENGINE_SOCKET" => File.join(@dir, "none.sock"), "T3BOX_CONTROL_DB" => File.join(@dir, "c.db"),
-           "T3BOX_CONTROL_POLL_SECONDS" => "0.2", "RACK_ENV" => "production"}
+    env = {"STEPHANIA_CONTROL_TOKEN" => TOKEN, "STEPHANIA_CONTROL_PORT" => @port.to_s,
+           "STEPHANIA_ENGINE_SOCKET" => File.join(@dir, "none.sock"), "STEPHANIA_CONTROL_DB" => File.join(@dir, "c.db"),
+           "STEPHANIA_CONTROL_POLL_SECONDS" => "0.2", "RACK_ENV" => "production"}
     @log = File.join(@dir, "puma.log")
     @pid = Process.spawn(env, "bundle", "exec", "puma", "-C", "config/puma.rb", "config.ru", chdir: ROOT, out: @log, err: @log)
     deadline = Time.now + 20

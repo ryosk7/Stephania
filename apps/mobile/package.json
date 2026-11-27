@@ -1,5 +1,5 @@
 {
-  "name": "t3box-connect",
+  "name": "stephania-connect",
   "version": "1.0.0",
   "main": "expo-router/entry",
   "dependencies": {
@@ -7,7 +7,7 @@
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
     "@gorhom/bottom-sheet": "^5.2.14",
     "@react-native-async-storage/async-storage": "^2.2.0",
-    "@t3box/provisioning-client": "file:../../packages/provisioning-client",
+    "@stephania/provisioning-client": "file:../../packages/provisioning-client",
     "expo": "~58.1.0",
     "expo-asset": "~58.0.21",
     "expo-camera": "~58.0.14",

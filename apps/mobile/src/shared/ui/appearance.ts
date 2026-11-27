@@ -4,7 +4,7 @@ export const appearances = ['system', 'light', 'dark'] as const;
 export type Appearance = (typeof appearances)[number];
 
 export const DEFAULT_APPEARANCE: Appearance = 'system';
-export const APPEARANCE_KEY = 't3box.appearance';
+export const APPEARANCE_KEY = 'stephania.appearance';
 
 /** A stored value, or the default when it is missing or unknown (e.g. written by a newer app). */
 export function parseAppearance(stored: string | null | undefined): Appearance {

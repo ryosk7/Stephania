@@ -64,26 +64,26 @@ def rpc(body, mid=None):
 
 secret = bytes.fromhex(uri.strip().split(":")[2])
 nonce = bytes.fromhex(rpc({"op": "pairing.challenge"})["nonce"])
-check(rpc({"op": "pairing.claim", "owner_id": "lan-ci", "proof": mac(secret, b"t3box-claim-v1", nonce, b"lan-ci").hex()}) == {"state": "CLAIMED"}, "claimed")
-key = mac(secret, b"t3box-owner-key-v1", nonce, b"lan-ci")
+check(rpc({"op": "pairing.claim", "owner_id": "lan-ci", "proof": mac(secret, b"stephania-claim-v1", nonce, b"lan-ci").hex()}) == {"state": "CLAIMED"}, "claimed")
+key = mac(secret, b"stephania-owner-key-v1", nonce, b"lan-ci")
 check(rpc({"op": "management.endpoint"}) == {"available": True}, "endpoint advertised as available")
 
 n = bytes.fromhex(rpc({"op": "operation.challenge"})["nonce"])
-req = {"op": "management.enroll", "proof": mac(key, b"t3box-operation-v1", n, b"management.enroll", b"").hex()}
+req = {"op": "management.enroll", "proof": mac(key, b"stephania-operation-v1", n, b"management.enroll", b"").hex()}
 r = rpc(req, mid=200)
 again = rpc(req, mid=200)
 check(again == r, "identical retry replays the same sealed enrollment")
-plain = json.loads(ChaCha20Poly1305(mac(key, b"t3box-seal-v1")).decrypt(n[:12], bytes.fromhex(r["sealed"]), b"management.enroll"))
+plain = json.loads(ChaCha20Poly1305(mac(key, b"stephania-seal-v1")).decrypt(n[:12], bytes.fromhex(r["sealed"]), b"management.enroll"))
 token, pin, urls = plain["token"], plain["ca_sha256"], plain["urls"]
 check(token.startswith("t3b_") and len(token) == 68, "token delivered sealed")
-check(urls[0] == f"https://t3box-ci.local:{port}/", f"urls {urls}")
+check(urls[0] == f"https://stephania-ci.local:{port}/", f"urls {urls}")
 
 # Phone-side trust: accept the server only if its chain ends in the pinned CA.
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 raw = socket.create_connection(("127.0.0.1", port), timeout=10)
-tls = ctx.wrap_socket(raw, server_hostname="t3box-ci.local")
+tls = ctx.wrap_socket(raw, server_hostname="stephania-ci.local")
 chain = tls.get_unverified_chain() if hasattr(tls, "get_unverified_chain") else None
 tls.close()
 if chain is not None:

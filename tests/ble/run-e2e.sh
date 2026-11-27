@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Real BLE end-to-end (protocol v2) on a Linux host with two virtual LE
 # controllers:
-#   hci0: t3box-ble (GATT server, supervised like systemd Restart=always)
-#         -> t3box-provision (device core)
+#   hci0: stephania-ble (GATT server, supervised like systemd Restart=always)
+#         -> stephania-provision (device core)
 #   hci1: tests/ble/client.py (independent Python client via BlueZ/bleak)
 # Phases: claim/scan/join, then bluetoothd is restarted and the client must
 # find the same, still-owned device again (self-healing adapter).
 # Requires root (vhci, bluetoothd, D-Bus). Usage:
 #   tests/ble/run-e2e.sh <target-dir> [--min-mtu]
 set -Eeuo pipefail
-target=${1:?target dir with t3box-provision and t3box-ble}
+target=${1:?target dir with stephania-provision and stephania-ble}
 mode=${2:-}
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
@@ -20,7 +20,7 @@ pids=()
 cleanup() {
   touch "$work/stop"
   for p in "${pids[@]}"; do sudo kill "$p" 2>/dev/null || true; done
-  sudo pkill -x t3box-ble 2>/dev/null || true
+  sudo pkill -x stephania-ble 2>/dev/null || true
   sudo pkill -x bluetoothd 2>/dev/null || true
   sudo pkill -x btvirt 2>/dev/null || true
   sudo systemctl unmask --runtime bluetooth.service 2>/dev/null || true
@@ -45,10 +45,10 @@ start_bluetoothd() {
 # then owns the name and our bluetoothd fails with "Name already in use".
 sudo systemctl mask --runtime bluetooth.service 2>/dev/null || true
 sudo systemctl stop bluetooth 2>/dev/null || true
-sudo pkill -x t3box-ble 2>/dev/null || true
+sudo pkill -x stephania-ble 2>/dev/null || true
 sudo pkill -x bluetoothd 2>/dev/null || true
 sudo pkill -x btvirt 2>/dev/null || true
-for _ in $(seq 50); do pgrep -x 'bluetoothd|btvirt|t3box-ble' >/dev/null || break; sleep 0.1; done
+for _ in $(seq 50); do pgrep -x 'bluetoothd|btvirt|stephania-ble' >/dev/null || break; sleep 0.1; done
 sudo pkill -9 -x btvirt 2>/dev/null || true
 # Controllers of a previous run must be gone, or the new ones get other
 # indexes and hci0/hci1 would point at stale devices.
@@ -66,21 +66,21 @@ start_bluetoothd
 
 # Browser-equivalent setup secret, delivered through the boot-partition file.
 secret=$(python3 -c 'import secrets;print(secrets.token_hex(16))')
-uri="t3box-setup:v1:${secret}:$(python3 -c "import hashlib,sys;print(hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8])" "$secret")"
-printf '%s\n' "$uri" >"$work/t3box-setup.txt"
+uri="stephania-setup:v1:${secret}:$(python3 -c "import hashlib,sys;print(hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8])" "$secret")"
+printf '%s\n' "$uri" >"$work/stephania-setup.txt"
 
-T3BOX_PROVISION_SOCKET="$work/provisioning.sock" T3BOX_CREDENTIALS_DIR="$work" \
-  T3BOX_SETUP_FILE="$work/t3box-setup.txt" T3BOX_NETWORK_BACKEND=virtual \
-  "$target/t3box-provision" >"$logs/provision.log" 2>&1 & pids+=($!)
+STEPHANIA_PROVISION_SOCKET="$work/provisioning.sock" STEPHANIA_CREDENTIALS_DIR="$work" \
+  STEPHANIA_SETUP_FILE="$work/stephania-setup.txt" STEPHANIA_NETWORK_BACKEND=virtual \
+  "$target/stephania-provision" >"$logs/provision.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do [ -S "$work/provisioning.sock" ] && break; sleep 0.1; done
-test ! -e "$work/t3box-setup.txt" || { echo "setup file was not consumed"; exit 1; }
+test ! -e "$work/stephania-setup.txt" || { echo "setup file was not consumed"; exit 1; }
 
 # Supervisor equivalent to systemd Restart=always RestartSec=1.
 (
   while [ ! -e "$work/stop" ]; do
-    sudo env T3BOX_PROVISION_SOCKET="$work/provisioning.sock" T3BOX_BLE_ADAPTER=hci0 \
-      "$target/t3box-ble" >>"$logs/ble.log" 2>&1 || true
-    echo "t3box-ble exited; restarting" >>"$logs/ble.log"
+    sudo env STEPHANIA_PROVISION_SOCKET="$work/provisioning.sock" STEPHANIA_BLE_ADAPTER=hci0 \
+      "$target/stephania-ble" >>"$logs/ble.log" 2>&1 || true
+    echo "stephania-ble exited; restarting" >>"$logs/ble.log"
     sleep 1
   done
 ) & pids+=($!)
@@ -91,7 +91,7 @@ wait_adverts() {
 wait_adverts 1
 
 dump() {
-  echo "---- t3box-ble"; cat "$logs/ble.log"
+  echo "---- stephania-ble"; cat "$logs/ble.log"
   echo "---- provision"; cat "$logs/provision.log"
   echo "---- bluetoothd (tail)"; sudo tail -60 "$logs/bluetoothd.log"
   echo "---- ATT (btmon)"; sudo btmon -r "$logs/btmon.snoop" 2>/dev/null | grep -E "ATT: |Data(\[|:)" | tail -80
@@ -112,8 +112,8 @@ sudo pkill -x bluetoothd
 for _ in $(seq 50); do pgrep -x bluetoothd >/dev/null || break; sleep 0.1; done
 pgrep -x bluetoothd >/dev/null && { echo "bluetoothd did not stop"; exit 1; }
 start_bluetoothd
-wait_adverts 2 || { echo "t3box-ble did not re-register after bluetoothd restart"; dump; exit 1; }
-grep -q "exited; restarting" "$logs/ble.log" && echo "PASS t3box-ble exited and was restarted by its supervisor"
+wait_adverts 2 || { echo "stephania-ble did not re-register after bluetoothd restart"; dump; exit 1; }
+grep -q "exited; restarting" "$logs/ble.log" && echo "PASS stephania-ble exited and was restarted by its supervisor"
 
 run_client resume
 echo "BLE end-to-end ${mode:-default}: passed"

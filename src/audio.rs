@@ -95,18 +95,18 @@ pub struct AudioControl {
 
 static CONTROL: OnceLock<AudioControl> = OnceLock::new();
 
-/// Initial configuration: HDMI audio from `T3BOX_AUDIO` (the existing
-/// capture setting), microphone from `T3BOX_AUDIO_MIC` when set. The control
+/// Initial configuration: HDMI audio from `STEPHANIA_AUDIO` (the existing
+/// capture setting), microphone from `STEPHANIA_AUDIO_MIC` when set. The control
 /// plane then applies the stored configuration over IPC.
 fn initial() -> [InputConfig; 2] {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    let mic = env("T3BOX_AUDIO_MIC");
+    let mic = env("STEPHANIA_AUDIO_MIC");
     [
-        InputConfig { enabled: true, device: env("T3BOX_AUDIO").unwrap_or_else(|| "plughw:1,0".into()), channels: 2, gain_db: 0.0, muted: false },
+        InputConfig { enabled: true, device: env("STEPHANIA_AUDIO").unwrap_or_else(|| "plughw:1,0".into()), channels: 2, gain_db: 0.0, muted: false },
         InputConfig {
             enabled: mic.is_some(),
             device: mic.unwrap_or_default(),
-            channels: env("T3BOX_AUDIO_MIC_CHANNELS").and_then(|c| c.parse().ok()).filter(|c| *c == 1 || *c == 2).unwrap_or(1),
+            channels: env("STEPHANIA_AUDIO_MIC_CHANNELS").and_then(|c| c.parse().ok()).filter(|c| *c == 1 || *c == 2).unwrap_or(1),
             gain_db: 0.0,
             muted: false,
         },

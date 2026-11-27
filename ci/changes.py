@@ -35,7 +35,7 @@ RULES = [
     ("src/av_clock.rs", ["rust", "media"]), ("src/pcm_framer.rs", ["rust", "media"]), ("src/aac_adts.rs", ["rust", "media"]),
     ("src/audio_mixer.rs", ["rust", "media"]), ("src/audio.rs", ["rust", "media", "control"]), ("ci/audio*", ["media"]), ("src/rate_control.rs", ["rust", "media"]), ("src/reconnect.rs", ["rust", "media"]),
     ("src/transport_deadline.rs", ["rust", "media"]), ("src/tcp_telemetry.rs", ["rust", "media"]), ("src/stream.rs", ["rust", "media"]),
-    ("src/accelerated_ci.rs", ["rust", "media"]), ("src/bin/t3box-native-*", ["rust", "media"]), ("src/bin/t3box-ci-encode.rs", ["rust", "media"]),
+    ("src/accelerated_ci.rs", ["rust", "media"]), ("src/bin/stephania-native-*", ["rust", "media"]), ("src/bin/stephania-ci-encode.rs", ["rust", "media"]),
     ("ci/composition*", ["media"]), ("ci/rtmps-test-server.py", ["media"]), ("ci/report-benchmark.py", ["media"]),
     ("ci/*quality*", ["media"]), ("ci/*transport*", ["media"]), ("ci/test-ci-contracts.py", ["media"]),
     ("tests/virtual-lab/*", ["media"]), ("tests/*.sh", ["media"]), ("tests/fixtures/*", ["media"]),
@@ -46,14 +46,14 @@ RULES = [
     ("src/h264_decode.rs", ["rust", "phone"]), ("src/phone_ingest.rs", ["rust", "phone"]),
     ("services/phone/*", ["rust", "phone"]), ("tests/phone/*", ["phone"]),
     # Provisioning, BLE, Wi-Fi, LAN trust
-    ("src/provisioning*", ["rust", "provisioning", "mobile", "ble", "wifi", "lan"]), ("src/bin/t3box-provision.rs", ["rust", "provisioning", "mobile", "ble", "wifi", "lan"]),
+    ("src/provisioning*", ["rust", "provisioning", "mobile", "ble", "wifi", "lan"]), ("src/bin/stephania-provision.rs", ["rust", "provisioning", "mobile", "ble", "wifi", "lan"]),
     ("src/nm*.rs", ["rust", "wifi"]), ("tests/wifi/*", ["wifi"]),
     ("services/ble/*", ["ble"]), ("tests/ble/*", ["ble"]), ("os/bluez/*", ["ble", "os"]),
     ("packages/*", ["provisioning", "mobile"]), ("apps/mobile/*", ["mobile"]),
     # Native code and anything that changes the native projects (prebuild).
     ("apps/mobile/modules/*", ["mobile", "mobile_native"]), ("apps/mobile/app.json", ["mobile", "mobile_native"]),
     ("apps/mobile/package*.json", ["mobile", "mobile_native"]), ("ci/mobile-*", ["mobile", "mobile_native"]), ("tools/setup-page/*", ["provisioning"]),
-    ("src/pki.rs", ["rust", "lan", "os"]), ("src/management_tokens.rs", ["rust", "lan", "provisioning"]), ("src/bin/t3box-pki.rs", ["rust", "lan", "os"]),
+    ("src/pki.rs", ["rust", "lan", "os"]), ("src/management_tokens.rs", ["rust", "lan", "provisioning"]), ("src/bin/stephania-pki.rs", ["rust", "lan", "os"]),
     ("ci/lan*", ["lan"]), ("ci/control*load*", ["control"]),
     # Control plane and Studio
     ("services/control/*", ["control", "studio", "lan", "phone", "os"]), ("apps/studio/*", ["studio", "os"]),
@@ -61,7 +61,7 @@ RULES = [
     ("contracts/scene.schema.json", ["rust", "control", "studio"]), ("contracts/ble-protocol.md", ["provisioning"]),
     ("contracts/fixtures/*", ["rust", "control", "studio", "provisioning"]), ("contracts/*", ["control", "studio", "provisioning"]),
     # OS, updates, image
-    ("os/*", ["os"]), ("systemd/*", ["control", "os"]), ("src/bootctl.rs", ["rust", "os"]), ("src/bin/t3box-bootctl.rs", ["rust", "os"]),
+    ("os/*", ["os"]), ("systemd/*", ["control", "os"]), ("src/bootctl.rs", ["rust", "os"]), ("src/bin/stephania-bootctl.rs", ["rust", "os"]),
     ("ci/update-e2e.sh", ["os"]), ("ci/installer-e2e.sh", ["os"]), ("ci/fake_engine.py", ["os"]), ("ci/qemu-smoke.sh", ["os"]), ("ci/build-device-bins.sh", ["os"]),
     ("ci/check-qualification.py", ["rust"]), ("tools/qualification/*", ["rust"]),
     ("src/*", ["rust"]), ("src/bin/*", ["rust"]),
@@ -95,7 +95,7 @@ def self_test():
     assert r["rust"] and r["media"] and not r["control"]
     r = select(["apps/mobile/src/app/wifi.tsx"], "pull_request")
     assert r["mobile"] and not r["rust"] and not r["ble"] and not r["mobile_native"]
-    r = select(["apps/mobile/modules/t3box-pinned-fetch/ios/T3BoxPinnedFetchModule.swift"], "pull_request")
+    r = select(["apps/mobile/modules/stephania-pinned-fetch/ios/StephaniaPinnedFetchModule.swift"], "pull_request")
     assert r["mobile"] and r["mobile_native"] and not r["rust"]
     r = select(["src/provisioning_gatt.rs"], "pull_request")
     assert r["ble"] and r["wifi"] and r["mobile"] and not r["media"]

@@ -103,7 +103,7 @@ to the same native publishing/retry loop. It is a userspace substitute,
 not a V4L2 or ALSA kernel device. A local Python TLS/RTMP peer records FLV,
 forces a connection close, then checks new sequence headers, initial IDR,
 monotonic per-track timestamps and decoded recovery. The test uses a
-temporary private CA trusted only for t3box-ci.test in ci-virtual builds;
+temporary private CA trusted only for stephania-ci.test in ci-virtual builds;
 production certificate validation is not disabled. Linux netem on the
 ephemeral runner adds delay, jitter, loss and rate limiting. The test uses
 640x360 for bounded CI runtime; the separate offline benchmark uses 1080p.
@@ -183,7 +183,7 @@ and four preview samples. The existing 60s suite timeout remains.
 
 Quality jobs require exact expected profile names and per-profile completion
 markers, collect partial failures, and emit evidence even when a profile
-fails. VMAF is opt-in (T3BOX_BENCH_VMAF=1) to protect the fast gate budget.
+fails. VMAF is opt-in (STEPHANIA_BENCH_VMAF=1) to protect the fast gate budget.
 Transport scenarios write to separate artifact directories, preserve partial
 receives, require the dynamic impairment worker to finish successfully and
 check competing load remains active. The planner runs inexpensive negative

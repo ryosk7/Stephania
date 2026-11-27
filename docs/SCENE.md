@@ -49,7 +49,7 @@ exactly; there is no floating point anywhere in composition.
 
 PNG uploads (`POST /api/v1/assets`, raw body, `image/png`, ≤ 8 MiB,
 1–4096 px per side, ≤ 256 assets) are stored content-addressed as
-`T3BOX_ASSETS_DIR/<id>.png`, `id` = first 16 hex digits of the SHA-256.
+`STEPHANIA_ASSETS_DIR/<id>.png`, `id` = first 16 hex digits of the SHA-256.
 The control plane rejects scenes that reference unknown assets and refuses
 to delete an asset a scene uses. The engine loads assets only while
 preparing a Program on the IPC thread, re-checks the hash, decodes to RGBA

@@ -1,0 +1,62 @@
+[Unit]
+Description=Stephania management plane (Sinatra/Puma)
+# Independent of the engine: control may restart or die without affecting
+# media. Wants= (not Requires=) so an engine restart never stops control.
+Wants=stephania.service stephania-pki.service
+After=stephania.service stephania-pki.service
+
+[Service]
+Type=simple
+User=stephania-control
+Group=stephania-control
+# Membership of stephania grants access to /run/stephania (0750) and engine.sock (0660).
+SupplementaryGroups=stephania
+WorkingDirectory=/opt/stephania/control
+# Must define STEPHANIA_CONTROL_TOKEN (>= 32 bytes). Mode 0600, owned by root.
+EnvironmentFile=/etc/stephania/control.env
+Environment=RACK_ENV=production
+Environment=STEPHANIA_ENGINE_SOCKET=/run/stephania/engine.sock
+Environment=STEPHANIA_PHONE_SOCKET=/run/stephania-phone/phone.sock
+Environment=STEPHANIA_STUDIO_DIST=/opt/stephania/studio
+Environment=STEPHANIA_CONTROL_DB=/var/lib/stephania/control/control.db
+# Trusted LAN: TLS on 9443 with the device-CA certificate (stephania-pki);
+# accepts only owner-issued tokens. Plain HTTP stays on loopback.
+Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
+Environment=STEPHANIA_CONTROL_TLS_PORT=9443
+Environment=STEPHANIA_CONTROL_TOKENS_FILE=/var/lib/stephania/tokens/tokens.json
+# Scene image assets shared with the engine (files are written 0640).
+Environment=STEPHANIA_ASSETS_DIR=/var/lib/stephania/assets
+ReadWritePaths=-/var/lib/stephania/assets
+StateDirectory=stephania/control
+StateDirectoryMode=0700
+ExecStart=/usr/bin/bundle exec puma -C config/puma.rb config.ru
+Restart=on-failure
+RestartSec=3
+
+# Initial resource-isolation experiment (§9). Tune with measurements; these
+# are not qualified production limits.
+CPUWeight=20
+CPUQuota=50%
+MemoryHigh=96M
+MemoryMax=128M
+IOWeight=20
+Nice=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

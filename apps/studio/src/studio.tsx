@@ -176,7 +176,7 @@ export function Studio({api, live, canEdit, onMessage}: {api: Api; live: LiveSta
     const url = URL.createObjectURL(new Blob([JSON.stringify(e, null, 2)], {type: 'application/json'}));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${current}.t3box-scene.json`;
+    a.download = `${current}.stephania-scene.json`;
     a.click();
     URL.revokeObjectURL(url);
     onMessage('Exported');

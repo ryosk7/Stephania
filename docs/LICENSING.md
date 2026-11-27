@@ -1,6 +1,6 @@
 # Licensing and supply chain
 
-T3Box's own code is MIT (`LICENSE`). This page records what else ships,
+Stephania's own code is MIT (`LICENSE`). This page records what else ships,
 under which terms, and what a release has to include. It is an engineering
 review (R15), not legal advice; have it checked before a commercial
 release.
@@ -51,12 +51,12 @@ The engine binary dynamically links system libraries:
 | libv4l (via v4l crate, kernel interface) | LGPL-2.1-or-later | V4L2 capture |
 
 Because of libx264 the shipped engine is a combined work under
-GPL-2.0-or-later. MIT is GPL-compatible, so T3Box itself needs no change,
+GPL-2.0-or-later. MIT is GPL-compatible, so Stephania itself needs no change,
 but every distribution of the OS image or the engine binary must:
 
 1. include the licence texts (`LICENSES/`, plus `/usr/share/doc/*/copyright`
    inside the image);
-2. provide the complete corresponding source: the T3Box source at the
+2. provide the complete corresponding source: the Stephania source at the
    release tag, and the exact source packages of the GPL/LGPL system
    components (Debian and Raspberry Pi source packages at the versions listed in the image
    SBOM, `--dpkg` input of `ci/sbom.py`), either alongside the binaries or
@@ -74,7 +74,7 @@ obligation applies to the GPL/LGPL parts.
 Fonts: none ship. Text overlays are rendered by the browser on the user's
 machine (docs/SCENE.md), so no font licence applies to the device.
 
-T3Box Connect bundles two fonts so iPhone and Android look the same
+Stephania Connect bundles two fonts so iPhone and Android look the same
 (DESIGN.md §3.6): Inter and JetBrains Mono, both under the SIL Open Font
 License 1.1 (via `@expo-google-fonts/*`, packaging MIT). OFL allows
 embedding in an application; the fonts are not sold on their own and the

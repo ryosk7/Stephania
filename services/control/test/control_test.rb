@@ -59,7 +59,7 @@ class ControlTest < Minitest::Test
   end
 
   def test_rejects_non_loopback_host
-    header "Host", "t3box.local"
+    header "Host", "stephania.local"
     auth
     get "/api/v1/status"
     assert_error 403, "forbidden_host"
@@ -88,11 +88,11 @@ class ControlTest < Minitest::Test
   end
 
   def test_engine_error_codes_map_to_http
-    use_engine { |req| FakeEngine.error(req, "engine_start_failed", "T3BOX_OUTPUT is not configured") }
+    use_engine { |req| FakeEngine.error(req, "engine_start_failed", "STEPHANIA_OUTPUT is not configured") }
     auth
     post "/api/v1/stream/start"
     assert_error 503, "engine_start_failed"
-    assert_equal "T3BOX_OUTPUT is not configured", body.dig("error", "message")
+    assert_equal "STEPHANIA_OUTPUT is not configured", body.dig("error", "message")
     use_engine { |req| FakeEngine.error(req, "something_new") }
     post "/api/v1/stream/start"
     assert_error 502, "something_new"
@@ -101,7 +101,7 @@ class ControlTest < Minitest::Test
   def test_engine_missing_is_503
     @engine.close
     @engine = nil
-    Control.engine = EngineClient.new(socket_path: File.join(Dir.tmpdir, "t3box-missing-#{Process.pid}.sock"))
+    Control.engine = EngineClient.new(socket_path: File.join(Dir.tmpdir, "stephania-missing-#{Process.pid}.sock"))
     auth
     get "/api/v1/status"
     assert_error 503, "engine_unavailable"
@@ -269,7 +269,7 @@ class CameraSessionTest < Minitest::Test
     assert_equal "connected", JSON.parse(last_response.body)["state"]
     delete "/api/v1/cameras/session"
     assert_equal 204, last_response.status
-    Control.phone = EngineClient.new(socket_path: File.join(Dir.tmpdir, "t3box-no-phone-#{Process.pid}.sock"))
+    Control.phone = EngineClient.new(socket_path: File.join(Dir.tmpdir, "stephania-no-phone-#{Process.pid}.sock"))
     get "/api/v1/cameras/session"
     assert_equal 503, last_response.status
     assert_equal "phone_unavailable", JSON.parse(last_response.body).dig("error", "code")

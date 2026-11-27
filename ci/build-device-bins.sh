@@ -6,10 +6,10 @@
 set -Eeuo pipefail
 out=${1:-device-bins}
 mkdir -p "$out"
-cargo build --locked --bin t3box --bin t3box-pki --bin t3box-bootctl
-cargo build --locked -p t3box-phone
-cp target/debug/t3box target/debug/t3box-pki target/debug/t3box-bootctl target/debug/t3box-phone "$out/"
-cargo build --locked --no-default-features --features ci-virtual,networkmanager --bin t3box-provision
-cp target/debug/t3box-provision "$out/"
+cargo build --locked --bin stephania --bin stephania-pki --bin stephania-bootctl
+cargo build --locked -p stephania-phone
+cp target/debug/stephania target/debug/stephania-pki target/debug/stephania-bootctl target/debug/stephania-phone "$out/"
+cargo build --locked --no-default-features --features ci-virtual,networkmanager --bin stephania-provision
+cp target/debug/stephania-provision "$out/"
 strip "$out"/*
 ls -la "$out"

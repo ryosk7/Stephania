@@ -1,8 +1,8 @@
-//! t3box-ble: BlueZ GATT adapter for T3Box provisioning (protocol v2).
+//! stephania-ble: BlueZ GATT adapter for Stephania provisioning (protocol v2).
 //!
 //! A thin process with no secrets and no protocol decisions: it publishes
 //! one service with two characteristics and forwards request fragments to
-//! `t3box-provision` (`gatt.request`, docs/IPC.md framing).
+//! `stephania-provision` (`gatt.request`, docs/IPC.md framing).
 //!
 //! BlueZ robustness measures implemented here (contracts/ble-protocol.md
 //! § "BlueZ robustness"):
@@ -23,7 +23,7 @@
 //!   Powered, when BlueZ drops it, and every 30 s while no central is
 //!   connected (guards against "registered but not advertising").
 //! - Adapter selection prefers a USB controller (external dongle) over the
-//!   on-board UART controller when `T3BOX_BLE_ADAPTER=auto`.
+//!   on-board UART controller when `STEPHANIA_BLE_ADAPTER=auto`.
 
 use bluer::adv::{Advertisement, AdvertisementHandle, Type as AdvType};
 use bluer::gatt::local::{
@@ -37,9 +37,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use t3box::ipc::{read_frame, write_frame, IO_TIMEOUT};
-use t3box::provisioning::{fragment, hex, MIN_ATT_PAYLOAD};
-use t3box::provisioning_gatt::{INFO_UUID, INFO_VALUE, RPC_UUID, SERVICE_UUID};
+use stephania::ipc::{read_frame, write_frame, IO_TIMEOUT};
+use stephania::provisioning::{fragment, hex, MIN_ATT_PAYLOAD};
+use stephania::provisioning_gatt::{INFO_UUID, INFO_VALUE, RPC_UUID, SERVICE_UUID};
 
 /// An idle central stops blocking others after this long.
 const PEER_IDLE: Duration = Duration::from_secs(30);
@@ -49,7 +49,7 @@ const WATCHDOG_PERIOD: Duration = Duration::from_secs(10);
 /// not actually advertising (e.g. registered around a power transition).
 const ADVERTISING_REFRESH: Duration = Duration::from_secs(30);
 
-/// Socket client to t3box-provision; one long-lived connection, reconnected
+/// Socket client to stephania-provision; one long-lived connection, reconnected
 /// once on failure (provision restarts are expected under systemd).
 struct Provision {
     path: PathBuf,
@@ -183,12 +183,12 @@ async fn on_write(shared: Arc<Shared>, value: Vec<u8>, peer: Address, mtu: u16, 
         let Ok(frags) = fragment(message_id, &response, att) else { return };
         let mut guard = shared.notifier.lock().await;
         let Some(n) = guard.as_mut() else {
-            eprintln!("t3box-ble: response dropped, client not subscribed to indications");
+            eprintln!("stephania-ble: response dropped, client not subscribed to indications");
             return;
         };
         for f in frags {
             if let Err(e) = n.notify(f).await {
-                eprintln!("t3box-ble: indication failed: {e}");
+                eprintln!("stephania-ble: indication failed: {e}");
                 *guard = None;
                 return;
             }
@@ -241,7 +241,7 @@ fn info_characteristic(encrypt: bool) -> Characteristic {
 /// `auto`: prefer a USB-attached controller (external dongle) over the
 /// on-board one; otherwise BlueZ's default adapter.
 async fn pick_adapter(session: &bluer::Session) -> bluer::Result<Adapter> {
-    match std::env::var("T3BOX_BLE_ADAPTER").unwrap_or_else(|_| "auto".into()).as_str() {
+    match std::env::var("STEPHANIA_BLE_ADAPTER").unwrap_or_else(|_| "auto".into()).as_str() {
         "auto" | "" => {
             for name in session.adapter_names().await? {
                 let real = std::fs::canonicalize(format!("/sys/class/bluetooth/{name}/device")).unwrap_or_default();
@@ -275,23 +275,23 @@ fn fatal(kind: bluer::ErrorKind, message: &str) -> bluer::Error {
 async fn main() {
     if let Err(e) = run().await {
         // Non-zero exit: systemd restarts us and we re-register cleanly.
-        eprintln!("t3box-ble: fatal: {e}");
+        eprintln!("stephania-ble: fatal: {e}");
         std::process::exit(2);
     }
 }
 
 async fn run() -> bluer::Result<()> {
-    let socket = std::env::var_os("T3BOX_PROVISION_SOCKET").map(PathBuf::from)
-        .unwrap_or_else(|| "/run/t3box-provision/provisioning.sock".into());
+    let socket = std::env::var_os("STEPHANIA_PROVISION_SOCKET").map(PathBuf::from)
+        .unwrap_or_else(|| "/run/stephania-provision/provisioning.sock".into());
     // Off by default: requiring link encryption forces BLE pairing/bonding,
     // the most common source of interoperability failures. The protocol
     // authenticates and seals at the application layer instead.
-    let encrypt = std::env::var("T3BOX_BLE_REQUIRE_ENCRYPTION").as_deref() == Ok("1");
+    let encrypt = std::env::var("STEPHANIA_BLE_REQUIRE_ENCRYPTION").as_deref() == Ok("1");
     let session = bluer::Session::new().await?;
     let adapter = pick_adapter(&session).await?;
     adapter.set_powered(true).await?;
     let address = adapter.address().await?;
-    let name = format!("T3Box-{:02X}{:02X}", address.0[4], address.0[5]);
+    let name = format!("Stephania-{:02X}{:02X}", address.0[4], address.0[5]);
 
     let shared = Arc::new(Shared {
         provision: Mutex::new(Provision { path: socket, stream: None, next: 0 }),
@@ -311,7 +311,7 @@ async fn run() -> bluer::Result<()> {
     };
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = advertise(&adapter, &name).await?;
-    eprintln!("t3box-ble: advertising {name} on {} (link encryption {})", adapter.name(), if encrypt { "required" } else { "off" });
+    eprintln!("stephania-ble: advertising {name} on {} (link encryption {})", adapter.name(), if encrypt { "required" } else { "off" });
 
     let adapter_name = adapter.name().to_owned();
     let mut session_events = Box::pin(session.events().await?);
@@ -332,7 +332,7 @@ async fn run() -> bluer::Result<()> {
                 if let Some(AdapterEvent::PropertyChanged(AdapterProperty::Powered(true))) = ev {
                     // Controller (re)powered: an advertisement registered
                     // before this may never have started.
-                    eprintln!("t3box-ble: adapter powered; re-registering advertisement");
+                    eprintln!("stephania-ble: adapter powered; re-registering advertisement");
                     drop(adv);
                     adv = advertise(&adapter, &name).await?;
                     advertised_at = Instant::now();
@@ -341,7 +341,7 @@ async fn run() -> bluer::Result<()> {
             _ = tick.tick() => {
                 // Errors here mean bluetoothd restarted or the adapter vanished.
                 if !adapter.is_powered().await? {
-                    eprintln!("t3box-ble: adapter powered off; powering on");
+                    eprintln!("stephania-ble: adapter powered off; powering on");
                     adapter.set_powered(true).await?;
                     continue;
                 }
@@ -349,7 +349,7 @@ async fn run() -> bluer::Result<()> {
                 if !idle { continue; }
                 let dropped = adapter.active_advertising_instances().await? == 0;
                 if dropped || advertised_at.elapsed() >= ADVERTISING_REFRESH {
-                    if dropped { eprintln!("t3box-ble: advertising was dropped by BlueZ; re-registering"); }
+                    if dropped { eprintln!("stephania-ble: advertising was dropped by BlueZ; re-registering"); }
                     drop(adv);
                     adv = advertise(&adapter, &name).await?;
                     advertised_at = Instant::now();

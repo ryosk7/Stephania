@@ -1,4 +1,4 @@
-// Talking to an enrolled T3Box over the LAN (pinned TLS). Shared by every
+// Talking to an enrolled Stephania over the LAN (pinned TLS). Shared by every
 // feature that operates a device.
 export * from './client';
 export * from './enrollment';

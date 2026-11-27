@@ -1,8 +1,8 @@
 {
-  "name": "t3box-setup-page",
+  "name": "stephania-setup-page",
   "private": true,
   "type": "module",
-  "description": "Static, offline, single-file page that generates a T3Box setup secret in the browser, shows it as a QR code and downloads t3box-setup.txt for the SD card.",
+  "description": "Static, offline, single-file page that generates a Stephania setup secret in the browser, shows it as a QR code and downloads stephania-setup.txt for the SD card.",
   "scripts": {
     "build": "node build.mjs",
     "test": "node build.mjs && vitest run"

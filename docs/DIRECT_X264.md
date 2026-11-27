@@ -22,6 +22,6 @@ native RTMPS relay yet. AAC encoding, audio/video drift correction,
 rate-control measurements and encoder reconfiguration remain unimplemented.
 
 **Licensing:** libx264 itself is GPL-licensed even though the Rust wrapper
-uses MIT. Before distributing a linked T3Box binary, review copyleft and
+uses MIT. Before distributing a linked Stephania binary, review copyleft and
 other licensing/patent obligations; the project metadata alone cannot
 settle the combined binary's licensing requirements.

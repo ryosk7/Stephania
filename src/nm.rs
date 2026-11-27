@@ -68,13 +68,13 @@ pub fn parse_scan(stdout: &str) -> Vec<ScanResult> {
 }
 
 fn profile_name(ssid: &[u8]) -> String {
-    format!("t3box-{}", crate::provisioning::hex(ssid))
+    format!("stephania-{}", crate::provisioning::hex(ssid))
 }
 
 pub struct NetworkManagerBackend<R: CommandRunner> {
     pub runner: R,
     pub interface: String,
-    /// Private directory (0700) for transient passwd files, e.g. /run/t3box/provision.
+    /// Private directory (0700) for transient passwd files, e.g. /run/stephania/provision.
     pub secrets_dir: PathBuf,
 }
 
@@ -154,7 +154,7 @@ mod tests {
     fn backend(r: Recorder) -> (NetworkManagerBackend<Recorder>, PathBuf) {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("t3box-nm-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-nm-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         (NetworkManagerBackend { runner: r, interface: "wlan0".into(), secrets_dir: dir.clone() }, dir)
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(b.runner.secret_seen.as_deref(), Some("802-11-wireless-security.psk:correct horse\n"));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "secret file removed");
         let add = b.runner.calls.iter().find(|c| c.get(1).map(String::as_str) == Some("add")).unwrap();
-        assert!(add.contains(&"t3box-4c542048616c6c".to_string()));
+        assert!(add.contains(&"stephania-4c542048616c6c".to_string()));
         assert!(add.contains(&"wpa-psk".to_string()));
         let _ = std::fs::remove_dir_all(dir);
     }

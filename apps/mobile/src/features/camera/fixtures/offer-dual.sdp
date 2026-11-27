@@ -4,7 +4,7 @@ s=-
 t=0 0
 a=group:BUNDLE 0 1
 a=extmap-allow-mixed
-a=msid-semantic: WMS t3box
+a=msid-semantic: WMS stephania
 m=video 9 UDP/TLS/RTP/SAVPF 102 103
 c=IN IP4 192.168.1.30
 a=rtcp:9 IN IP4 0.0.0.0
@@ -16,7 +16,7 @@ a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:3
 a=setup:actpass
 a=mid:0
 a=sendonly
-a=msid:t3box rear-1
+a=msid:stephania rear-1
 a=rtcp-mux
 a=rtcp-rsize
 a=rtpmap:102 H264/90000
@@ -29,8 +29,8 @@ a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01
 a=rtpmap:103 rtx/90000
 a=fmtp:103 apt=102
 a=ssrc-group:FID 1001 1002
-a=ssrc:1001 cname:t3box
-a=ssrc:1002 cname:t3box
+a=ssrc:1001 cname:stephania
+a=ssrc:1002 cname:stephania
 m=video 9 UDP/TLS/RTP/SAVPF 102 103
 c=IN IP4 0.0.0.0
 a=rtcp:9 IN IP4 0.0.0.0
@@ -41,7 +41,7 @@ a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:3
 a=setup:actpass
 a=mid:1
 a=sendonly
-a=msid:t3box front-1
+a=msid:stephania front-1
 a=rtcp-mux
 a=rtcp-rsize
 a=rtpmap:102 H264/90000
@@ -50,5 +50,5 @@ a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01
 a=rtpmap:103 rtx/90000
 a=fmtp:103 apt=102
 a=ssrc-group:FID 2001 2002
-a=ssrc:2001 cname:t3box
-a=ssrc:2002 cname:t3box
+a=ssrc:2001 cname:stephania
+a=ssrc:2002 cname:stephania

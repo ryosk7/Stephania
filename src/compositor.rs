@@ -1146,7 +1146,7 @@ mod tests {
         let mut c = Compositor::new(1920, 1080);
         c.compose(&program, 0, |s| match s { "hdmi" => Some(&hdmi), "phone:rear" => Some(&rear), _ => None });
         let out = c.output();
-        if let Ok(p) = std::env::var("T3BOX_DUMP_GOLDEN") { std::fs::write(p, &out.bytes).unwrap(); }
+        if let Ok(p) = std::env::var("STEPHANIA_DUMP_GOLDEN") { std::fs::write(p, &out.bytes).unwrap(); }
         let got = (fnv1a(out.y()), fnv1a(out.u()), fnv1a(out.v()));
         assert_eq!(got, GOLDEN_V2, "v2 golden changed: {:#018x?}", got);
     }

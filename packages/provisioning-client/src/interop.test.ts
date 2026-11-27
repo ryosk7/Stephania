@@ -1,5 +1,5 @@
-// TypeScript phone client (protocol v2) against the real Rust t3box-provision
-// binary. Enabled when T3BOX_PROVISION_BIN points at a ci-virtual build.
+// TypeScript phone client (protocol v2) against the real Rust stephania-provision
+// binary. Enabled when STEPHANIA_PROVISION_BIN points at a ci-virtual build.
 import {spawn, type ChildProcess} from 'node:child_process';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {connect, type Socket} from 'node:net';
@@ -8,7 +8,7 @@ import {join} from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {fragment, fromHex, ProvisioningError, ProvisioningSession, toHex, type BleTransport} from './index';
 
-const bin = process.env.T3BOX_PROVISION_BIN;
+const bin = process.env.STEPHANIA_PROVISION_BIN;
 
 /** Plays the BLE adapter: forwards 20-byte fragments over the device socket. */
 class SocketTransport implements BleTransport {
@@ -52,13 +52,13 @@ class SocketTransport implements BleTransport {
   }
 }
 
-describe.skipIf(!bin)('interop with Rust t3box-provision (protocol v2)', () => {
+describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v2)', () => {
   let dir: string, child: ChildProcess, sock: Socket;
   beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 't3box-ts-'));
-    child = spawn(bin!, [], {env: {...process.env, T3BOX_PROVISION_SOCKET: join(dir, 'p.sock'), T3BOX_CREDENTIALS_DIR: dir,
-      T3BOX_SETUP_FILE: join(dir, 'none'), T3BOX_NETWORK_BACKEND: 'virtual', T3BOX_PKI_DIR: join(dir, 'pki'),
-      T3BOX_MANAGEMENT_TOKENS: join(dir, 'tokens.json')}, stdio: 'ignore'});
+    dir = mkdtempSync(join(tmpdir(), 'stephania-ts-'));
+    child = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(dir, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: dir,
+      STEPHANIA_SETUP_FILE: join(dir, 'none'), STEPHANIA_NETWORK_BACKEND: 'virtual', STEPHANIA_PKI_DIR: join(dir, 'pki'),
+      STEPHANIA_MANAGEMENT_TOKENS: join(dir, 'tokens.json')}, stdio: 'ignore'});
     for (let i = 0; i < 100 && !existsSync(join(dir, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
     sock = await new Promise<Socket>((resolve, reject) => { const s = connect(join(dir, 'p.sock'), () => resolve(s)); s.on('error', reject); });
   });
@@ -107,11 +107,11 @@ describe.skipIf(!bin)('interop with Rust t3box-provision (protocol v2)', () => {
     await expect(session.enrollManagement()).rejects.toMatchObject({code: 'management_unavailable'});
     mkdirSync(join(dir, 'pki'));
     const pin = 'ab'.repeat(32);
-    writeFileSync(join(dir, 'pki', 'endpoint.json'), JSON.stringify({host: 't3box.local', port: 9443, ips: ['192.168.1.2'], urls: [], ca_sha256: pin, not_after_unix: 2e9}));
+    writeFileSync(join(dir, 'pki', 'endpoint.json'), JSON.stringify({host: 'stephania.local', port: 9443, ips: ['192.168.1.2'], urls: [], ca_sha256: pin, not_after_unix: 2e9}));
     expect(await session.managementAvailable()).toBe(true);
     t.loseResponseOf(1);
     const e = await session.enrollManagement();
-    expect(e).toMatchObject({urls: ['https://t3box.local:9443/', 'https://192.168.1.2:9443/'], caSha256: pin});
+    expect(e).toMatchObject({urls: ['https://stephania.local:9443/', 'https://192.168.1.2:9443/'], caSha256: pin});
     expect(e.token).toMatch(/^t3b_[0-9a-f]{64}$/);
     const stored = JSON.parse(readFileSync(join(dir, 'tokens.json'), 'utf8')).tokens;
     expect(stored).toHaveLength(1);

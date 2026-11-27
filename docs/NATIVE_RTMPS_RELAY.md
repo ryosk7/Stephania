@@ -4,19 +4,19 @@ This standalone command connects the existing verified rustls RTMPS transport,
 performs RTMP handshake / connect / createStream / publish confirmation, then
 reads pre-encoded FLV tags and relays AAC, AVC and script metadata as RTMP
 messages. **It does not encode video/audio, operate GPIO or talk directly to
-V4L2/ALSA.** The main T3Box controller still uses its FFmpeg backend.
+V4L2/ALSA.** The main Stephania controller still uses its FFmpeg backend.
 
 Build:
 
 ```sh
-cargo build --release --bin t3box-send-flv
+cargo build --release --bin stephania-send-flv
 ```
 
 Stream a local, compatible H.264/AAC FLV file at its encoded timestamps:
 
 ```sh
-export T3BOX_OUTPUT='rtmps://a.rtmps.youtube.com/live2/PRIVATE_STREAM_KEY'
-./target/release/t3box-send-flv /path/to/capture.flv
+export STEPHANIA_OUTPUT='rtmps://a.rtmps.youtube.com/live2/PRIVATE_STREAM_KEY'
+./target/release/stephania-send-flv /path/to/capture.flv
 ```
 
 Or connect an FFmpeg encoder to the Rust sender through a pipe:
@@ -26,7 +26,7 @@ ffmpeg -nostdin -f lavfi -i 'testsrc2=size=1280x720:rate=30' \
   -f lavfi -i 'sine=frequency=440:sample_rate=48000' \
   -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 60 \
   -c:a aac -ar 48000 -b:a 160k -f flv - \
-  | ./target/release/t3box-send-flv -
+  | ./target/release/stephania-send-flv -
 ```
 
 The target URL is read from an environment variable, not process argv. It may

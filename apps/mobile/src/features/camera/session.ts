@@ -1,6 +1,6 @@
 // Phone camera session (docs/PHONE.md): one phone, one or two camera
-// tracks, sent to the T3Box over WebRTC. Platform independent: the native
-// sender (modules/t3box-camera) captures, encodes and transports; this
+// tracks, sent to the Stephania device over WebRTC. Platform independent: the native
+// sender (modules/stephania-camera) captures, encodes and transports; this
 // class decides when to connect, when to retry and at what quality.
 //
 // Lifecycle
@@ -10,7 +10,7 @@
 //   starting → busy       another phone holds the session (HTTP 409);
 //                         takeOver() replaces it
 //   any  → error          non-retryable (rejected offer, no permission, …)
-import type {CameraMode, Capabilities, NativeCamera, PeerState, ThermalState} from '@modules/t3box-camera';
+import type {CameraMode, Capabilities, NativeCamera, PeerState, ThermalState} from '@modules/stephania-camera';
 import {DeviceError} from '@/shared/device/client';
 import {capturePlan, planFor, rolesFor} from './plan';
 import {checkOffer} from './sdp';
@@ -172,7 +172,7 @@ export class CameraSession {
       if (gen !== this.generation) return;
       if (e instanceof DeviceError && e.code === 'busy') {
         await this.native.closePeer().catch(() => {});
-        this.set({state: 'busy', message: 'Another phone is sending to this T3Box.'});
+        this.set({state: 'busy', message: 'Another phone is sending to this Stephania device.'});
         return;
       }
       if (retryable(e)) { this.scheduleRetry(attempt, describe(e)); return; }
@@ -260,11 +260,11 @@ function retryable(e: unknown): boolean {
 function describe(e: unknown): string {
   if (e instanceof DeviceError) {
     const m: Record<string, string> = {
-      unreachable: 'Cannot reach the T3Box.',
-      invalid_offer: 'The T3Box rejected the camera stream.',
-      forbidden_role: 'This phone may not send camera video to this T3Box.',
+      unreachable: 'Cannot reach the Stephania device.',
+      invalid_offer: 'The Stephania device rejected the camera stream.',
+      forbidden_role: 'This phone may not send camera video to this Stephania device.',
       unauthorized: 'This phone\'s access is no longer valid.',
-      phone_unavailable: 'The camera service on the T3Box is not running.',
+      phone_unavailable: 'The camera service on the Stephania device is not running.',
     };
     return m[e.code] ?? `${e.code}: ${e.message}`;
   }

@@ -5,8 +5,8 @@ members = [".", "services/ble", "services/phone"]
 default-members = ["."]
 
 [package]
-name = "t3box"
-default-run = "t3box"
+name = "stephania"
+default-run = "stephania"
 version = "0.1.0"
 edition = "2021"
 description = "Raspberry Pi 5 LT stream box controller foundation"
@@ -18,7 +18,7 @@ native-capture = ["dep:v4l", "dep:alsa"]
 native-x264 = []
 native-aac = []
 ci-virtual = []
-# NetworkManager D-Bus backend for t3box-provision (pure-Rust zbus).
+# NetworkManager D-Bus backend for stephania-provision (pure-Rust zbus).
 networkmanager = ["dep:zbus"]
 
 [dependencies]
@@ -35,22 +35,22 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "a
 png = "0.18"
 
 [[bin]]
-name = "t3box-native-av"
-path = "src/bin/t3box-native-av.rs"
+name = "stephania-native-av"
+path = "src/bin/stephania-native-av.rs"
 required-features = ["native-capture", "native-x264", "native-aac"]
 
 [[bin]]
-name = "t3box-ci-encode"
-path = "src/bin/t3box-ci-encode.rs"
+name = "stephania-ci-encode"
+path = "src/bin/stephania-ci-encode.rs"
 required-features = ["native-x264", "native-aac"]
 
 
 [[bin]]
-name = "t3box-native-video"
-path = "src/bin/t3box-native-video.rs"
+name = "stephania-native-video"
+path = "src/bin/stephania-native-video.rs"
 required-features = ["native-capture", "native-x264"]
 
 [[bin]]
-name = "t3box-native-probe"
-path = "src/bin/t3box-native-probe.rs"
+name = "stephania-native-probe"
+path = "src/bin/stephania-native-probe.rs"
 required-features = ["native-capture"]

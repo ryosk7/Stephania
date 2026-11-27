@@ -102,7 +102,7 @@ pub fn parse_autoboot(text: &str) -> (Option<u32>, Option<u32>) {
 }
 
 pub fn render_autoboot(primary: u32, trial: u32) -> String {
-    format!("# Managed by t3box-bootctl (RAUC backend). Do not edit.\n[all]\ntryboot_a_b=1\nboot_partition={primary}\n[tryboot]\nboot_partition={trial}\n")
+    format!("# Managed by stephania-bootctl (RAUC backend). Do not edit.\n[all]\ntryboot_a_b=1\nboot_partition={primary}\n[tryboot]\nboot_partition={trial}\n")
 }
 
 pub struct BootCtl {
@@ -380,7 +380,7 @@ pub fn health(socket: &Path, data_dir: &Path, attempts: u32, delay: std::time::D
         if i + 1 < attempts { std::thread::sleep(delay); }
     }
     if !last.is_empty() { return Err(last); }
-    let probe = data_dir.join(".t3box-health");
+    let probe = data_dir.join(".stephania-health");
     write_atomic(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe).map_err(|e| e.to_string()))
         .map_err(|e| format!("data not writable: {e}"))
 }
@@ -392,7 +392,7 @@ mod tests {
     struct Fx { dir: PathBuf, ctl: BootCtl }
     impl Fx {
         fn new(tag: &str) -> Fx {
-            let dir = std::env::temp_dir().join(format!("t3box-bootctl-{tag}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("stephania-bootctl-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(dir.join("dt")).unwrap();
             std::fs::write(dir.join("autoboot.txt"), render_autoboot(2, 3)).unwrap();

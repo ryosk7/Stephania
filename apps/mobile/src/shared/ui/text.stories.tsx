@@ -16,7 +16,7 @@ export const Scale: Story = {
       <Label>Label 14</Label>
       <Footnote>Footnote 13</Footnote>
       <Overline>Overline 11</Overline>
-      <Mono>Mono 13 · t3box-8f21.local</Mono>
+      <Mono>Mono 13 · stephania-8f21.local</Mono>
     </View>
   ),
 };

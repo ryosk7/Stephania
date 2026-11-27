@@ -65,7 +65,7 @@ class AccountsTest < Minitest::Test
     res = login("alice")
     assert_equal 201, res.status, res.body
     cookie = res.headers["Set-Cookie"]
-    assert_match(/t3box_session=[A-Za-z0-9_-]{43}/, cookie)
+    assert_match(/stephania_session=[A-Za-z0-9_-]{43}/, cookie)
     assert_match(/httponly/i, cookie)
     assert_match(/samesite=strict/i, cookie)
     assert_match(%r{path=/api/}i, cookie)
@@ -76,7 +76,7 @@ class AccountsTest < Minitest::Test
     assert_equal({"kind" => "user", "role" => "admin", "username" => "alice"}, body.slice("kind", "role", "username"))
     assert_equal @csrf, body["csrf_token"]
     # Only a hash of the cookie is stored.
-    value = cookie[/t3box_session=([^;]+)/, 1]
+    value = cookie[/stephania_session=([^;]+)/, 1]
     assert_equal [Accounts.digest(value)], Control.db[:sessions].select_map(:token_sha256)
   end
 
@@ -186,7 +186,7 @@ class AccountsTest < Minitest::Test
 
   def test_change_own_password_keeps_this_session_and_ends_others
     create_user("ivan", "operator")
-    first = login("ivan").headers["Set-Cookie"][/t3box_session=([^;]+)/, 1]
+    first = login("ivan").headers["Set-Cookie"][/stephania_session=([^;]+)/, 1]
     login("ivan")
     with_csrf
     put "/api/v1/auth/password", JSON.generate(current_password: "nope nope nope", new_password: "another long secret")
@@ -218,9 +218,9 @@ class AccountsTest < Minitest::Test
     assert_equal "keynote-talk-3", body["id"]
     assert_equal "Keynote Talk (copy)", body.dig("document", "name")
     get "/api/v1/scenes/keynote-talk/export"
-    assert_match(/attachment; filename="keynote-talk.t3box-scene.json"/, last_response.headers["Content-Disposition"])
+    assert_match(/attachment; filename="keynote-talk.stephania-scene.json"/, last_response.headers["Content-Disposition"])
     exported = body
-    assert_equal "t3box-scene", exported["format"]
+    assert_equal "stephania-scene", exported["format"]
     post "/api/v1/scenes/import", JSON.generate(exported)
     assert_equal 201, last_response.status
     assert_equal "keynote-talk-4", body["id"], "import never overwrites"

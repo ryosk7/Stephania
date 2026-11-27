@@ -154,7 +154,7 @@ impl V4lVideoSource {
         settings.validate()?;
         let queue = Arc::new((Mutex::new(VideoQueue::new(settings.frame_queue)), Condvar::new()));
         let weak = Arc::downgrade(&queue);
-        thread::Builder::new().name("t3box-v4l2".into()).spawn(move || {
+        thread::Builder::new().name("stephania-v4l2".into()).spawn(move || {
             // Reopen and renegotiate when the UVC device disappears.
             while weak.strong_count() != 0 && !capture_video(&settings, &weak) {
                 thread::sleep(Duration::from_secs(2));
@@ -218,7 +218,7 @@ impl AlsaAudioSource {
     pub fn open(settings: CaptureSettings) -> io::Result<Self> {
         settings.validate()?;
         let (tx, rx) = mpsc::sync_channel(settings.frame_queue);
-        thread::Builder::new().name("t3box-alsa".into()).spawn(move || {
+        thread::Builder::new().name("stephania-alsa".into()).spawn(move || {
             while !capture_audio(&settings, &tx) {
                 thread::sleep(Duration::from_secs(2));
             }

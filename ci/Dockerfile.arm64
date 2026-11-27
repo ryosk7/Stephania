@@ -3,5 +3,5 @@ FROM --platform=linux/arm64 rust:bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /work
 COPY . .
-RUN cargo test --locked --no-default-features && cargo build --release --locked --no-default-features --bin t3box
-CMD ["/work/target/release/t3box"]
+RUN cargo test --locked --no-default-features && cargo build --release --locked --no-default-features --bin stephania
+CMD ["/work/target/release/stephania"]

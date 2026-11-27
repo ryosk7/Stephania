@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       kernel:
-        description: Run dedicated kernel-device host (requires t3box-lab runner)
+        description: Run dedicated kernel-device host (requires stephania-lab runner)
         type: boolean
         default: false
       soak:
@@ -33,14 +33,14 @@ jobs:
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-release
-          command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+          command: cargo build --release --locked --all-features --bin stephania --bin stephania-native-av --bin stephania-ci-encode
       - uses: actions/upload-artifact@v4
         with:
           name: lab-native-binaries
           path: |
-            target/release/t3box
-            target/release/t3box-native-av
-            target/release/t3box-ci-encode
+            target/release/stephania
+            target/release/stephania-native-av
+            target/release/stephania-ci-encode
           retention-days: 1
           compression-level: 0
   capabilities:
@@ -77,7 +77,7 @@ jobs:
         with:
           name: lab-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
+      - run: chmod +x target/release/stephania target/release/stephania-native-av target/release/stephania-ci-encode
       - uses: actions/cache@v4
         with:
           path: .lab-fixture
@@ -90,11 +90,11 @@ jobs:
           path: evidence/
   kernel:
     if: github.event_name == 'workflow_dispatch' && inputs.kernel
-    runs-on: [self-hosted, Linux, ARM64, t3box-lab]
+    runs-on: [self-hosted, Linux, ARM64, stephania-lab]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: cargo build --release --locked --all-features --bin t3box
+      - run: cargo build --release --locked --all-features --bin stephania
       - run: LAB_INPUT=kernel LAB_SECONDS=30 bash tests/virtual-lab/run.sh
       - uses: actions/upload-artifact@v4
         if: always()
@@ -116,7 +116,7 @@ jobs:
         with:
           name: lab-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box
+      - run: chmod +x target/release/stephania
       - run: LAB_SECONDS=10800 LAB_FAULT=none bash ci/images/media-run.sh
       - uses: actions/upload-artifact@v4
         if: always()
@@ -144,7 +144,7 @@ jobs:
         with:
           name: lab-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
+      - run: chmod +x target/release/stephania target/release/stephania-native-av target/release/stephania-ci-encode
       - run: LAB_MEDIA=real LAB_SECONDS=30 LAB_NETWORK=${{ matrix.network }} bash ci/images/media-run.sh
       - uses: actions/upload-artifact@v4
         if: always()

@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["StephaniaPinnedFetchModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.stephaniapinnedfetch.StephaniaPinnedFetchModule"]
+  }
+}

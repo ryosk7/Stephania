@@ -1,7 +1,7 @@
-# T3Box BLE provisioning protocol — version 2
+# Stephania BLE provisioning protocol — version 2
 
 Implementations:
-- **Device core:** `src/provisioning.rs`, `src/provisioning_gatt.rs`, `src/bin/t3box-provision.rs`
+- **Device core:** `src/provisioning.rs`, `src/provisioning_gatt.rs`, `src/bin/stephania-provision.rs`
 - **BlueZ adapter:** `services/ble`
 - **Phone:** `packages/provisioning-client`, `apps/mobile`
 - **Independent test client:** `tests/ble/client.py`
@@ -12,14 +12,14 @@ Version 2 replaced the earlier multi-characteristic design (v1, never released).
 
 ## Principles
 - **Authentication:** BLE proximity is not authentication. Ownership is proven with a per-device 128-bit setup secret via HMAC-SHA256 challenge-response. The secret is never transmitted.
-- **No pairing or bonding:** the protocol never requires BLE pairing or bonding. Authentication (HMAC) and confidentiality (ChaCha20-Poly1305 sealing of Wi-Fi credentials) are at the application layer. BLE link encryption is off by default (`T3BOX_BLE_REQUIRE_ENCRYPTION=1` enables it).
+- **No pairing or bonding:** the protocol never requires BLE pairing or bonding. Authentication (HMAC) and confidentiality (ChaCha20-Poly1305 sealing of Wi-Fi credentials) are at the application layer. BLE link encryption is off by default (`STEPHANIA_BLE_REQUIRE_ENCRYPTION=1` enables it).
 - **Ownership is safe by default:** there are no shared default credentials. A claimed device cannot be re-claimed over BLE; factory reset requires physical confirmation. A corrupt ownership file becomes `RECOVERY_REQUIRED`, never `UNCLAIMED`.
 - **Two independent state machines:** ownership (`UNCLAIMED / PAIRING / CLAIMED / RECOVERY_REQUIRED`) and network (`DISCONNECTED / SCANNING / CONNECTING / CONNECTED / FAILED`). A Wi-Fi failure never changes ownership.
 
 ## Setup secret delivery (R02 decision, 2026-11-27)
-No printed labels. The owner opens the static setup page (`tools/setup-page`: GitHub Pages `gh-pages` branch, or a local copy). The page generates the secret with `crypto.getRandomValues` in the browser, shows it as a QR code, and downloads `t3box-setup.txt` containing `t3box-setup:v1:<32 hex>:<8 hex SHA-256 check>`.
+No printed labels. The owner opens the static setup page (`tools/setup-page`: GitHub Pages `gh-pages` branch, or a local copy). The page generates the secret with `crypto.getRandomValues` in the browser, shows it as a QR code, and downloads `stephania-setup.txt` containing `stephania-setup:v1:<32 hex>:<8 hex SHA-256 check>`.
 1. The owner copies the file to the boot (FAT32) partition next to the OS.
-2. On boot, `t3box-provision` imports it **only while UNCLAIMED**, stores the secret 0600, then overwrites and deletes the file. An owned or recovery-required device deletes the file without importing it; invalid files are deleted too.
+2. On boot, `stephania-provision` imports it **only while UNCLAIMED**, stores the secret 0600, then overwrites and deletes the file. An owned or recovery-required device deletes the file without importing it; invalid files are deleted too.
 3. The app scans the QR from the screen and claims over BLE.
 
 **Residual risks:**
@@ -33,10 +33,10 @@ Service `7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60`. Its UUID changes with every prot
 
 | UUID | Name | Properties | Content |
 |---|---|---|---|
-| `7c3b0101-…` | Info | read | Static `{"v":2,"p":"t3box"}` (19 bytes). It fits a minimum-MTU read, so no long read is ever needed. |
+| `7c3b0101-…` | Info | read | Static `{"v":2,"p":"steph"}` (19 bytes; `p` is a short product tag, Stephania). It fits a minimum-MTU read, so no long read is ever needed. |
 | `7c3b0102-…` | Rpc | write (with response), indicate | Request fragments in; response fragments out. |
 
-The advertisement carries the 128-bit service UUID and the name `T3Box-XXXX` (scan response if needed). It uses legacy advertising only.
+The advertisement carries the 128-bit service UUID and the name `Stephania-XXXX` (scan response if needed). It uses legacy advertising only.
 
 ## Framing
 A fragment is `[message_id u8, index u8, count u8, chunk…]` and is at most the ATT payload (MTU − 3, minimum 20).
@@ -79,16 +79,16 @@ A request is a UTF-8 JSON object with `op`; unknown keys are rejected. A failed 
 
 | Value | Definition |
 |---|---|
-| claim proof | `MAC(setup_secret, "t3box-claim-v1", nonce, owner_id)` |
-| owner key | `MAC(setup_secret, "t3box-owner-key-v1", nonce, owner_id)`: derived on both sides, never sent |
-| operation proof | `MAC(owner_key, "t3box-operation-v1", op_nonce, operation, payload)` |
-| sealed | `ChaCha20-Poly1305(key = MAC(owner_key, "t3box-seal-v1"), nonce = op_nonce[0..12], aad = operation).encrypt(plaintext)` |
+| claim proof | `MAC(setup_secret, "stephania-claim-v1", nonce, owner_id)` |
+| owner key | `MAC(setup_secret, "stephania-owner-key-v1", nonce, owner_id)`: derived on both sides, never sent |
+| operation proof | `MAC(owner_key, "stephania-operation-v1", op_nonce, operation, payload)` |
+| sealed | `ChaCha20-Poly1305(key = MAC(owner_key, "stephania-seal-v1"), nonce = op_nonce[0..12], aad = operation).encrypt(plaintext)` |
 
 `management.enroll` seals its *response* the same way (operation `"management.enroll"`, the request carries no sealed payload, so the nonce is still used once). The phone keeps `token` in secure storage and accepts a LAN server only if its certificate chain ends in the CA whose DER SHA-256 is `ca_sha256`. The device keeps only SHA-256(token); a factory reset clears every token.
 
 The Wi-Fi plaintext is `{"ssid", "security":"open"|"wpa-psk", "psk"?}`, with SSID 1–32 bytes and PSK 8–63 printable characters or 64 hex. The operation nonce is single-use, so every seal uses a unique nonce. `owner_id` is 1–64 characters of `[A-Za-z0-9._-]`. After 5 failed proofs the device locks out for 300 s.
 
-Vectors are computed independently in Python: `fixtures/ble/hmac-vectors.json` and `fixtures/ble/seal-vectors.json` (verified by Rust and TypeScript), and `fixtures/ble/setup-uris.json`.
+Vectors are computed independently in Python (`fixtures/ble/generate.py`): `fixtures/ble/hmac-vectors.json` and `fixtures/ble/seal-vectors.json` (verified by Rust and TypeScript), and `fixtures/ble/setup-uris.json`.
 
 ## BlueZ robustness
 | Common failure | Design response |
@@ -99,11 +99,11 @@ Vectors are computed independently in Python: `fixtures/ble/hmac-vectors.json` a
 | Disconnect after a mutation but before the response | Replay cache. The client reconnects and resends identically, and the operation runs once. |
 | Phones caching an old GATT database (Service Changed not honoured) | Minimal fixed layout. A new service UUID per major version. Static identity address (`Privacy=off`). |
 | MTU misreporting or mismatch (bleak/BlueZ report 23, negotiated 517) | Sender fragments to the MTU it observes. Receivers accept any fragment size up to their own ATT payload. Everything works at 23. |
-| Several centrals connecting or interleaving writes | Per-peer reassembly. `t3box-ble` serves one active central (others get `InProgress` until it disconnects or idles 30 s). Partial transfers are dropped on disconnect. |
-| bluetoothd restart, adapter reset or removal, advertising silently dropped, or "registered but not advertising" after a power transition | `t3box-ble` exits on daemon or adapter loss, and systemd (`Restart=always`, `BindsTo=bluetooth.service`) re-registers it. It powers the adapter back on if it is off. It re-registers the advertisement when the controller reports Powered, when BlueZ drops it, and every 30 s while no central is connected. Verified in CI by restarting bluetoothd mid-test (found by that test). |
-| On-board CYW43455 limits: BT 5.0 mandatory features only; reported drops and packet loss | No optional BT5 feature is used: legacy advertising, 1M PHY, no DLE requirement. `T3BOX_BLE_ADAPTER=auto` prefers an external USB controller (e.g. an nRF52840 dongle running a Zephyr HCI controller) with no code change. |
+| Several centrals connecting or interleaving writes | Per-peer reassembly. `stephania-ble` serves one active central (others get `InProgress` until it disconnects or idles 30 s). Partial transfers are dropped on disconnect. |
+| bluetoothd restart, adapter reset or removal, advertising silently dropped, or "registered but not advertising" after a power transition | `stephania-ble` exits on daemon or adapter loss, and systemd (`Restart=always`, `BindsTo=bluetooth.service`) re-registers it. It powers the adapter back on if it is off. It re-registers the advertisement when the controller reports Powered, when BlueZ drops it, and every 30 s while no central is connected. Verified in CI by restarting bluetoothd mid-test (found by that test). |
+| On-board CYW43455 limits: BT 5.0 mandatory features only; reported drops and packet loss | No optional BT5 feature is used: legacy advertising, 1M PHY, no DLE requirement. `STEPHANIA_BLE_ADAPTER=auto` prefers an external USB controller (e.g. an nRF52840 dongle running a Zephyr HCI controller) with no code change. |
 | BlueZ version differences and experimental APIs | Only stable `GattManager1` / `LEAdvertisingManager1`. The OS image pins BlueZ. CI runs Ubuntu 24.04's BlueZ (5.72). |
-| Running BLE code as root | `t3box-ble` runs as an unprivileged user with a scoped D-Bus policy. It holds no secrets; the device core is a separate process. |
+| Running BLE code as root | `stephania-ble` runs as an unprivileged user with a scoped D-Bus policy. It holds no secrets; the device core is a separate process. |
 
 If BlueZ itself proves unsuitable on hardware, the adapter process can be replaced without touching the device core or the app. The options are a different host stack over HCI, or a BLE MCU over UART. Only `services/ble` changes.
 

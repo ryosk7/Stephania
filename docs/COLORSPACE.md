@@ -1,6 +1,6 @@
 # I420 conversion baseline
 
-T3Box includes a native Rust scalar converter for YUYV 4:2:2 and NV12
+Stephania includes a native Rust scalar converter for YUYV 4:2:2 and NV12
 input frames. It produces tightly packed planar Y, U, V buffers for
 H.264 encoder APIs. Input pitch/stride is explicit so padding on USB
 capture devices is handled correctly.

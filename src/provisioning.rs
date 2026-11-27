@@ -130,10 +130,10 @@ pub const MAX_FAILED_ATTEMPTS: u32 = 5;
 pub const LOCKOUT: Duration = Duration::from_secs(300);
 pub const MAX_OWNER_ID_BYTES: usize = 64;
 
-const CLAIM_CONTEXT: &[u8] = b"t3box-claim-v1";
-const OWNER_KEY_CONTEXT: &[u8] = b"t3box-owner-key-v1";
-const OPERATION_CONTEXT: &[u8] = b"t3box-operation-v1";
-const SEAL_CONTEXT: &[u8] = b"t3box-seal-v1";
+const CLAIM_CONTEXT: &[u8] = b"stephania-claim-v1";
+const OWNER_KEY_CONTEXT: &[u8] = b"stephania-owner-key-v1";
+const OPERATION_CONTEXT: &[u8] = b"stephania-operation-v1";
+const SEAL_CONTEXT: &[u8] = b"stephania-seal-v1";
 
 /// Persisted ownership. Pairing is deliberately transient: a reboot during
 /// pairing returns to the persisted state.
@@ -153,7 +153,7 @@ impl Ownership {
         }
     }
 
-    /// Serialise for the 0600 state file under /data/t3box/credentials.
+    /// Serialise for the 0600 state file under /data/stephania/credentials.
     pub fn to_json(&self) -> String {
         match self {
             Ownership::Claimed { owner_id, owner_key } => serde_json::json!({
@@ -387,7 +387,7 @@ impl OwnershipManager {
 
 /// Application-layer confidentiality for operation payloads (Wi-Fi PSKs),
 /// so no BLE pairing/bonding is needed. ChaCha20-Poly1305 with
-/// `key = MAC(owner_key, "t3box-seal-v1")`, nonce = first 12 bytes of the
+/// `key = MAC(owner_key, "stephania-seal-v1")`, nonce = first 12 bytes of the
 /// single-use operation nonce, AAD = operation name.
 pub fn seal(owner_key: &[u8], op_nonce: &[u8; NONCE_BYTES], operation: &str, plaintext: &[u8]) -> Vec<u8> {
     use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
@@ -433,12 +433,12 @@ pub fn load_or_create_setup_secret(path: &std::path::Path) -> std::io::Result<[u
 // ------------------------------------------------------------ setup file
 
 /// Setup URI carried by the QR code and by the boot-partition setup file:
-/// `t3box-setup:v1:<32 hex secret>:<first 8 hex of SHA-256(secret)>`.
+/// `stephania-setup:v1:<32 hex secret>:<first 8 hex of SHA-256(secret)>`.
 /// The secret is generated in the owner's browser by the static setup page
 /// (tools/setup-page); the device imports it on first boot.
 pub fn parse_setup_uri(text: &str) -> Option<[u8; SETUP_SECRET_BYTES]> {
     let lower = text.trim().to_ascii_lowercase();
-    let rest = lower.strip_prefix("t3box-setup:v1:")?;
+    let rest = lower.strip_prefix("stephania-setup:v1:")?;
     let (secret_hex, check) = rest.split_once(':')?;
     let secret = unhex::<SETUP_SECRET_BYTES>(secret_hex)?;
     if secret.iter().all(|&b| b == 0) || check.len() != 8 {
@@ -450,7 +450,7 @@ pub fn parse_setup_uri(text: &str) -> Option<[u8; SETUP_SECRET_BYTES]> {
 
 pub fn setup_uri(secret: &[u8; SETUP_SECRET_BYTES]) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, secret);
-    format!("t3box-setup:v1:{}:{}", hex(secret), hex(&digest.as_ref()[..4]))
+    format!("stephania-setup:v1:{}:{}", hex(secret), hex(&digest.as_ref()[..4]))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn setup_secret_is_created_once_with_private_mode() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("t3box-secret-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-secret-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("setup-secret");
@@ -826,10 +826,10 @@ mod setup_tests {
     #[test]
     fn import_only_when_unclaimed_and_always_discards_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("t3box-setup-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-setup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let (file, secret_path) = (dir.join("t3box-setup.txt"), dir.join("setup-secret"));
+        let (file, secret_path) = (dir.join("stephania-setup.txt"), dir.join("setup-secret"));
         let original = load_or_create_setup_secret(&secret_path).unwrap();
         let new = *b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10";
         assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Absent);
@@ -843,7 +843,7 @@ mod setup_tests {
         std::fs::write(&file, setup_uri(&new)).unwrap();
         assert_eq!(import_setup_file(&file, &secret_path, &Ownership::RecoveryRequired).unwrap(), SetupImport::IgnoredClaimed);
 
-        std::fs::write(&file, "t3box-setup:v1:garbage").unwrap();
+        std::fs::write(&file, "stephania-setup:v1:garbage").unwrap();
         assert_eq!(import_setup_file(&file, &secret_path, &Ownership::Unclaimed).unwrap(), SetupImport::Invalid);
         assert!(!file.exists());
 

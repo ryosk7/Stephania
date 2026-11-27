@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {beforeEach, describe, expect, it} from 'vitest';
-import type {CameraEvents, CameraMode, Capabilities, NativeCamera, Offer, ThermalState, TrackPlan} from '@modules/t3box-camera';
+import type {CameraEvents, CameraMode, Capabilities, NativeCamera, Offer, ThermalState, TrackPlan} from '@modules/stephania-camera';
 import {DeviceError} from '@/shared/device/client';
 import {BACKOFF_MS, CameraSession, DISCONNECT_GRACE_MS, type CameraClient, type Timers} from './session';
 
@@ -126,7 +126,7 @@ describe('CameraSession', () => {
     expect(session.snapshot).toMatchObject({state: 'live', attempt: 0});
   });
 
-  it('gives up after the last backoff step while the T3Box is unreachable', async () => {
+  it('gives up after the last backoff step while the Stephania device is unreachable', async () => {
     await live();
     client.respond = async () => { throw new DeviceError('unreachable', 'no route'); };
     native.emit('onPeerState', {state: 'failed'});
@@ -149,14 +149,14 @@ describe('CameraSession', () => {
     expect(session.snapshot.state).toBe('reconnecting');
   });
 
-  it('does not retry an offer the T3Box rejected', async () => {
+  it('does not retry an offer the Stephania device rejected', async () => {
     client.respond = async () => { throw new DeviceError('invalid_offer', 'no H264', 422); };
     await session.start('rear');
-    expect(session.snapshot).toMatchObject({state: 'error', message: 'The T3Box rejected the camera stream.'});
+    expect(session.snapshot).toMatchObject({state: 'error', message: 'The Stephania device rejected the camera stream.'});
     expect(timers.pending()).toEqual([]);
   });
 
-  it('refuses an offer that t3box-phone would not accept before sending it', async () => {
+  it('refuses an offer that stephania-phone would not accept before sending it', async () => {
     native.offerOverride = async () => ({sdp: SINGLE_SDP.replaceAll('42e01f', '640c1f'), tracks: {'rear-1': 'rear'}});
     await session.start('rear');
     expect(session.snapshot.state).toBe('error');

@@ -4,10 +4,10 @@ require "json"
 require "openssl"
 
 # Trusted-LAN access state shared with the device core:
-# - endpoint.json from t3box-pki (crate::pki): the device's certified
+# - endpoint.json from stephania-pki (crate::pki): the device's certified
 #   host name and addresses, the only non-loopback Host values accepted,
 #   and only over TLS;
-# - tokens.json from t3box-provision (crate::management_tokens): SHA-256
+# - tokens.json from stephania-provision (crate::management_tokens): SHA-256
 #   hashes of owner-issued tokens, the only credentials accepted on the LAN.
 # Both files are re-read when their mtime changes; anything missing or
 # malformed means "no LAN access" (fail closed).

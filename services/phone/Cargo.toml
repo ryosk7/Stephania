@@ -1,12 +1,12 @@
 [package]
-name = "t3box-phone"
+name = "stephania-phone"
 version = "0.1.0"
 edition = "2021"
-description = "WebRTC receiver for the T3Box phone camera tracks (forwards H.264 access units to the engine)"
+description = "WebRTC receiver for the Stephania phone camera tracks (forwards H.264 access units to the engine)"
 license = "MIT"
 
 [dependencies]
-t3box = { path = "../..", default-features = false }
+stephania = { path = "../..", default-features = false }
 webrtc = "0.21"
 rtc = { version = "0.21", default-features = false }
 async-trait = "0.1"

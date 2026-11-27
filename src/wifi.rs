@@ -26,7 +26,7 @@ pub fn connect(ssid: &str, password: &str) -> Result<(), String> {
         || (password.len() == 64 && password.bytes().all(|b| b.is_ascii_hexdigit()));
     if !valid { return Err("Invalid WPA password".into()); }
 
-    let profile = format!("t3box-{}", hex_ssid(ssid));
+    let profile = format!("stephania-{}", hex_ssid(ssid));
     let existing = Command::new("nmcli")
         .args(["-g", "connection.id", "connection", "show", &profile])
         .stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -39,7 +39,7 @@ pub fn connect(ssid: &str, password: &str) -> Result<(), String> {
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?.as_nanos();
-    let path = format!("/run/t3box-wifi-{now}-{}", std::process::id());
+    let path = format!("/run/stephania-wifi-{now}-{}", std::process::id());
     let mut file = OpenOptions::new().create_new(true).write(true).mode(0o600)
         .open(&path).map_err(|e| e.to_string())?;
     file.write_all(format!("802-11-wireless-security.psk:{password}\n").as_bytes())

@@ -54,7 +54,7 @@ impl MediaWorker {
         let shared = Arc::new((Mutex::new(Queue::default()),Condvar::new()));
         let copy = Arc::clone(&shared);
         let abort_socket = socket.try_clone()?;
-        let worker = thread::Builder::new().name("t3box-media-send".into()).spawn(move || {
+        let worker = thread::Builder::new().name("stephania-media-send".into()).spawn(move || {
             let result = (|| {
                 loop {
                     let item = {

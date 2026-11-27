@@ -1,5 +1,5 @@
 name: Mobile iOS build
-# Full simulator build of T3Box Connect with its native modules
+# Full simulator build of Stephania Connect with its native modules
 # (pinned-fetch, camera). macOS runners are billed at a multiple of Linux
 # minutes on private repositories, so this runs only when the native iOS
 # side or its dependencies change, and on demand.
@@ -32,5 +32,5 @@ jobs:
           CI: '1'
         run: |
           npx expo prebuild --platform ios --clean
-          xcodebuild -workspace ios/T3BoxConnect.xcworkspace -scheme T3BoxConnect -configuration Debug \
+          xcodebuild -workspace ios/StephaniaConnect.xcworkspace -scheme StephaniaConnect -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -50

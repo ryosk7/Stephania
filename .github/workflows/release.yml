@@ -2,9 +2,9 @@ name: Release
 # Tag v<version> → signed release artifacts (§7) as a draft GitHub release.
 # Signing material comes only from repository secrets; without them the run
 # fails before anything is published (never an unsigned release):
-#   T3BOX_RELEASE_SIGNING_KEY  Ed25519 PEM (installer manifest, SHA256SUMS)
-#   T3BOX_RAUC_CA_CERT         release CA certificate, built into the image keyring
-#   T3BOX_RAUC_SIGNING_CERT, T3BOX_RAUC_SIGNING_KEY  code-signing pair for bundles
+#   STEPHANIA_RELEASE_SIGNING_KEY  Ed25519 PEM (installer manifest, SHA256SUMS)
+#   STEPHANIA_RAUC_CA_CERT         release CA certificate, built into the image keyring
+#   STEPHANIA_RAUC_SIGNING_CERT, STEPHANIA_RAUC_SIGNING_KEY  code-signing pair for bundles
 on:
   push:
     tags: ['v*']
@@ -26,10 +26,10 @@ jobs:
           fetch-depth: 0
       - name: Signing material
         env:
-          RELEASE_KEY: ${{ secrets.T3BOX_RELEASE_SIGNING_KEY }}
-          RAUC_CA: ${{ secrets.T3BOX_RAUC_CA_CERT }}
-          RAUC_CERT: ${{ secrets.T3BOX_RAUC_SIGNING_CERT }}
-          RAUC_KEY: ${{ secrets.T3BOX_RAUC_SIGNING_KEY }}
+          RELEASE_KEY: ${{ secrets.STEPHANIA_RELEASE_SIGNING_KEY }}
+          RAUC_CA: ${{ secrets.STEPHANIA_RAUC_CA_CERT }}
+          RAUC_CERT: ${{ secrets.STEPHANIA_RAUC_SIGNING_CERT }}
+          RAUC_KEY: ${{ secrets.STEPHANIA_RAUC_SIGNING_KEY }}
         run: |
           for v in RELEASE_KEY RAUC_CA RAUC_CERT RAUC_KEY; do
             [ -n "${!v}" ] || { echo "::error::release secret for $v is not configured; refusing to build an unsigned release"; exit 1; }
@@ -54,7 +54,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl && cargo build --release --locked -p stephania-phone
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -65,21 +65,21 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
           sudo apt-get install -y -qq gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc xz-utils >/dev/null
           docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
-          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
+          echo "STEPHANIA_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - name: Pi image
         run: |
-          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_IMAGE_VARIANT=pi \
-            T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" \
+          sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="${{ steps.v.outputs.version }}" STEPHANIA_IMAGE_VARIANT=pi \
+            STEPHANIA_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" \
             os/image/build.sh "$RUNNER_TEMP/image" target/release
           ci/pi-image-check.sh "$RUNNER_TEMP/image"
       - name: Installer ZIP
         run: |
-          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="${{ steps.v.outputs.version }}" T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+          sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="${{ steps.v.outputs.version }}" STEPHANIA_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
             os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
       - name: Assemble and verify
         run: |
-          env T3BOX_RELEASE_VERSION="${{ steps.v.outputs.version }}" T3BOX_RELEASE_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
-            T3BOX_RAUC_CERT="$RUNNER_TEMP/keys/rauc-signing.pem" T3BOX_RAUC_KEY="$RUNNER_TEMP/keys/rauc-signing.key" \
+          env STEPHANIA_RELEASE_VERSION="${{ steps.v.outputs.version }}" STEPHANIA_RELEASE_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+            STEPHANIA_RAUC_CERT="$RUNNER_TEMP/keys/rauc-signing.pem" STEPHANIA_RAUC_KEY="$RUNNER_TEMP/keys/rauc-signing.key" \
             SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" os/release/assemble.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "$RUNNER_TEMP/dist"
           os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/keys/release-signing.pub" "$RUNNER_TEMP/keys/rauc-ca.pem"
           rm -rf "$RUNNER_TEMP/keys"
@@ -88,7 +88,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "T3Box ${{ steps.v.outputs.version }}" \
+          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "Stephania ${{ steps.v.outputs.version }}" \
             --notes "Verify: os/release/verify.sh with the published release-signing.pub. Not hardware-qualified unless docs/QUALIFICATION.md lists results for this version." \
             "$RUNNER_TEMP"/dist/*
       - if: "!startsWith(github.ref, 'refs/tags/v')"

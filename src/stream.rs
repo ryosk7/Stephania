@@ -19,22 +19,22 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        let fps = number("T3BOX_FPS", 30, 1, 60)?;
-        let width = number("T3BOX_WIDTH", 1920, 320, 3840)?;
-        let height = number("T3BOX_HEIGHT", 1080, 240, 2160)?;
-        let bitrate_kbps = number("T3BOX_BITRATE_KBPS", 8000, 500, 30000)?;
-        let preset = env::var("T3BOX_PRESET").unwrap_or_else(|_| "ultrafast".into());
+        let fps = number("STEPHANIA_FPS", 30, 1, 60)?;
+        let width = number("STEPHANIA_WIDTH", 1920, 320, 3840)?;
+        let height = number("STEPHANIA_HEIGHT", 1080, 240, 2160)?;
+        let bitrate_kbps = number("STEPHANIA_BITRATE_KBPS", 8000, 500, 30000)?;
+        let preset = env::var("STEPHANIA_PRESET").unwrap_or_else(|_| "ultrafast".into());
         if !["ultrafast", "superfast", "veryfast", "faster", "fast"].contains(&preset.as_str()) {
-            return Err("unsupported T3BOX_PRESET".into());
+            return Err("unsupported STEPHANIA_PRESET".into());
         }
-        let output = env::var("T3BOX_OUTPUT").unwrap_or_default();
-        let test_sources = env::var("T3BOX_TEST_SOURCES").as_deref() == Ok("1");
+        let output = env::var("STEPHANIA_OUTPUT").unwrap_or_default();
+        let test_sources = env::var("STEPHANIA_TEST_SOURCES").as_deref() == Ok("1");
         if !output.is_empty() && !output.starts_with("rtmps://") {
-            return Err("T3BOX_OUTPUT must start with rtmps://".into());
+            return Err("STEPHANIA_OUTPUT must start with rtmps://".into());
         }
         Ok(Self {
-            video_device: env::var("T3BOX_VIDEO").unwrap_or_else(|_| "/dev/video0".into()),
-            audio_device: env::var("T3BOX_AUDIO").unwrap_or_else(|_| "plughw:1,0".into()),
+            video_device: env::var("STEPHANIA_VIDEO").unwrap_or_else(|_| "/dev/video0".into()),
+            audio_device: env::var("STEPHANIA_AUDIO").unwrap_or_else(|_| "plughw:1,0".into()),
             fps, width, height, bitrate_kbps, preset, output, test_sources,
         })
     }
@@ -112,14 +112,14 @@ impl Controller {
     }
 
     fn spawn(&self, state: &mut State) -> Result<(), String> {
-        if self.config.output.is_empty() { return Err("T3BOX_OUTPUT is not configured".into()); }
+        if self.config.output.is_empty() { return Err("STEPHANIA_OUTPUT is not configured".into()); }
         if self.config.test_sources || !self.config.output.starts_with("rtmps://") {
             return Err("production requires hardware input and RTMPS output".into());
         }
         if self.config.preset != "ultrafast" || !self.config.width.is_multiple_of(2) || !self.config.height.is_multiple_of(2) {
             return Err("native requires ultrafast and even dimensions".into());
         }
-        if env::var("T3BOX_BACKEND").is_ok_and(|v| v != "native") {
+        if env::var("STEPHANIA_BACKEND").is_ok_and(|v| v != "native") {
             return Err("only native production backend is supported".into());
         }
         #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
@@ -131,7 +131,7 @@ impl Controller {
     #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
     fn spawn_native(&self, state: &mut State) -> Result<(), String> {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use t3box::{native_av, native_capture::CaptureSettings, media_core::PixelFormat};
+        use stephania::{native_av, native_capture::CaptureSettings, media_core::PixelFormat};
         if self.config.test_sources || !self.config.output.starts_with("rtmps://") {
             return Err("native controller requires hardware input and RTMPS output".into());
         }
@@ -141,8 +141,8 @@ impl Controller {
         if !self.config.width.is_multiple_of(2) || !self.config.height.is_multiple_of(2) {
             return Err("native controller requires even dimensions".into());
         }
-        t3box::rtmps_tls::Target::parse(&self.config.output).map_err(|e| e.to_string())?;
-        let preferred_format = match env::var("T3BOX_PIXEL_FORMAT").as_deref() {
+        stephania::rtmps_tls::Target::parse(&self.config.output).map_err(|e| e.to_string())?;
+        let preferred_format = match env::var("STEPHANIA_PIXEL_FORMAT").as_deref() {
             Ok("nv12") => PixelFormat::Nv12,
             Ok("yuyv") | Err(_) => PixelFormat::Yuyv422,
             _ => return Err("unsupported native pixel format".into()),
@@ -155,13 +155,13 @@ impl Controller {
                 ..CaptureSettings::default()
             },
             fps: self.config.fps, video_bitrate: self.config.bitrate_kbps,
-            audio_bitrate: number("T3BOX_AUDIO_BITRATE_KBPS", 160, 64, 320)?,
+            audio_bitrate: number("STEPHANIA_AUDIO_BITRATE_KBPS", 160, 64, 320)?,
             max_frames: 0,
         };
         let url = self.config.output.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&cancel);
-        let handle = thread::Builder::new().name("t3box-native-publisher".into())
+        let handle = thread::Builder::new().name("stephania-native-publisher".into())
             .spawn(move || native_av::run_with_settings(&url, &settings, || signal.load(Ordering::Acquire)))
             .map_err(|e| e.to_string())?;
         state.native = Some(NativeWorker { cancel, handle, started: std::time::SystemTime::now() });

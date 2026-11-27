@@ -8,12 +8,12 @@ libavcodec library via a small C bridge, not a custom Rust codec.
 Install libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev
 pkg-config and a C compiler. Build with:
 
-    cargo build --release --locked --all-features --bin t3box-native-av
+    cargo build --release --locked --all-features --bin stephania-native-av
 
-Use T3BOX_VIDEO, T3BOX_AUDIO, T3BOX_OUTPUT (private RTMPS test key),
-T3BOX_WIDTH, T3BOX_HEIGHT, T3BOX_FPS, T3BOX_BITRATE_KBPS,
-T3BOX_AUDIO_BITRATE_KBPS (default 128), T3BOX_PIXEL_FORMAT (yuyv/nv12),
-T3BOX_MAX_FRAMES (0 = continuous). Audio is fixed at 48 kHz stereo AAC-LC.
+Use STEPHANIA_VIDEO, STEPHANIA_AUDIO, STEPHANIA_OUTPUT (private RTMPS test key),
+STEPHANIA_WIDTH, STEPHANIA_HEIGHT, STEPHANIA_FPS, STEPHANIA_BITRATE_KBPS,
+STEPHANIA_AUDIO_BITRATE_KBPS (default 128), STEPHANIA_PIXEL_FORMAT (yuyv/nv12),
+STEPHANIA_MAX_FRAMES (0 = continuous). Audio is fixed at 48 kHz stereo AAC-LC.
 
 The session starts a shared monotonic timeline with 100 ms priming headroom.
 ALSA period arrival time minus duration estimates the first sample time.

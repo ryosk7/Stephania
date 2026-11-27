@@ -29,7 +29,7 @@ module AssetStore
 
   def id_for(data) = OpenSSL::Digest::SHA256.hexdigest(data)[0, 16]
 
-  # Writes atomically; group-readable so the engine (t3box group) can read
+  # Writes atomically; group-readable so the engine (stephania group) can read
   # it despite the service's UMask=0077.
   def write(dir, id, data)
     FileUtils.mkdir_p(dir)

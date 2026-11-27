@@ -1,4 +1,4 @@
-// Home: one card per enrolled T3Box with its live state and the two things
+// Home: one card per enrolled Stephania with its live state and the two things
 // people do with it (DESIGN.md §6). Toolbar icons: nearby, set up, settings.
 import {router, useFocusEffect} from 'expo-router';
 import {useCallback, useState} from 'react';
@@ -13,9 +13,9 @@ export function HomeScreen() {
   return (
     <Screen scroll>
       <View className="mb-1 mt-2 flex-row items-center gap-2">
-        <Display className="flex-1">T3Box</Display>
-        <IconButton icon="bluetooth" label="Connect a registered T3Box nearby" onPress={() => router.push('/setup/nearby')} />
-        <IconButton icon="plus" label="Set up a T3Box" onPress={() => router.push('/setup/scan')} />
+        <Display className="flex-1">Stephania</Display>
+        <IconButton icon="bluetooth" label="Connect a registered Stephania device nearby" onPress={() => router.push('/setup/nearby')} />
+        <IconButton icon="plus" label="Set up a Stephania device" onPress={() => router.push('/setup/scan')} />
         <IconButton icon="settings" label="Settings" onPress={() => router.push('/settings')} />
       </View>
       {devices?.length === 0 && <SetupCard />}
@@ -28,7 +28,7 @@ export function HomeScreen() {
 function SetupCard() {
   return (
     <Card>
-      <Card.Header title="Set up a T3Box" />
+      <Card.Header title="Set up a Stephania device" />
       <View className="flex-row items-center justify-center gap-3 py-3" accessible accessibilityLabel="Create a setup file on a PC, copy it to the microSD card, then scan the code shown on the PC">
         <Icon name="desktop" size={28} color="secondary" />
         <Icon name="arrow" size={18} color="tertiary" />
@@ -62,7 +62,7 @@ function DeviceCard({device}: {device: EnrolledDevice}) {
       {status === null && (
         <View className="flex-row items-center gap-2">
           <Icon name="info" size={16} tone="warning" />
-          <Footnote className="flex-1">Same Wi-Fi as this T3Box?</Footnote>
+          <Footnote className="flex-1">Same Wi-Fi as this Stephania device?</Footnote>
         </View>
       )}
       <View className="mt-1">

@@ -36,7 +36,7 @@ const connects = (opts: {path: string} | {port: number; host: string}) =>
   });
 
 export class Stack {
-  readonly dir = mkdtempSync(join(tmpdir(), 't3box-studio-e2e-'));
+  readonly dir = mkdtempSync(join(tmpdir(), 'stephania-studio-e2e-'));
   readonly socket = join(this.dir, 'engine.sock');
   port = 0;
   private engine?: ChildProcess;
@@ -45,11 +45,11 @@ export class Stack {
   get url() { return `http://localhost:${this.port}/`; }
 
   async startEngine() {
-    const bin = process.env.T3BOX_ENGINE_BIN;
-    if (!bin) throw new Error('T3BOX_ENGINE_BIN must point at a built t3box binary');
+    const bin = process.env.STEPHANIA_ENGINE_BIN;
+    if (!bin) throw new Error('STEPHANIA_ENGINE_BIN must point at a built stephania binary');
     const log = join(this.dir, 'engine.log');
     const fd = openSync(log, 'a');
-    this.engine = spawn(bin, [], {env: {...process.env, T3BOX_ENGINE_SOCKET: this.socket, T3BOX_OUTPUT: '', T3BOX_ASSETS_DIR: join(this.dir, 'assets')}, stdio: ['ignore', fd, fd]});
+    this.engine = spawn(bin, [], {env: {...process.env, STEPHANIA_ENGINE_SOCKET: this.socket, STEPHANIA_OUTPUT: '', STEPHANIA_ASSETS_DIR: join(this.dir, 'assets')}, stdio: ['ignore', fd, fd]});
     await waitFor(() => connects({path: this.socket}), 'engine', log);
   }
 
@@ -67,8 +67,8 @@ export class Stack {
     const fd = openSync(log, 'a');
     this.control = spawn('bundle', ['exec', 'puma', '-C', 'config/puma.rb', 'config.ru'], {
       cwd: join(ROOT, 'services/control'),
-      env: {...process.env, RACK_ENV: 'production', T3BOX_CONTROL_TOKEN: TOKEN, T3BOX_CONTROL_PORT: String(this.port),
-        T3BOX_ENGINE_SOCKET: this.socket, T3BOX_CONTROL_DB: join(this.dir, 'control.db'), T3BOX_ASSETS_DIR: join(this.dir, 'assets'), T3BOX_CONTROL_POLL_SECONDS: '0.2'},
+      env: {...process.env, RACK_ENV: 'production', STEPHANIA_CONTROL_TOKEN: TOKEN, STEPHANIA_CONTROL_PORT: String(this.port),
+        STEPHANIA_ENGINE_SOCKET: this.socket, STEPHANIA_CONTROL_DB: join(this.dir, 'control.db'), STEPHANIA_ASSETS_DIR: join(this.dir, 'assets'), STEPHANIA_CONTROL_POLL_SECONDS: '0.2'},
       stdio: ['ignore', fd, fd],
     });
     await waitFor(() => connects({port: this.port, host: '127.0.0.1'}), 'control', log);

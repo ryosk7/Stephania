@@ -2,15 +2,15 @@
 // CA pin), kept in the platform secure store only. Shared: home, control,
 // camera and pc-access all open a device from here.
 import * as SecureStore from 'expo-secure-store';
-import {toHex, type ManagementEnrollment} from '@t3box/provisioning-client';
+import {toHex, type ManagementEnrollment} from '@stephania/provisioning-client';
 
-const enrollmentKey = (deviceId: string) => 't3box.lan.' + toHex(new TextEncoder().encode(deviceId));
-const INDEX_KEY = 't3box.lan.index';
+const enrollmentKey = (deviceId: string) => 'stephania.lan.' + toHex(new TextEncoder().encode(deviceId));
+const INDEX_KEY = 'stephania.lan.index';
 const opts = {keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY};
 
 export type EnrolledDevice = {deviceId: string; name: string};
 
-export async function saveEnrollment(deviceId: string, e: ManagementEnrollment, name = 'T3Box') {
+export async function saveEnrollment(deviceId: string, e: ManagementEnrollment, name = 'Stephania') {
   await SecureStore.setItemAsync(enrollmentKey(deviceId), JSON.stringify(e), opts);
   const list = (await enrolledDevices()).filter(d => d.deviceId !== deviceId);
   await SecureStore.setItemAsync(INDEX_KEY, JSON.stringify([...list, {deviceId, name}]), opts);

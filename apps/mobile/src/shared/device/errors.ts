@@ -4,7 +4,7 @@ import {DeviceError} from './client';
 export function describeDeviceError(e: unknown): string {
   if (e instanceof DeviceError) {
     const m: Record<string, string> = {
-      unreachable: 'Cannot reach the T3Box. Check that the phone is on the same Wi-Fi (connections with a different certificate are refused).',
+      unreachable: 'Cannot reach the Stephania device. Check that the phone is on the same Wi-Fi (connections with a different certificate are refused).',
       unauthorized: 'This phone\'s access is no longer valid. Issue it again from Wi-Fi setup.',
       program_inactive: 'Not streaming, so the scene cannot be switched.',
       engine_unavailable: 'The media engine is not responding.',

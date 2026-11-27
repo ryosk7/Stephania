@@ -1,12 +1,12 @@
-//! Protocol v2 against the real t3box-provision binary over its socket.
+//! Protocol v2 against the real stephania-provision binary over its socket.
 #![cfg(all(unix, feature = "ci-virtual"))]
 
 use serde_json::{json, Value};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
 use std::time::Duration;
-use t3box::ipc::{read_frame, write_frame};
-use t3box::provisioning::{claim_proof, derive_owner_key, fragment, hex, operation_proof, seal, setup_uri, unhex, MIN_ATT_PAYLOAD};
+use stephania::ipc::{read_frame, write_frame};
+use stephania::provisioning::{claim_proof, derive_owner_key, fragment, hex, operation_proof, seal, setup_uri, unhex, MIN_ATT_PAYLOAD};
 
 struct Guard(Child, std::path::PathBuf, bool);
 impl Drop for Guard {
@@ -18,11 +18,11 @@ impl Drop for Guard {
 }
 
 fn start(dir: &std::path::Path, cleanup: bool) -> Guard {
-    let child = Command::new(env!("CARGO_BIN_EXE_t3box-provision"))
-        .env("T3BOX_SETUP_FILE", dir.join("boot-t3box-setup.txt"))
-        .env("T3BOX_PROVISION_SOCKET", dir.join("provisioning.sock"))
-        .env("T3BOX_CREDENTIALS_DIR", dir)
-        .env("T3BOX_NETWORK_BACKEND", "virtual")
+    let child = Command::new(env!("CARGO_BIN_EXE_stephania-provision"))
+        .env("STEPHANIA_SETUP_FILE", dir.join("boot-stephania-setup.txt"))
+        .env("STEPHANIA_PROVISION_SOCKET", dir.join("provisioning.sock"))
+        .env("STEPHANIA_CREDENTIALS_DIR", dir)
+        .env("STEPHANIA_NETWORK_BACKEND", "virtual")
         .spawn().expect("spawn");
     for _ in 0..100 {
         if UnixStream::connect(dir.join("provisioning.sock")).is_ok() { break; }
@@ -32,7 +32,7 @@ fn start(dir: &std::path::Path, cleanup: bool) -> Guard {
 }
 
 fn tempdir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("t3box-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("stephania-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -71,9 +71,9 @@ impl Phone {
 fn claim_scan_join_over_socket_with_setup_file() {
     let dir = tempdir("prov-v2");
     let secret = *b"QR-from-browser!";
-    std::fs::write(dir.join("boot-t3box-setup.txt"), setup_uri(&secret)).unwrap();
+    std::fs::write(dir.join("boot-stephania-setup.txt"), setup_uri(&secret)).unwrap();
     let _guard = start(&dir, true);
-    assert!(!dir.join("boot-t3box-setup.txt").exists(), "setup file consumed");
+    assert!(!dir.join("boot-stephania-setup.txt").exists(), "setup file consumed");
     let mut p = Phone::connect(&dir, "AA:BB:CC:DD:EE:01");
     assert_eq!(p.send(json!({"op":"device.info"}))["protocol"], 2);
     let nonce = p.nonce("pairing.challenge");

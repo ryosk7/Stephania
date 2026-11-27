@@ -2,27 +2,27 @@
 # Program audio end-to-end: two virtual inputs (440/880 Hz) mixed live,
 # reconfigured over the engine IPC (enable, mute, gain) while publishing
 # RTMPS to the local test server; the recording is analysed.
-# Usage: ci/audio-e2e.sh <t3box binary> [out-dir]
+# Usage: ci/audio-e2e.sh <stephania binary> [out-dir]
 set -Eeuo pipefail
-bin=${1:?t3box binary}
+bin=${1:?stephania binary}
 out=$(realpath -m "${2:-audio-results}")
 mkdir -p "$out"
 cert=$(mktemp -d)
 pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; rm -rf "$cert"; }
 trap cleanup EXIT
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=T3Box-CI-CA -keyout "$cert/ca.key" -out "$cert/ca.pem" 2>/dev/null
-openssl req -newkey rsa:2048 -nodes -subj /CN=t3box-ci.test -keyout "$cert/server.key" -out "$cert/server.csr" 2>/dev/null
-printf 'subjectAltName=DNS:t3box-ci.test\nextendedKeyUsage=serverAuth\n' > "$cert/ext"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=Stephania-CI-CA -keyout "$cert/ca.key" -out "$cert/ca.pem" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj /CN=stephania-ci.test -keyout "$cert/server.key" -out "$cert/server.csr" 2>/dev/null
+printf 'subjectAltName=DNS:stephania-ci.test\nextendedKeyUsage=serverAuth\n' > "$cert/ext"
 openssl x509 -req -in "$cert/server.csr" -CA "$cert/ca.pem" -CAkey "$cert/ca.key" -CAcreateserial -days 1 -extfile "$cert/ext" -out "$cert/server.pem" 2>/dev/null
 openssl x509 -in "$cert/ca.pem" -outform der -out "$cert/ca.der"
-grep -q '127.0.0.1 t3box-ci.test' /etc/hosts || printf '127.0.0.1 t3box-ci.test\n' | sudo tee -a /etc/hosts >/dev/null
-T3BOX_CI_SESSIONS=1 T3BOX_CI_FIRST_LIMIT=1000000 python3 ci/rtmps-test-server.py "$cert" > "$out/server.log" 2>&1 & server=$!; pids+=($server)
+grep -q '127.0.0.1 stephania-ci.test' /etc/hosts || printf '127.0.0.1 stephania-ci.test\n' | sudo tee -a /etc/hosts >/dev/null
+STEPHANIA_CI_SESSIONS=1 STEPHANIA_CI_FIRST_LIMIT=1000000 python3 ci/rtmps-test-server.py "$cert" > "$out/server.log" 2>&1 & server=$!; pids+=($server)
 for _ in $(seq 50); do [[ -f "$cert/ready" ]] && break; sleep 0.1; done
 test -f "$cert/ready"
-T3BOX_CI_VIRTUAL=1 T3BOX_CI_AUDIO_TONES=1 T3BOX_CI_CA_DER="$cert/ca.der" \
-  T3BOX_OUTPUT=rtmps://t3box-ci.test:19443/live/test T3BOX_WIDTH=640 T3BOX_HEIGHT=360 T3BOX_FPS=30 T3BOX_BITRATE_KBPS=1500 \
-  T3BOX_ENGINE_SOCKET="$cert/engine.sock" "$bin" > "$out/engine.log" 2>&1 & pids+=($!)
+STEPHANIA_CI_VIRTUAL=1 STEPHANIA_CI_AUDIO_TONES=1 STEPHANIA_CI_CA_DER="$cert/ca.der" \
+  STEPHANIA_OUTPUT=rtmps://stephania-ci.test:19443/live/test STEPHANIA_WIDTH=640 STEPHANIA_HEIGHT=360 STEPHANIA_FPS=30 STEPHANIA_BITRATE_KBPS=1500 \
+  STEPHANIA_ENGINE_SOCKET="$cert/engine.sock" "$bin" > "$out/engine.log" 2>&1 & pids+=($!)
 for _ in $(seq 100); do [[ -S "$cert/engine.sock" ]] && break; sleep 0.1; done
 python3 ci/audio_ipc.py "$cert/engine.sock" || { cat "$out/engine.log"; exit 1; }
 for _ in $(seq 100); do ls "$cert"/session-1.flv >/dev/null 2>&1 && ! kill -0 "$server" 2>/dev/null && break; sleep 0.1; done

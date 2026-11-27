@@ -1,7 +1,6 @@
 name: Publish setup page (manual)
-# Publishing makes the page PUBLIC even though the repository is private.
-# Only run after the owner has explicitly approved publication and enabled
-# GitHub Pages (Settings > Pages > Source: GitHub Actions).
+# Publishes tools/setup-page to GitHub Pages (https://ryosk7.github.io/Stephania/).
+# Requires Settings > Pages > Source: GitHub Actions.
 on:
   workflow_dispatch:
     inputs:

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Per-device host name stephania-<4 hex>, chosen once and kept on /data, so two
+# boxes on one network never fight over stephania.local (mDNS) and the device
+# certificate (stephania-pki) names a stable host. Runs every boot because the
+# root overlay is not persistent.
+set -eu
+f=/data/stephania/config/hostname
+install -d -m 0755 /data/stephania/config
+if ! grep -qE '^stephania-[0-9a-f]{4}$' "$f" 2>/dev/null; then
+  printf 'stephania-%s\n' "$(openssl rand -hex 2)" >"$f.new" && mv "$f.new" "$f"
+fi
+name=$(cat "$f")
+echo "$name" >/etc/hostname
+hostname "$name"

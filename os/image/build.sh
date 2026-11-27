@@ -2,58 +2,58 @@
 # Reference image build (docs/IMAGE.md): Raspberry Pi OS Lite reference
 # (docs/MASTER-ARCHITECTURE.md §6) — Debian 13 trixie plus, for the Pi
 # variant, the Raspberry Pi archive (kernel, device trees), the way pi-gen
-# builds Raspberry Pi OS Lite — with the T3Box services, assembled into the
+# builds Raspberry Pi OS Lite — with the Stephania services, assembled into the
 # A/B GPT layout of docs/UPDATE.md.
 #
 # Usage (root): os/image/build.sh <out-dir> <bin-dir>
-#   <bin-dir> holds t3box, t3box-phone, t3box-provision, t3box-pki, t3box-bootctl built
+#   <bin-dir> holds stephania, stephania-phone, stephania-provision, stephania-pki, stephania-bootctl built
 #   for the target architecture against Debian trixie
 #   (ci/images/device-build.Dockerfile), so library sonames match.
 # Environment:
-#   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (QEMU smoke tests)
-#   T3BOX_IMAGE_SUITE  trixie (default)
-#   T3BOX_IMAGE_MIRROR http://deb.debian.org/debian
-#   T3BOX_IMAGE_DEBIAN_KEYRING Debian archive keyring (default: the host's
+#   STEPHANIA_IMAGE_ARCH   arm64 (default) | amd64 (QEMU smoke tests)
+#   STEPHANIA_IMAGE_SUITE  trixie (default)
+#   STEPHANIA_IMAGE_MIRROR http://deb.debian.org/debian
+#   STEPHANIA_IMAGE_DEBIAN_KEYRING Debian archive keyring (default: the host's
 #                      debian-archive-keyring; CI takes it from debian:trixie
 #                      because older hosts lack the trixie keys)
-#   T3BOX_IMAGE_RPI_MIRROR http://archive.raspberrypi.com/debian (pi variant)
-#   T3BOX_IMAGE_RPI_KEYRING Raspberry Pi archive keyring (binary); default:
+#   STEPHANIA_IMAGE_RPI_MIRROR http://archive.raspberrypi.com/debian (pi variant)
+#   STEPHANIA_IMAGE_RPI_KEYRING Raspberry Pi archive keyring (binary); default:
 #                      downloaded and checked against RPI_KEY_FINGERPRINT
-#   T3BOX_IMAGE_COMPONENTS main
-#   T3BOX_IMAGE_KERNEL linux-image-<arch> (QEMU) | linux-image-rpi-2712 (pi)
-#   T3BOX_IMAGE_EXTRA  runtime libraries of the native engine
-#   T3BOX_IMAGE_VERSION version string written to /etc/t3box-version
-#   T3BOX_IMAGE_VARIANT qemu (default: Debian kernel, direct kernel boot) |
+#   STEPHANIA_IMAGE_COMPONENTS main
+#   STEPHANIA_IMAGE_KERNEL linux-image-<arch> (QEMU) | linux-image-rpi-2712 (pi)
+#   STEPHANIA_IMAGE_EXTRA  runtime libraries of the native engine
+#   STEPHANIA_IMAGE_VERSION version string written to /etc/stephania-version
+#   STEPHANIA_IMAGE_VARIANT qemu (default: Debian kernel, direct kernel boot) |
 #                      pi (Raspberry Pi 5: Raspberry Pi kernel, DTB, overlays,
 #                      config.txt for the Pi firmware; docs/IMAGE.md)
-#   T3BOX_RAUC_KEYRING  release CA certificate (PEM) RAUC trusts; without it
+#   STEPHANIA_RAUC_KEYRING  release CA certificate (PEM) RAUC trusts; without it
 #                      the image refuses every bundle
 #   SOURCE_DATE_EPOCH   fixed timestamps for reproducible filesystems
 #
-# Outputs: rootfs.squashfs, boot-a.vfat, boot-b.vfat, vmlinuz, initrd.img, t3box.img
+# Outputs: rootfs.squashfs, boot-a.vfat, boot-b.vfat, vmlinuz, initrd.img, stephania.img
 # (GPT: selector, boot-a, boot-b, rootfs-a, rootfs-b, data).
 set -euo pipefail
 out=$(mkdir -p "$1" && cd "$1" && pwd)
 bins=$(cd "$2" && pwd)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-arch=${T3BOX_IMAGE_ARCH:-arm64}
-suite=${T3BOX_IMAGE_SUITE:-trixie}
-mirror=${T3BOX_IMAGE_MIRROR:-http://deb.debian.org/debian}
-variant=${T3BOX_IMAGE_VARIANT:-qemu}
+arch=${STEPHANIA_IMAGE_ARCH:-arm64}
+suite=${STEPHANIA_IMAGE_SUITE:-trixie}
+mirror=${STEPHANIA_IMAGE_MIRROR:-http://deb.debian.org/debian}
+variant=${STEPHANIA_IMAGE_VARIANT:-qemu}
 case $variant in
   qemu) default_kernel=linux-image-$arch ;;
   pi) [ "$arch" = arm64 ] || { echo "the pi variant is arm64 only" >&2; exit 1; }; default_kernel=linux-image-rpi-2712 ;;
-  *) echo "unknown T3BOX_IMAGE_VARIANT $variant" >&2; exit 1 ;;
+  *) echo "unknown STEPHANIA_IMAGE_VARIANT $variant" >&2; exit 1 ;;
 esac
-kernel=${T3BOX_IMAGE_KERNEL:-$default_kernel}
+kernel=${STEPHANIA_IMAGE_KERNEL:-$default_kernel}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$(dirname "$0")" log -1 --format=%ct 2>/dev/null || date +%s)}
-extra=${T3BOX_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec61,libavutil59}
-version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
-components=${T3BOX_IMAGE_COMPONENTS:-main}
+extra=${STEPHANIA_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec61,libavutil59}
+version=${STEPHANIA_IMAGE_VERSION:-0.0.0-dev}
+components=${STEPHANIA_IMAGE_COMPONENTS:-main}
 root="$out/rootfs"
 . "$repo/os/layout.env"
 
-for b in t3box t3box-phone t3box-provision t3box-pki t3box-bootctl; do
+for b in stephania stephania-phone stephania-provision stephania-pki stephania-bootctl; do
   [ -x "$bins/$b" ] || { echo "missing $bins/$b" >&2; exit 1; }
 done
 
@@ -66,12 +66,12 @@ rm -rf "$root"
 # Optional package cache across builds (CI): downloads are reused, the image
 # content is unchanged (apt-get clean still runs in customize.sh).
 cache_args=()
-if [ -n "${T3BOX_IMAGE_APT_CACHE:-}" ]; then
-  mkdir -p "$T3BOX_IMAGE_APT_CACHE"
+if [ -n "${STEPHANIA_IMAGE_APT_CACHE:-}" ]; then
+  mkdir -p "$STEPHANIA_IMAGE_APT_CACHE"
   cache_args=(--skip=download/empty --skip=essential/unlink
     --setup-hook='mkdir -p "$1"/var/cache/apt/archives/'
-    --setup-hook="sync-in '$T3BOX_IMAGE_APT_CACHE' /var/cache/apt/archives/"
-    --customize-hook="sync-out /var/cache/apt/archives '$T3BOX_IMAGE_APT_CACHE'")
+    --setup-hook="sync-in '$STEPHANIA_IMAGE_APT_CACHE' /var/cache/apt/archives/"
+    --customize-hook="sync-out /var/cache/apt/archives '$STEPHANIA_IMAGE_APT_CACHE'")
 fi
 # Package sources: Debian, plus the Raspberry Pi archive for the Pi
 # variant. The Raspberry Pi key is pinned by fingerprint.
@@ -81,11 +81,11 @@ sources=("deb $mirror $suite $components")
 # apt as the only trusted file, so a second --keyring would replace the
 # Debian keys instead of adding to them.
 keydir="$out/apt-keyrings"; rm -rf "$keydir"; mkdir -p "$keydir"
-cp "${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}" "$keydir/debian-archive-keyring.gpg"
+cp "${STEPHANIA_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}" "$keydir/debian-archive-keyring.gpg"
 if [ "$variant" = pi ]; then
-  rpi_mirror=${T3BOX_IMAGE_RPI_MIRROR:-http://archive.raspberrypi.com/debian}
-  rpi_keyring=${T3BOX_IMAGE_RPI_KEYRING:-$out/raspberrypi-archive.gpg}
-  if [ -z "${T3BOX_IMAGE_RPI_KEYRING:-}" ]; then
+  rpi_mirror=${STEPHANIA_IMAGE_RPI_MIRROR:-http://archive.raspberrypi.com/debian}
+  rpi_keyring=${STEPHANIA_IMAGE_RPI_KEYRING:-$out/raspberrypi-archive.gpg}
+  if [ -z "${STEPHANIA_IMAGE_RPI_KEYRING:-}" ]; then
     curl -fsSL --retry 3 https://archive.raspberrypi.com/debian/raspberrypi.gpg.key | gpg --dearmor >"$rpi_keyring"
   fi
   got=$(gpg --show-keys --with-colons "$rpi_keyring" | awk -F: '$1=="fpr"{print $10; exit}')
@@ -98,8 +98,8 @@ mmdebstrap --arch="$arch" --variant=apt --include="$runtime,$build" "${keyrings[
   --customize-hook="$repo/os/image/customize.sh \"\$1\" '$repo' '$bins' '$version' '$build' '$runtime'" \
   "$suite" "$root" "${sources[@]}"
 
-if [ -n "${T3BOX_RAUC_KEYRING:-}" ]; then
-  install -m 0644 "$T3BOX_RAUC_KEYRING" "$root/etc/rauc/keyring.pem"
+if [ -n "${STEPHANIA_RAUC_KEYRING:-}" ]; then
+  install -m 0644 "$STEPHANIA_RAUC_KEYRING" "$root/etc/rauc/keyring.pem"
 fi
 # Package inventory for the SBOM (ci/sbom.py --dpkg) and source obligations
 # (docs/LICENSING.md).
@@ -123,7 +123,7 @@ fi
 mksquashfs "$root" "$out/rootfs.squashfs" -noappend -comp zstd -quiet -e boot/efi \
   -mkfs-time "$SOURCE_DATE_EPOCH" -all-time "$SOURCE_DATE_EPOCH" -no-xattrs
 # Fixed slot sizes (os/layout.env) so every future update fits its slot.
-rootfs_mib=$T3BOX_ROOT_MIB
+rootfs_mib=$STEPHANIA_ROOT_MIB
 [ "$(stat -c %s "$out/rootfs.squashfs")" -le $((rootfs_mib * 1048576)) ] || { echo "rootfs.squashfs exceeds the ${rootfs_mib} MiB slot" >&2; exit 1; }
 
 # Boot partitions. QEMU: cmdline.txt/config.txt only (the harness passes the
@@ -135,16 +135,16 @@ vfat() { # file label size-MiB
 }
 for slot in a b; do
   upper=$(echo "$slot" | tr a-z A-Z)
-  cmd="root=PARTLABEL=rootfs-$slot ro rootfstype=squashfs init=/usr/local/sbin/t3box-overlay-init rauc.slot=$upper"
+  cmd="root=PARTLABEL=rootfs-$slot ro rootfstype=squashfs init=/usr/local/sbin/stephania-overlay-init rauc.slot=$upper"
   {
     if [ "$variant" = pi ]; then
-      printf '# T3Box boot slot %s (Raspberry Pi 5)\n[all]\narm_64bit=1\nkernel=vmlinuz\ninitramfs initrd.img followkernel\nenable_uart=1\n' "$upper"
+      printf '# Stephania boot slot %s (Raspberry Pi 5)\n[all]\narm_64bit=1\nkernel=vmlinuz\ninitramfs initrd.img followkernel\nenable_uart=1\n' "$upper"
       cmd="console=serial0,115200 console=tty1 $cmd rootwait"
     fi
     cat "$repo/os/firmware/config.txt.fragment"
   } >"$boot_dir/config.txt"
   echo "$cmd" >"$boot_dir/cmdline.txt"
-  vfat "$out/boot-$slot.vfat" "BOOT-$upper" "$T3BOX_BOOT_MIB"
+  vfat "$out/boot-$slot.vfat" "BOOT-$upper" "$STEPHANIA_BOOT_MIB"
   touch -d "@$SOURCE_DATE_EPOCH" "$boot_dir"/*
   mcopy -m -i "$out/boot-$slot.vfat" "$boot_dir/cmdline.txt" "$boot_dir/config.txt" ::
   if [ "$variant" = pi ]; then
@@ -152,31 +152,31 @@ for slot in a b; do
     mcopy -s -i "$out/boot-$slot.vfat" "$out/overlays" ::
   fi
 done
-vfat "$out/selector.vfat" SELECTOR "$T3BOX_SELECTOR_MIB"
+vfat "$out/selector.vfat" SELECTOR "$STEPHANIA_SELECTOR_MIB"
 printf '[all]\ntryboot_a_b=1\nboot_partition=2\n[tryboot]\nboot_partition=3\n' >"$boot_dir/autoboot.txt"
 mcopy -i "$out/selector.vfat" "$boot_dir/autoboot.txt" ::autoboot.txt
 
 # Persistent data partition, pre-populated with the directory skeleton the
 # read-only root bind-mounts (os/image/customize.sh writes fstab).
 data_dir=$(mktemp -d)
-mkdir -p "$data_dir/t3box/varlib" "$data_dir/t3box/config" "$data_dir/t3box/update" "$data_dir/t3box/rauc"
-truncate -s "${T3BOX_DATA_MIN_MIB}M" "$out/data.ext4"
+mkdir -p "$data_dir/stephania/varlib" "$data_dir/stephania/config" "$data_dir/stephania/update" "$data_dir/stephania/rauc"
+truncate -s "${STEPHANIA_DATA_MIN_MIB}M" "$out/data.ext4"
 E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH mkfs.ext4 -q -L data -U 7e3b0000-0000-4000-8000-000000000006 -E hash_seed=7e3b0000-0000-4000-8000-000000000006,root_owner=0:0 -d "$data_dir" "$out/data.ext4"
 
 # GPT disk image.
-img="$out/t3box.img"
+img="$out/stephania.img"
 rm -f "$img"
-sizes=("$T3BOX_SELECTOR_MIB" "$T3BOX_BOOT_MIB" "$T3BOX_BOOT_MIB" "$rootfs_mib" "$rootfs_mib" "$T3BOX_DATA_MIN_MIB")
+sizes=("$STEPHANIA_SELECTOR_MIB" "$STEPHANIA_BOOT_MIB" "$STEPHANIA_BOOT_MIB" "$rootfs_mib" "$rootfs_mib" "$STEPHANIA_DATA_MIN_MIB")
 total=2; for s in "${sizes[@]}"; do total=$((total + s)); done
 truncate -s "${total}M" "$img"
 sfdisk -q "$img" <<EOF
 label: gpt
-size=${T3BOX_SELECTOR_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=selector
-size=${T3BOX_BOOT_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-a
-size=${T3BOX_BOOT_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-b
+size=${STEPHANIA_SELECTOR_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=selector
+size=${STEPHANIA_BOOT_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-a
+size=${STEPHANIA_BOOT_MIB}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=boot-b
 size=${rootfs_mib}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=rootfs-a
 size=${rootfs_mib}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=rootfs-b
-size=${T3BOX_DATA_MIN_MIB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=data
+size=${STEPHANIA_DATA_MIN_MIB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=data
 EOF
 write_part() { # $1 partition number, $2 file
   local start; start=$(sfdisk -J "$img" | python3 -c 'import json,sys;print(json.load(sys.stdin)["partitiontable"]["partitions"][int(sys.argv[1])-1]["start"])' "$1")
@@ -190,4 +190,4 @@ write_part 6 "$out/data.ext4"
 # rootfs-b stays empty: the first update fills it (RAUC writes the inactive slot).
 rm -rf "$boot_dir" "$data_dir"
 sfdisk -l "$img"
-echo "t3box image $version ($arch, $suite, $variant): $img"
+echo "stephania image $version ($arch, $suite, $variant): $img"

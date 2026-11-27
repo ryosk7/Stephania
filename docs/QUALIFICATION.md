@@ -34,7 +34,7 @@ not a substitute.
 ### Q-BOOT: A/B update and tryboot on real firmware
 Covers what `os.yml` emulates (docs/UPDATE.md).
 1. Flash the reference image; boot; `rauc status` shows A booted, good.
-2. `t3box-update <signed bundle>`; observe reboot via tryboot (`vcgencmd
+2. `stephania-update <signed bundle>`; observe reboot via tryboot (`vcgencmd
    bootloader_config`, `/proc/device-tree/chosen/bootloader/tryboot` = 1).
 3. Confirm unit commits: `autoboot.txt` `[all] boot_partition=3`; reboot
    normally; still B.
@@ -59,14 +59,14 @@ For each controller (on-board CYW43455, external dongle):
    measure time from app scan start to claim completion.
 4. `systemctl restart bluetooth` during an exchange; the app must recover.
 **Record:** success count / attempts, p50/p95 completion time, failures
-with `journalctl -u t3box-ble -u bluetooth` excerpts.
+with `journalctl -u stephania-ble -u bluetooth` excerpts.
 **Pass:** 100 % eventual success without power-cycling the device.
 
 ### Q-WIFI: networks
 1. WPA2-PSK, WPA3-SAE (if supported by the chosen NM build), open, hidden
    SSID, wrong password, AP out of range.
 2. Reboot: device rejoins without the app.
-3. DHCP lease change: `t3box-pki` reissues the certificate within 5 min;
+3. DHCP lease change: `stephania-pki` reissues the certificate within 5 min;
    app reconnect with the same pin succeeds.
 **Pass:** correct state reported over BLE for every case; reconnection
 after reboot within 60 s of AP availability.
@@ -106,7 +106,7 @@ throttling.
 unattended.
 
 ### Q-PHONE: phone media (docs/PHONE.md "Phone app sender")
-iOS MultiCam devices (and later ≥3 Android vendors/SoCs): T3Box Connect
+iOS MultiCam devices (and later ≥3 Android vendors/SoCs): Stephania Connect
 development build, phone on the same Wi-Fi as the Pi, HDMI streaming.
 1. Rear only, then Both: record `capabilities().dualProfiles`, the
    profile used, and `GET /api/v1/status` `sources` (geometry, fps from
@@ -124,7 +124,7 @@ development build, phone on the same Wi-Fi as the Pi, HDMI streaming.
 7. Hardware encoding: Instruments (VideoToolbox) or energy log shows the
    hardware H.264 encoder in use.
 **Pass:** all steps as described; no decoder errors on the Pi
-(`t3box-phone` log) outside the interruption windows.
+(`stephania-phone` log) outside the interruption windows.
 
 ## Results
 Add one row per run. Columns: ID, date (UTC), hardware (refer to the table

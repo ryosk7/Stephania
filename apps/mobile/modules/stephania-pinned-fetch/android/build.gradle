@@ -1,0 +1,29 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.stephaniapinnedfetch'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.stephaniapinnedfetch"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+  testOptions {
+    unitTests.all {
+      // Device PKI material for PinnedHttpTest (ci/mobile-android.sh).
+      environment "STEPHANIA_PKI_P12", System.getenv("STEPHANIA_PKI_P12") ?: ""
+      environment "STEPHANIA_PKI_CA_SHA256", System.getenv("STEPHANIA_PKI_CA_SHA256") ?: ""
+    }
+  }
+}
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+}

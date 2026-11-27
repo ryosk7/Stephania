@@ -8,7 +8,7 @@
 // phone only gets the dual profiles its hardware reported it can run
 // concurrently (Capabilities.dualProfiles, from AVCaptureMultiCamSession
 // hardware cost); a thermal step never moves *up* past that ceiling.
-import type {CameraMode, Capabilities, DualProfile, ThermalState, TrackPlan} from '@modules/t3box-camera';
+import type {CameraMode, Capabilities, DualProfile, ThermalState, TrackPlan} from '@modules/stephania-camera';
 
 type Shape = Omit<TrackPlan, 'role' | 'active'>;
 

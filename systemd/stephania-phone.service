@@ -1,0 +1,42 @@
+[Unit]
+Description=Stephania phone camera WebRTC receiver
+# Independent of the engine: it reconnects to the ingest socket on its own,
+# and a crash here never stops media (docs/PHONE.md).
+After=network-online.target stephania.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stephania-phone
+Group=stephania-phone
+# Group stephania reaches /run/stephania/media.sock (engine ingest, 0660).
+SupplementaryGroups=stephania
+ExecStart=/usr/local/bin/stephania-phone
+Environment=STEPHANIA_PHONE_SOCKET=/run/stephania-phone/phone.sock
+Environment=STEPHANIA_MEDIA_SOCKET=/run/stephania/media.sock
+# Single UDP port for ICE/DTLS/SRTP (BUNDLE); open it on the LAN firewall.
+Environment=STEPHANIA_PHONE_UDP_PORT=40100
+RuntimeDirectory=stephania-phone
+# 0750 + group stephania-phone: the control plane (member) relays SDP here.
+RuntimeDirectoryMode=0750
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+UMask=0007
+MemoryMax=128M
+CPUWeight=50
+
+[Install]
+WantedBy=multi-user.target

@@ -7,8 +7,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 (cd "$cache"; sha256sum -c manifest.txt)
 mkdir -p "$work/root/bin"
-bin=target/release/t3box-native-probe
-install -m 755 "$bin" "$work/root/bin/t3box-native-probe"
+bin=target/release/stephania-native-probe
+install -m 755 "$bin" "$work/root/bin/stephania-native-probe"
 while read -r lib; do [[ -z "$lib" ]] || cp -L --parents "$lib" "$work/root"; done < <(ldd "$bin" | awk '/=> \/|^[[:space:]]*\// {for(i=1;i<=NF;i++) if($i ~ /^\//) {print $i;break}}')
 python3 - "$work/root/tone.raw" <<'PY'
 import math,struct,sys
@@ -35,8 +35,8 @@ v4l2-ctl -d /dev/video0 --get-fmt-video --get-parm
 aplay -l
 aplay -D hw:Loopback,0,0 -t raw -f S16_LE -c 2 -r 48000 /tone.raw &
 feed=$!
-export T3BOX_VIDEO=/dev/video0 T3BOX_AUDIO=hw:Loopback,1,0 T3BOX_WIDTH=320 T3BOX_HEIGHT=180
-timeout 12 t3box-native-probe >/tmp/probe.log 2>&1 || { cat /tmp/probe.log; exit 1; }
+export STEPHANIA_VIDEO=/dev/video0 STEPHANIA_AUDIO=hw:Loopback,1,0 STEPHANIA_WIDTH=320 STEPHANIA_HEIGHT=180
+timeout 12 stephania-native-probe >/tmp/probe.log 2>&1 || { cat /tmp/probe.log; exit 1; }
 cat /tmp/probe.log
 kill "$feed" 2>/dev/null || true
 echo LAB_PASS

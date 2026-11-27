@@ -1,10 +1,10 @@
-// Setup step 2: find the T3Box over Bluetooth, claim it (with the QR
+// Setup step 2: find the Stephania device over Bluetooth, claim it (with the QR
 // secret) or open it as its owner.
 import {router} from 'expo-router';
 import {useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
 import type {Device} from 'react-native-ble-plx';
-import {ProvisioningSession} from '@t3box/provisioning-client';
+import {ProvisioningSession} from '@stephania/provisioning-client';
 import {Footnote, Icon, IconButton, List, ListIcon, Notice, Screen, Title, TopBar, useColor} from '@/shared/ui';
 import {connectTransport, disconnect, ensurePermissions, scanDevices, waitPoweredOn} from './ble/manager';
 import {describeSetupError} from './errors';
@@ -24,7 +24,7 @@ export function NearbyScreen() {
   useEffect(() => {
     let stop: (() => void) | undefined;
     (async () => {
-      if (!(await ensurePermissions())) return setPhase({kind: 'error', message: 'Bluetooth permission is required to find the T3Box.'});
+      if (!(await ensurePermissions())) return setPhase({kind: 'error', message: 'Bluetooth permission is required to find the Stephania device.'});
       try { await waitPoweredOn(); } catch (e) { return setPhase({kind: 'error', message: describeSetupError(e)}); }
       stop = scanDevices(
         d => setDevices(list => (list.some(x => x.id === d.id) ? list : [...list, d])),
@@ -51,7 +51,7 @@ export function NearbyScreen() {
         if (!key) throw Object.assign(new Error('not_owner'), {code: 'not_owner'});
         session.useOwnerKey(key);
       }
-      setActive({deviceId: device.id, name: device.localName ?? device.name ?? 'T3Box', session});
+      setActive({deviceId: device.id, name: device.localName ?? device.name ?? 'Stephania', session});
       router.push('/setup/wifi');
       setPhase({kind: 'searching'});
     } catch (e) {
@@ -65,10 +65,10 @@ export function NearbyScreen() {
   const rescan = () => { setDevices([]); setPhase({kind: 'searching'}); setScanRun(n => n + 1); };
   return (
     <Screen header={<TopBar onBack={() => router.back()} title="Nearby" trailing={<>
-      {!pendingSecret() && <IconButton icon="qr" label="Set up a new T3Box: scan its code" onPress={() => router.replace('/setup/scan')} />}
+      {!pendingSecret() && <IconButton icon="qr" label="Set up a new Stephania device: scan its code" onPress={() => router.replace('/setup/scan')} />}
       <IconButton icon="refresh" label="Scan again" onPress={rescan} />
     </>} />} scroll>
-      <Title>Nearby T3Box</Title>
+      <Title>Nearby devices</Title>
       <List.Section footer={devices.length === 0 ? 'Plugged in and started? It takes about 30 seconds.' : undefined}>
         {devices.length === 0
           ? <List.Row title="Searching…" accessory={<ActivityIndicator color={spinner} />} />
@@ -76,8 +76,8 @@ export function NearbyScreen() {
             const sig = signal(d.rssi);
             const connecting = busy && phase.id === d.id;
             return (
-              <List.Row key={d.id} title={d.localName ?? d.name ?? 'T3Box'} detail={connecting ? phase.label : undefined}
-                accessibilityLabel={`${d.localName ?? d.name ?? 'T3Box'}, ${connecting ? phase.label : sig.label}`}
+              <List.Row key={d.id} title={d.localName ?? d.name ?? 'Stephania'} detail={connecting ? phase.label : undefined}
+                accessibilityLabel={`${d.localName ?? d.name ?? 'Stephania'}, ${connecting ? phase.label : sig.label}`}
                 leading={<ListIcon icon={'bluetooth'} />}
                 value={connecting ? undefined : <Icon name={(['signal0', 'signal1', 'signal2', 'signal3'] as const)[sig.level]!} size={18} color={sig.level >= 2 ? 'text' : 'warning'} />}
                 accessory={connecting ? <ActivityIndicator color={spinner} /> : undefined}
@@ -86,7 +86,7 @@ export function NearbyScreen() {
           })}
       </List.Section>
       {phase.kind === 'error' && <Notice tone="warning">{phase.message}</Notice>}
-      <View className="flex-row items-center justify-center gap-2" accessible accessibilityLabel="Keep the phone within a few metres of the T3Box">
+      <View className="flex-row items-center justify-center gap-2" accessible accessibilityLabel="Keep the phone within a few metres of the Stephania device">
         <Icon name="bluetooth" size={16} color="tertiary" /><Footnote tone="tertiary">Within a few metres</Footnote>
       </View>
     </Screen>

@@ -1,14 +1,14 @@
-# T3Box design
+# Stephania design
 
-How T3Box's interfaces look and how their code is organised. It covers
-T3Box Connect (the phone app, `apps/mobile`, iOS first) in detail, and the
+How Stephania's interfaces look and how their code is organised. It covers
+Stephania Connect (the phone app, `apps/mobile`, iOS first) in detail, and the
 direction for the Studio (`apps/studio`, web). Every rule here comes from
 the research in §2 or from a cited guideline, not from taste. When a rule
 and a screen disagree, change the screen or change this file with a reason.
 
 ## 1. What the interfaces are for
 
-- **Connect** sets a T3Box up (QR, Bluetooth, Wi-Fi), operates a show
+- **Connect** sets a Stephania up (QR, Bluetooth, Wi-Fi), operates a show
   (start/stop, scenes, audio) and turns the phone into one or two cameras.
   It is used standing next to a stage, often in a dark room, with one hand,
   while something is live. A mistake is public.
@@ -66,7 +66,7 @@ Guidelines: Apple HIG — hit targets at least 44×44 pt
    camera off, reconnecting) the screen says so in words next to the thing
    affected.
 6. **Platform-neutral.** iPhone and Android get the same components,
-   drawn by T3Box: a bundled font (Inter, JetBrains Mono for addresses),
+   drawn by Stephania: a bundled font (Inter, JetBrains Mono for addresses),
    one icon set (Lucide), our own top bar, switch, segmented control,
    sheets and confirmations — no SF Symbols, Material icons, system
    switches, native navigation headers or system alert dialogs. The
@@ -85,7 +85,7 @@ Guidelines: Apple HIG — hit targets at least 44×44 pt
 
 ## 4. Tokens (`apps/mobile/src/global.css`)
 
-T3Box's own palette — neutral greys and four state colours — identical on
+Stephania's own palette — neutral greys and four state colours — identical on
 both platforms, defined once as Tailwind CSS v4 theme variables with a
 light and a dark value. Components use the semantic names only
 (`bg-surface`, `text-secondary`, `border-live`), so a theme switch
@@ -147,7 +147,7 @@ instead of boolean modes.
 | `IconButton` | `<IconButton icon label shape="round"\|"inline"\|"square">` | icon-only control on `fill` with a 1 px border: round 44 (toolbars), inline 36 beside a title (44 hit area), square 52 beside a text button; `label` is spoken and shown on long press |
 | `SectionHeading` | `<SectionHeading icon label aside?>` | section heading as an icon (the word is its accessible name); `aside` holds the section's control (the fade switch) |
 | `List` | `<List.Section heading? footer>` `<List.Row title value? detail? leading? onPress? accessory?>`, `<ListIcon icon color?>` | rows (≥ 56) in a bordered card, full-width separators, leading icons on a neutral 36 rounded square, selection as a check |
-| `Toggle` | `<Toggle value onChange label>` | drawn by T3Box (not the system switch): 48×28, track in the text colour when on |
+| `Toggle` | `<Toggle value onChange label>` | drawn by Stephania (not the system switch): 48×28, track in the text colour when on |
 | `Segmented` | `<Segmented value onChange locked?><Segmented.Item value label icon? unavailable?/></Segmented>` | compound; with `icon` an item shows only the icon and `label` is spoken |
 | `StatusChip` | `<StatusChip tone icon label value? pulse?>` | state as an icon on the state colour plus a value (on-air time); the word is spoken and shown on long press |
 | `LiveBadge` | `<LiveBadge elapsed?>` | red "LIVE" tag + tabular time |
@@ -163,12 +163,12 @@ both themes (§7).
 
 ## 6. Screens (Connect)
 
-- **Home** — large title "T3Box" with three toolbar icons: Bluetooth
-  (a registered T3Box nearby), plus (set up a T3Box), gear (Settings). One
+- **Home** — large title "Stephania" with three toolbar icons: Bluetooth
+  (a registered Stephania device nearby), plus (set up a Stephania device), gear (Settings). One
   `Card` per enrolled device: name, `StatusChip` (broadcast icon + on-air
   time; Wi-Fi-off in amber when unreachable, with "Same Wi-Fi as this
-  T3Box?"), a square camera button and `PrimaryButton` "Control". Empty
-  state: card "Set up a T3Box" with the PC → QR picture and "Scan".
+  Stephania?"), a square camera button and `PrimaryButton` "Control". Empty
+  state: card "Set up a Stephania device" with the PC → QR picture and "Scan".
 - **Settings** (`settings`) — Appearance: three preview tiles (system,
   light, dark, each a miniature screen in that theme) with the theme's
   icon under it; default is the system. About: Licences (every package that
@@ -282,7 +282,7 @@ the screenshots.
 plain web app, uses TanStack Router (§9).
 
 **Android.** Features talk to native code only through platform contracts
-(`modules/t3box-camera/src/T3BoxCamera.types.ts`, the pinned fetch), and
+(`modules/stephania-camera/src/StephaniaCamera.types.ts`, the pinned fetch), and
 every visible component is drawn by `shared/ui` with bundled fonts and
 icons. The Android port implements the contracts; screens, features and
 components do not change, and both platforms look the same.

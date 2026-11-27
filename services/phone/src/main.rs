@@ -1,14 +1,14 @@
-//! t3box-phone: WebRTC receiver for the phone's camera tracks (docs/PHONE.md).
+//! stephania-phone: WebRTC receiver for the phone's camera tracks (docs/PHONE.md).
 //!
-//! - Control: Unix socket (`T3BOX_PHONE_SOCKET`, docs/IPC.md framing),
+//! - Control: Unix socket (`STEPHANIA_PHONE_SOCKET`, docs/IPC.md framing),
 //!   used only by the control plane, which relays the phone's SDP:
 //!   `session.offer {sdp, tracks:{<track id>: "rear"|"front"}, replace?}` →
 //!   `{sdp}` (non-trickle answer); `session.close`; `session.status`.
-//! - Media: ICE host candidates on one UDP port (`T3BOX_PHONE_UDP_PORT`,
+//! - Media: ICE host candidates on one UDP port (`STEPHANIA_PHONE_UDP_PORT`,
 //!   default 40100) on the device's private addresses; DTLS-SRTP; H.264
 //!   only. RTP is reassembled into access units (assembler.rs) and
-//!   forwarded to the engine's ingest socket (`T3BOX_MEDIA_SOCKET`,
-//!   crate `t3box::phone_ingest`), which decodes them. Keyframe requests
+//!   forwarded to the engine's ingest socket (`STEPHANIA_MEDIA_SOCKET`,
+//!   crate `stephania::phone_ingest`), which decodes them. Keyframe requests
 //!   from the engine, and losses seen here, become RTCP PLI.
 //! - Exactly one phone session (§12). A second offer is refused with
 //!   `busy` unless `replace:true`.
@@ -89,7 +89,7 @@ impl PeerConnectionEventHandler for Handler {
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        eprintln!("t3box-phone: connection {state}");
+        eprintln!("stephania-phone: connection {state}");
         self.stats.lock().unwrap().state = state.to_string();
     }
 
@@ -97,12 +97,12 @@ impl PeerConnectionEventHandler for Handler {
         if track.kind().await != RtpCodecKind::Video { return; }
         let id = track.track_id().await.to_string();
         let Some(&source) = self.tracks.get(&id) else {
-            eprintln!("t3box-phone: ignoring unmapped track {id}");
+            eprintln!("stephania-phone: ignoring unmapped track {id}");
             return;
         };
-        let name = t3box_source_name(source);
+        let name = stephania_source_name(source);
         let Some(&ssrc) = track.ssrcs().await.first() else { return };
-        eprintln!("t3box-phone: track {id} → {name} (ssrc {ssrc})");
+        eprintln!("stephania-phone: track {id} → {name} (ssrc {ssrc})");
         let (to_engine, stats) = (self.to_engine.clone(), Arc::clone(&self.stats));
         let mut engine_requests = self.keyframe_requests.subscribe();
         tokio::spawn(async move {
@@ -124,7 +124,7 @@ impl PeerConnectionEventHandler for Handler {
                                     // 90 kHz RTP clock → microseconds (wraps every ~13 h;
                                     // the engine only needs monotonic order per source).
                                     let pts_us = u64::from(timestamp) * 100 / 9;
-                                    match to_engine.try_send(t3box_access_unit(source, pts_us, &data)) {
+                                    match to_engine.try_send(stephania_access_unit(source, pts_us, &data)) {
                                         Ok(()) => *stats.lock().unwrap().access_units.entry(name).or_default() += 1,
                                         Err(_) => {
                                             // Engine slow or absent: drop and resynchronise
@@ -145,7 +145,7 @@ impl PeerConnectionEventHandler for Handler {
                     }
                 }
             }
-            eprintln!("t3box-phone: track {name} ended");
+            eprintln!("stephania-phone: track {name} ended");
         });
     }
 }
@@ -158,9 +158,9 @@ async fn pli(last: &mut Option<Instant>, track: Arc<dyn TrackRemote>, stats: Arc
     let _ = track.write_rtcp(vec![Box::new(PictureLossIndication { sender_ssrc: 0, media_ssrc: ssrc })]).await;
 }
 
-fn t3box_source_name(id: u8) -> &'static str { if id == 1 { "phone:rear" } else { "phone:front" } }
+fn stephania_source_name(id: u8) -> &'static str { if id == 1 { "phone:rear" } else { "phone:front" } }
 
-fn t3box_access_unit(source: u8, pts_us: u64, data: &[u8]) -> Vec<u8> {
+fn stephania_access_unit(source: u8, pts_us: u64, data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(14 + data.len());
     out.extend_from_slice(&((10 + data.len()) as u32).to_be_bytes());
     out.push(1);
@@ -298,7 +298,7 @@ async fn engine_link(path: String, mut rx: mpsc::Receiver<Vec<u8>>, keyframe_req
     loop {
         match UnixStream::connect(&path).await {
             Ok(stream) => {
-                eprintln!("t3box-phone: connected to engine ingest {path}");
+                eprintln!("stephania-phone: connected to engine ingest {path}");
                 let (mut r, mut w) = stream.into_split();
                 let kf = keyframe_requests.clone();
                 let reader = tokio::spawn(async move {
@@ -324,12 +324,12 @@ async fn engine_link(path: String, mut rx: mpsc::Receiver<Vec<u8>>, keyframe_req
 }
 
 fn udp_addrs() -> Vec<String> {
-    let port = env("T3BOX_PHONE_UDP_PORT", "40100");
-    if let Ok(list) = std::env::var("T3BOX_PHONE_ADDRS") {
+    let port = env("STEPHANIA_PHONE_UDP_PORT", "40100");
+    if let Ok(list) = std::env::var("STEPHANIA_PHONE_ADDRS") {
         return list.split(',').filter(|a| !a.is_empty()).map(|a| format!("{a}:{port}")).collect();
     }
-    let mut ips: Vec<IpAddr> = t3box::pki::interface_addresses().into_iter()
-        .filter(|ip| ip.is_ipv4() && t3box::pki::certifiable(ip) && !ip.is_loopback()).collect();
+    let mut ips: Vec<IpAddr> = stephania::pki::interface_addresses().into_iter()
+        .filter(|ip| ip.is_ipv4() && stephania::pki::certifiable(ip) && !ip.is_loopback()).collect();
     ips.sort();
     ips.dedup();
     ips.into_iter().map(|ip| format!("{ip}:{port}")).collect()
@@ -337,11 +337,11 @@ fn udp_addrs() -> Vec<String> {
 
 #[tokio::main]
 async fn main() {
-    let socket = env("T3BOX_PHONE_SOCKET", "/run/t3box-phone/phone.sock");
-    let media = env("T3BOX_MEDIA_SOCKET", "/run/t3box/media.sock");
+    let socket = env("STEPHANIA_PHONE_SOCKET", "/run/stephania-phone/phone.sock");
+    let media = env("STEPHANIA_MEDIA_SOCKET", "/run/stephania/media.sock");
     let addrs = udp_addrs();
     if addrs.is_empty() {
-        eprintln!("t3box-phone: no private IPv4 address yet; sessions will fail until the network is up");
+        eprintln!("stephania-phone: no private IPv4 address yet; sessions will fail until the network is up");
     }
     let (to_engine, rx) = mpsc::channel(ENGINE_QUEUE);
     let (keyframe_requests, _) = broadcast::channel(16);
@@ -350,14 +350,14 @@ async fn main() {
     let _ = std::fs::remove_file(&socket);
     let listener = match UnixListener::bind(&socket) {
         Ok(l) => l,
-        Err(e) => { eprintln!("t3box-phone: bind {socket}: {e}"); std::process::exit(2); }
+        Err(e) => { eprintln!("stephania-phone: bind {socket}: {e}"); std::process::exit(2); }
     };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660));
     }
-    eprintln!("t3box-phone: control {socket}, media UDP {addrs:?}");
+    eprintln!("stephania-phone: control {socket}, media UDP {addrs:?}");
     loop {
         let Ok((mut stream, _)) = listener.accept().await else { continue };
         let shared = Arc::clone(&shared);

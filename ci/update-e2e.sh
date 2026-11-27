@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A/B update end to end with real RAUC on loop devices and an emulated
 # Raspberry Pi tryboot firmware (crate::bootctl, docs/UPDATE.md).
-# Usage (root): ci/update-e2e.sh <t3box-bootctl>
+# Usage (root): ci/update-e2e.sh <stephania-bootctl>
 set -euo pipefail
 bootctl=$(readlink -f "$1")
 # CI uses verity bundles (needs device-mapper; RAUC v1.15 rejects the
@@ -42,8 +42,8 @@ reboot_cleanup() {
   losetup -a | awk -F: '/\.raucb/ {print $1}' | xargs -r -n1 losetup -d 2>/dev/null || true
 }
 # Stand-in control database: schema_info.version as Sequel keeps it.
-db_version() { sqlite3 "$T3BOX_CONTROL_DB" 'select version from schema_info'; }
-migrate_to() { sqlite3 "$T3BOX_CONTROL_DB" "pragma journal_mode=wal; update schema_info set version=$1; insert into scenes values('from-v$1');" >/dev/null; }
+db_version() { sqlite3 "$STEPHANIA_CONTROL_DB" 'select version from schema_info'; }
+migrate_to() { sqlite3 "$STEPHANIA_CONTROL_DB" "pragma journal_mode=wal; update schema_info set version=$1; insert into scenes values('from-v$1');" >/dev/null; }
 firmware_boot() { # $1 = normal|tryboot
   reboot_cleanup
   local sect=all; [ "$1" = tryboot ] && sect=tryboot
@@ -54,9 +54,9 @@ firmware_boot() { # $1 = normal|tryboot
   "$bootctl" restore-data >>"$w/restore.log" 2>&1 || fail "restore-data"
   start_rauc "$booted"
 }
-export T3BOX_CONTROL_DB=$w/data/control.db T3BOX_SNAPSHOT_DIR=$w/data/snapshot
-export T3BOX_AUTOBOOT=$w/selector/autoboot.txt T3BOX_BOOT_STATE=$w/data/bootctl.json T3BOX_BOOT_SLOTS=A=2,B=3 \
-  T3BOX_DEVICE_TREE=$w/dt T3BOX_ENGINE_SOCKET=$w/engine.sock T3BOX_DATA_DIR=$w/data T3BOX_HEALTH_ATTEMPTS=2 T3BOX_REBOOT=true
+export STEPHANIA_CONTROL_DB=$w/data/control.db STEPHANIA_SNAPSHOT_DIR=$w/data/snapshot
+export STEPHANIA_AUTOBOOT=$w/selector/autoboot.txt STEPHANIA_BOOT_STATE=$w/data/bootctl.json STEPHANIA_BOOT_SLOTS=A=2,B=3 \
+  STEPHANIA_DEVICE_TREE=$w/dt STEPHANIA_ENGINE_SOCKET=$w/engine.sock STEPHANIA_DATA_DIR=$w/data STEPHANIA_HEALTH_ATTEMPTS=2 STEPHANIA_REBOOT=true
 
 cat >"$w/pre-install" <<SH
 #!/bin/sh
@@ -66,7 +66,7 @@ SH
 chmod +x "$w/pre-install"
 cat >"$w/system.conf" <<CONF
 [system]
-compatible=t3box-pi5
+compatible=stephania-pi5
 bootloader=custom
 bundle-formats=$format
 data-directory=$w/rauc-data
@@ -106,9 +106,9 @@ primary() { "$bootctl" get-primary; }
 committed() { awk '/^\[all\]/{a=1} /^\[tryboot\]/{a=0} a && /^boot_partition=/{split($0,x,"=");print x[2]}' "$w/selector/autoboot.txt"; }
 
 # Test-only signing PKI (production keys never exist in CI or the repo).
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=t3box-test-ca \
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=stephania-test-ca \
   -keyout "$w/ca.key" -out "$w/ca.pem" -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign >/dev/null 2>&1
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=t3box-test-release -keyout "$w/rel.key" -out "$w/rel.csr" >/dev/null 2>&1
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=stephania-test-release -keyout "$w/rel.key" -out "$w/rel.csr" >/dev/null 2>&1
 openssl x509 -req -in "$w/rel.csr" -CA "$w/ca.pem" -CAkey "$w/ca.key" -CAcreateserial -days 2 -out "$w/rel.pem" \
   -extfile <(printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=codeSigning\n') >/dev/null 2>&1
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=attacker \
@@ -117,7 +117,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
 make_bundle() { # $1 out, $2 version, $3 compatible, $4 key, $5 cert
   local d="$w/content-$2"
   rm -rf "$d"; mkdir -p "$d/root/etc"
-  echo "$2" >"$d/root/etc/t3box-version"
+  echo "$2" >"$d/root/etc/stephania-version"
   head -c 40M /dev/urandom >"$d/root/payload"
   mksquashfs "$d/root" "$d/rootfs.img" -noappend -quiet >/dev/null
   truncate -s 16M "$d/boot.vfat"; mkfs.vfat -n BOOT "$d/boot.vfat" >/dev/null
@@ -129,13 +129,13 @@ make_bundle() { # $1 out, $2 version, $3 compatible, $4 key, $5 cert
 }
 slot_sha() { head -c "$(cat "$2.rootfs.size")" "${dev[$1]}" | sha256sum | cut -d' ' -f1; }
 
-sqlite3 "$T3BOX_CONTROL_DB" 'create table schema_info(version integer); insert into schema_info values(2); create table scenes(id text);'
+sqlite3 "$STEPHANIA_CONTROL_DB" 'create table schema_info(version integer); insert into schema_info values(2); create table scenes(id text);'
 firmware_boot normal
 [ "$(primary)" = A ] || fail "initial primary"
 pass "booted A (emulated firmware + RAUC service)"
 
-make_bundle "$w/v2.raucb" 2.0.0 t3box-pi5 "$w/rel.key" "$w/rel.pem"
-make_bundle "$w/evil.raucb" 6.6.6 t3box-pi5 "$w/evil.key" "$w/evil.pem"
+make_bundle "$w/v2.raucb" 2.0.0 stephania-pi5 "$w/rel.key" "$w/rel.pem"
+make_bundle "$w/evil.raucb" 6.6.6 stephania-pi5 "$w/evil.key" "$w/evil.pem"
 make_bundle "$w/other.raucb" 2.0.1 other-device "$w/rel.key" "$w/rel.pem"
 
 expect_refused() { # $1 bundle, $2 pattern expected in RAUC's reason
@@ -178,18 +178,18 @@ rauc install "$w/v2.raucb" >>"$w/install.log" 2>&1 || fail "install v2"
 [ "$(slot_sha rootfs-b "$w/v2.raucb")" = "$(cat "$w/v2.raucb.rootfs.sha256")" ] || fail "slot B content"
 pass "v2 written to inactive B and staged as a one-time trial (A still committed)"
 
-[ -f "$T3BOX_SNAPSHOT_DIR/control.db" ] || fail "pre-install snapshot missing"
+[ -f "$STEPHANIA_SNAPSHOT_DIR/control.db" ] || fail "pre-install snapshot missing"
 firmware_boot tryboot
 migrate_to 3   # v2 migrates the schema during its trial
 "$bootctl" confirm >>"$w/confirm.log" 2>&1 || fail "confirm healthy trial"
-[ ! -f "$T3BOX_SNAPSHOT_DIR/control.db" ] || fail "snapshot kept after commit"
+[ ! -f "$STEPHANIA_SNAPSHOT_DIR/control.db" ] || fail "snapshot kept after commit"
 [ "$(committed)" = 3 ] || fail "not committed"
 firmware_boot normal
 [ "$("$bootctl" get-current)" = B ] || fail "normal boot after commit"
 [ "$(db_version)" = 3 ] || fail "committed data lost"
 pass "healthy trial committed with its migrated data; normal boots stay on B"
 
-make_bundle "$w/v3.raucb" 3.0.0 t3box-pi5 "$w/rel.key" "$w/rel.pem"
+make_bundle "$w/v3.raucb" 3.0.0 stephania-pi5 "$w/rel.key" "$w/rel.pem"
 rauc install "$w/v3.raucb" >>"$w/install.log" 2>&1 || fail "install v3"
 [ "$(primary)" = A ] || fail "v3 pending on A"
 kill "${pids[-1]}"; wait "${pids[-1]}" 2>/dev/null || true; rm -f "$w/engine.sock"  # engine broken in v3
@@ -198,7 +198,7 @@ migrate_to 4
 "$bootctl" confirm >>"$w/confirm.log" 2>&1 && fail "unhealthy trial confirmed"
 firmware_boot normal
 [ "$(db_version)" = 3 ] || fail "data not restored after rollback: $(db_version)"
-[ "$(sqlite3 "$T3BOX_CONTROL_DB" "select count(*) from scenes where id='from-v4'")" = 0 ] || fail "trial writes survived"
+[ "$(sqlite3 "$STEPHANIA_CONTROL_DB" "select count(*) from scenes where id='from-v4'")" = 0 ] || fail "trial writes survived"
 [ "$("$bootctl" get-current)" = B ] && [ "$(committed)" = 3 ] || fail "rollback after failed health"
 [ "$("$bootctl" get-state A)" = bad ] || fail "A not marked bad"
 pass "unhealthy trial (engine down) rolled back to B, marked bad, data restored to the pre-update snapshot"
@@ -211,9 +211,9 @@ migrate_to 4
 firmware_boot normal   # trial crashed / watchdog / power loss before confirmation
 [ "$(db_version)" = 3 ] || fail "data not restored after crashed trial"
 "$bootctl" confirm >>"$w/confirm.log" 2>&1 || fail "confirm after crashed trial"
-sqlite3 "$T3BOX_CONTROL_DB" "insert into scenes values('after-rollback')"
+sqlite3 "$STEPHANIA_CONTROL_DB" "insert into scenes values('after-rollback')"
 firmware_boot normal
-[ "$(sqlite3 "$T3BOX_CONTROL_DB" "select count(*) from scenes where id='after-rollback'")" = 1 ] || fail "second restore clobbered newer data"
+[ "$(sqlite3 "$STEPHANIA_CONTROL_DB" "select count(*) from scenes where id='after-rollback'")" = 1 ] || fail "second restore clobbered newer data"
 [ "$("$bootctl" get-current)" = B ] && [ "$(primary)" = B ] && [ "$("$bootctl" get-state A)" = bad ] || fail "crashed trial"
 pass "crashed trial falls back to B by firmware rule, marked bad, data restored exactly once"
 # Deadline: a trial that never gets confirmed is rejected by the timer.

@@ -23,7 +23,7 @@ module Accounts
   MAX_AGE_SECONDS = 7 * 86_400
   MAX_SESSIONS_PER_USER = 8
   TOUCH_EVERY = 60
-  COOKIE = "t3box_session"
+  COOKIE = "stephania_session"
   SCRYPT = {N: 2**14, r: 8, p: 1}.freeze
   DUMMY_HASH = "scrypt$16384$8$1$#{Base64.strict_encode64("\0" * 16)}$#{Base64.strict_encode64("\0" * 32)}"
 

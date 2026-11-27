@@ -13,7 +13,7 @@ const assetRegistry = fileURLToPath(new URL('../node_modules/react-native-web/di
 
 /** @expo-google-fonts load their .ttf with require(), which Metro resolves; Vite needs asset URLs. */
 const fontRequires = {
-  name: 't3box-expo-font-require',
+  name: 'stephania-expo-font-require',
   transform(code: string, id: string) {
     if (!id.includes('@expo-google-fonts')) return null;
     return code.replace(/require\((['"][^'"]+\.ttf['"])\)/g, 'new URL($1, import.meta.url).href');

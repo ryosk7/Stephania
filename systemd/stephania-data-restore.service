@@ -1,0 +1,18 @@
+[Unit]
+Description=Stephania restore persistent data after a rejected update trial
+# Must finish before the control plane opens its database.
+DefaultDependencies=no
+After=local-fs.target
+Before=stephania-control.service stephania-update-confirm.service
+
+[Service]
+Type=oneshot
+Environment=STEPHANIA_AUTOBOOT=/boot/selector/autoboot.txt
+Environment=STEPHANIA_BOOT_STATE=/data/stephania/update/bootctl.json
+Environment=STEPHANIA_BOOT_SLOTS=A=2,B=3
+Environment=STEPHANIA_CONTROL_DB=/var/lib/stephania/control/control.db
+Environment=STEPHANIA_SNAPSHOT_DIR=/data/stephania/update/snapshot
+ExecStart=/usr/local/bin/stephania-bootctl restore-data
+
+[Install]
+WantedBy=multi-user.target

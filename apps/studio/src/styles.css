@@ -1,6 +1,6 @@
 /*
- * T3Box Studio styles: Tailwind CSS v4 with the same semantic tokens as
- * T3Box Connect (DESIGN.md §4). Light and dark values; the <html> element
+ * Stephania Studio styles: Tailwind CSS v4 with the same semantic tokens as
+ * Stephania Connect (DESIGN.md §4). Light and dark values; the <html> element
  * carries `dark` when the dark theme is active (src/theme.ts: system by
  * default, or the user's choice). No web fonts ship from the device
  * (docs/LICENSING.md), so text uses the system UI font.

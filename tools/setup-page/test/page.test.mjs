@@ -10,8 +10,8 @@ const html = readFileSync(new URL('index.html', dist), 'utf8');
 const script = readFileSync(new URL('script.js', dist), 'utf8');
 const ctx = {crypto: webcrypto, Uint8Array, Array};
 vm.createContext(ctx);
-vm.runInContext(script + '\n;globalThis.T3BoxSetup = T3BoxSetup;', ctx);
-const S = ctx.T3BoxSetup;
+vm.runInContext(script + '\n;globalThis.StephaniaSetup = StephaniaSetup;', ctx);
+const S = ctx.StephaniaSetup;
 const fixtures = JSON.parse(readFileSync(new URL('../../../contracts/fixtures/ble/setup-uris.json', import.meta.url), 'utf8'));
 
 function decode(rows, scale = 4, quiet = 4) {
@@ -57,7 +57,7 @@ describe('setup page', () => {
       const uri = await S.uriFor(S.newSecret());
       expect(decode(S.matrix(uri))).toBe(uri);
     }
-    const svg = S.svg(S.matrix('t3box-setup:v1:00112233445566778899aabbccddeeff:a8faed6a'));
+    const svg = S.svg(S.matrix('stephania-setup:v1:00112233445566778899aabbccddeeff:a8faed6a'));
     expect(svg).toMatch(/^<svg [^>]*viewBox="0 0 \d+ \d+"/);
   });
 });

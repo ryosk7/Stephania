@@ -17,7 +17,7 @@ class FakeEngine
   attr_reader :path, :requests
 
   def initialize(&handler)
-    @dir = Dir.mktmpdir("t3box-fake-engine")
+    @dir = Dir.mktmpdir("stephania-fake-engine")
     @path = File.join(@dir, "engine.sock")
     @server = UNIXServer.new(@path)
     @requests = Queue.new

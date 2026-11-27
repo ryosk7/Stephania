@@ -1,0 +1,54 @@
+[Unit]
+Description=Stephania BLE/Wi-Fi provisioning core
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=stephania-provision
+Group=stephania-provision
+ExecStart=/usr/local/bin/stephania-provision
+# Reference OS paths; the Buildroot target uses /data/stephania/credentials.
+Environment=STEPHANIA_CREDENTIALS_DIR=/var/lib/stephania/credentials
+Environment=STEPHANIA_PROVISION_SOCKET=/run/stephania-provision/provisioning.sock
+Environment=STEPHANIA_PROVISION_RUNTIME=/run/stephania-provision/secrets
+Environment=STEPHANIA_NETWORK_BACKEND=nm
+# First-boot setup file on the selector partition (the FAT32 partition the
+# user sees first; tools/setup-page, docs/INSTALL.md).
+Environment=STEPHANIA_SETUP_FILE=/boot/selector/stephania-setup.txt
+ReadWritePaths=-/boot/selector
+# LAN enrollment (management.enroll): reads the endpoint published by
+# stephania-pki and stores issued token hashes for the control plane. The
+# tokens directory is setgid stephania-control (stephania.tmpfiles.conf).
+Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
+Environment=STEPHANIA_MANAGEMENT_TOKENS=/var/lib/stephania/tokens/tokens.json
+ReadWritePaths=/var/lib/stephania/tokens
+# Only the BLE adapter (stephania-ble, uid 854 in stephania.sysusers.conf) may use
+# the socket besides root.
+Environment=STEPHANIA_IPC_ALLOWED_UIDS=854
+StateDirectory=stephania/credentials
+StateDirectoryMode=0700
+RuntimeDirectory=stephania-provision
+# 0750 + group stephania-provision lets stephania-ble reach the 0660 socket.
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+UMask=0077
+MemoryMax=64M
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

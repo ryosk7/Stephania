@@ -1,4 +1,4 @@
-"""Drive t3box-provision over its socket (protocol v2) like the BLE adapter.
+"""Drive stephania-provision over its socket (protocol v2) like the BLE adapter.
 
 Used by tests/wifi/run-nm-e2e.sh against the real NetworkManager backend.
 Usage: socket_client.py <socket> <setup-uri> <ssid> <good-psk>
@@ -59,8 +59,8 @@ def rpc(body):
 
 
 nonce = bytes.fromhex(rpc({"op": "pairing.challenge"})["nonce"])
-check(rpc({"op": "pairing.claim", "owner_id": "nm-ci", "proof": mac(secret, b"t3box-claim-v1", nonce, b"nm-ci").hex()}) == {"state": "CLAIMED"}, "claimed")
-key = mac(secret, b"t3box-owner-key-v1", nonce, b"nm-ci")
+check(rpc({"op": "pairing.claim", "owner_id": "nm-ci", "proof": mac(secret, b"stephania-claim-v1", nonce, b"nm-ci").hex()}) == {"state": "CLAIMED"}, "claimed")
+key = mac(secret, b"stephania-owner-key-v1", nonce, b"nm-ci")
 
 
 def op_nonce():
@@ -69,14 +69,14 @@ def op_nonce():
 
 def configure(cfg):
     n = op_nonce()
-    sealed = ChaCha20Poly1305(mac(key, b"t3box-seal-v1")).encrypt(n[:12], json.dumps(cfg).encode(), b"wifi.configure")
-    return rpc({"op": "wifi.configure", "sealed": sealed.hex(), "proof": mac(key, b"t3box-operation-v1", n, b"wifi.configure", sealed).hex()})
+    sealed = ChaCha20Poly1305(mac(key, b"stephania-seal-v1")).encrypt(n[:12], json.dumps(cfg).encode(), b"wifi.configure")
+    return rpc({"op": "wifi.configure", "sealed": sealed.hex(), "proof": mac(key, b"stephania-operation-v1", n, b"wifi.configure", sealed).hex()})
 
 
 found = []
 for attempt in range(5):  # hostapd may need a moment to start beaconing
     n = op_nonce()
-    r = rpc({"op": "wifi.scan", "proof": mac(key, b"t3box-operation-v1", n, b"wifi.scan", b"").hex()})
+    r = rpc({"op": "wifi.scan", "proof": mac(key, b"stephania-operation-v1", n, b"wifi.scan", b"").hex()})
     found = [x for x in r.get("networks", []) if x["ssid"] == ssid]
     if found:
         break

@@ -60,7 +60,7 @@ export interface paths {
         put?: never;
         /**
          * Sign in with a Studio account (sets the session cookie)
-         * @description Sets `t3box_session` (HttpOnly, SameSite=Strict, Secure over TLS,
+         * @description Sets `stephania_session` (HttpOnly, SameSite=Strict, Secure over TLS,
          *     Path=/api/). Cookie-authenticated state-changing requests must send
          *     the returned csrf_token as X-CSRF-Token. 5 failures per username or
          *     client address lock for 60 s (doubling, max 15 min): 429 with
@@ -907,7 +907,7 @@ export interface paths {
         put?: never;
         /**
          * Start the phone camera session (WebRTC offer → answer)
-         * @description Relays the phone's SDP offer to t3box-phone (docs/PHONE.md) and
+         * @description Relays the phone's SDP offer to stephania-phone (docs/PHONE.md) and
          *     returns the non-trickle answer. Media never passes through this
          *     API. `tracks` maps the offer's MediaStreamTrack ids to roles. One
          *     phone at a time: an active session answers 409 busy unless
@@ -1554,7 +1554,7 @@ export interface components {
         };
         SceneExport: {
             /** @constant */
-            format: "t3box-scene";
+            format: "stephania-scene";
             /** @constant */
             version: 1;
             id?: components["schemas"]["Id"];

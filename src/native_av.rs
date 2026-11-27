@@ -64,7 +64,7 @@ fn input_settings(capture: &CaptureSettings, cfg: &crate::audio::InputConfig) ->
 impl Sources {
     fn open(s: &Settings) -> io::Result<Self> {
         #[cfg(feature = "ci-virtual")]
-        if env::var_os("T3BOX_CI_VIRTUAL").is_some() {
+        if env::var_os("STEPHANIA_CI_VIRTUAL").is_some() {
             return Ok(Self::Virtual(VirtualCapture {
                 origin: timestamp_us(), video_index: 0, audio_index: [0, 0],
                 width: s.capture.width, height: s.capture.height, fps: s.fps,
@@ -132,8 +132,8 @@ struct AudioPipeline {
 
 impl AudioPipeline {
     fn new() -> io::Result<Self> {
-        let latency = number("T3BOX_AUDIO_LATENCY_MS", 40)?;
-        if !(20..=200).contains(&latency) { return Err(invalid("T3BOX_AUDIO_LATENCY_MS must be 20..200")); }
+        let latency = number("STEPHANIA_AUDIO_LATENCY_MS", 40)?;
+        if !(20..=200).contains(&latency) { return Err(invalid("STEPHANIA_AUDIO_LATENCY_MS must be 20..200")); }
         Ok(Self { mixer: crate::audio_mixer::AudioMixer::new(latency), generation: None, mixed: Vec::new() })
     }
 
@@ -213,7 +213,7 @@ struct VirtualFixture {
 #[cfg(feature = "ci-virtual")]
 impl VirtualFixture {
     fn open(s: &Settings) -> io::Result<Option<Self>> {
-        let Some(path) = env::var_os("T3BOX_LAB_VIDEO") else { return Ok(None); };
+        let Some(path) = env::var_os("STEPHANIA_LAB_VIDEO") else { return Ok(None); };
         let video = std::fs::File::open(path)?;
         let frame_bytes = u64::from(s.capture.width)*u64::from(s.capture.height)*2;
         let len = video.metadata()?.len();
@@ -234,7 +234,7 @@ impl VirtualCapture {
         let now = timestamp_us();
         let available = (now.saturating_sub(self.origin)) * u64::from(self.fps) / 1_000_000;
         if self.video_index > available { return Ok(None); }
-        if self.video_index == 0 && env::var_os("T3BOX_LAB_MARKERS").is_some() {
+        if self.video_index == 0 && env::var_os("STEPHANIA_LAB_MARKERS").is_some() {
             #[repr(C)]
             struct Timespec { sec: std::ffi::c_long, nsec: std::ffi::c_long }
             unsafe extern "C" { fn clock_gettime(clock: std::ffi::c_int, value: *mut Timespec) -> std::ffi::c_int; }
@@ -257,7 +257,7 @@ impl VirtualCapture {
         }
         }
         // Optional source sequence marker survives lossy encoding. 32 bits, 16x16 blocks.
-        if self.width >= 512 && self.height >= 16 && env::var_os("T3BOX_LAB_MARKERS").is_some() {
+        if self.width >= 512 && self.height >= 16 && env::var_os("STEPHANIA_LAB_MARKERS").is_some() {
             for y in 0..16usize { for x in 0..512usize {
                 let i = (y*self.width as usize+x)*2;
                 bytes[i] = if (available >> (x/16)) & 1 == 1 {235} else {16};
@@ -269,7 +269,7 @@ impl VirtualCapture {
             format: PixelFormat::Yuyv422, bytes }))
     }
     /// Input 0 (`hdmi`): the deterministic lab pattern, or a 440 Hz tone with
-    /// `T3BOX_CI_AUDIO_TONES`. Input 1 (`mic`): an 880 Hz mono tone. Tones
+    /// `STEPHANIA_CI_AUDIO_TONES`. Input 1 (`mic`): an 880 Hz mono tone. Tones
     /// at −12 dBFS let CI verify mixing, gain and mute in the decoded output.
     fn audio(&mut self, input: usize) -> Option<crate::media_core::AudioFrame> {
         if self.audio_index[input] == u64::MAX { return None; }
@@ -283,10 +283,10 @@ impl VirtualCapture {
         let tone = |hz: f64, j: u64| ((2.0 * std::f64::consts::PI * hz * ((index * 1024 + j) as f64) / 48000.0).sin() * 8192.0) as i16;
         let (channels, samples): (u8, Vec<i16>) = if input == 1 {
             (1, (0..1024).map(|j| tone(880.0, j)).collect())
-        } else if env::var_os("T3BOX_CI_AUDIO_TONES").is_some() {
+        } else if env::var_os("STEPHANIA_CI_AUDIO_TONES").is_some() {
             (2, (0..1024).flat_map(|j| { let v = tone(440.0, j); [v, v] }).collect())
         } else {
-            let markers = env::var_os("T3BOX_LAB_MARKERS").is_some();
+            let markers = env::var_os("STEPHANIA_LAB_MARKERS").is_some();
             (2, (0..1024).flat_map(|j| {
                 let v = ((((index * 1024 + j) % 109) as i16) - 54) * 200;
                 let v = if markers && (index*1024+j)%48000 < 2400 { v } else if markers {0} else {v};
@@ -304,7 +304,7 @@ impl VirtualCapture {
 /// composed broadcast can be verified without a phone.
 #[cfg(feature = "ci-virtual")]
 fn virtual_phone_tick(timestamp_us: u64) {
-    if env::var_os("T3BOX_CI_VIRTUAL_PHONE").is_some() {
+    if env::var_os("STEPHANIA_CI_VIRTUAL_PHONE").is_some() {
         crate::composition::sources().submit("phone:rear", crate::composition::virtual_phone_frame(timestamp_us));
     }
 }
@@ -313,7 +313,7 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
     // Opt-in until the independent network benchmark validates the budget.
-    let watchdog = if env::var("T3BOX_DEADLINE_TRANSPORT").as_deref() == Ok("1") {
+    let watchdog = if env::var("STEPHANIA_DEADLINE_TRANSPORT").as_deref() == Ok("1") {
         let guard = crate::transport_deadline::DeadlineWatchdog::start_with_queue_budget(
             session.tcp_monitor()?, crate::transport_deadline::QueueBudget {
                 max_not_sent_bytes: (rate.current() * 150 / 8).max(32_768),
@@ -324,8 +324,8 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     } else { None };
     let telemetry = session.tcp_monitor().ok();
     let mut next_sample = Instant::now();
-    let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
-    let content_aware = adaptive && env::var("T3BOX_CONTENT_AWARE").as_deref() == Ok("1");
+    let adaptive = env::var("STEPHANIA_ADAPTIVE_RATE").as_deref() == Ok("1");
+    let content_aware = adaptive && env::var("STEPHANIA_CONTENT_AWARE").as_deref() == Ok("1");
     let mut network_rate = if adaptive { rate.current() } else { s.video_bitrate };
     let mut applied_rate = network_rate;
     let mut pipeline = NativeVideoPipeline::new(session, s.capture.width as usize,
@@ -416,8 +416,8 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
     };
     let telemetry = session.tcp_monitor().ok();
     let mut next_sample = Instant::now();
-    let adaptive = env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1");
-    let content_aware = adaptive && env::var("T3BOX_CONTENT_AWARE").as_deref() == Ok("1");
+    let adaptive = env::var("STEPHANIA_ADAPTIVE_RATE").as_deref() == Ok("1");
+    let content_aware = adaptive && env::var("STEPHANIA_CONTENT_AWARE").as_deref() == Ok("1");
     let mut network_rate = if adaptive { rate.current() } else { s.video_bitrate };
     let mut applied_rate = network_rate;
     let mut encoder = NativeVideoEncoder::new(s.capture.width as usize,
@@ -503,22 +503,22 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
 }
 
 pub fn run_from_env() -> io::Result<()> {
-    let url = env::var("T3BOX_OUTPUT").map_err(|_| invalid("T3BOX_OUTPUT required"))?;
+    let url = env::var("STEPHANIA_OUTPUT").map_err(|_| invalid("STEPHANIA_OUTPUT required"))?;
     rtmps_tls::Target::parse(&url)?;
     let mut capture = CaptureSettings::default();
-    if let Ok(path) = env::var("T3BOX_VIDEO") { capture.video_path = path; }
-    if let Ok(device) = env::var("T3BOX_AUDIO") { capture.audio_device = device; }
-    capture.width = number("T3BOX_WIDTH", 1280)?;
-    capture.height = number("T3BOX_HEIGHT", 720)?;
-    capture.preferred_format = match env::var("T3BOX_PIXEL_FORMAT").as_deref() {
+    if let Ok(path) = env::var("STEPHANIA_VIDEO") { capture.video_path = path; }
+    if let Ok(device) = env::var("STEPHANIA_AUDIO") { capture.audio_device = device; }
+    capture.width = number("STEPHANIA_WIDTH", 1280)?;
+    capture.height = number("STEPHANIA_HEIGHT", 720)?;
+    capture.preferred_format = match env::var("STEPHANIA_PIXEL_FORMAT").as_deref() {
         Ok("nv12") => PixelFormat::Nv12,
         Ok("yuyv") | Err(_) => PixelFormat::Yuyv422,
         _ => return Err(invalid("unsupported pixel format")),
     };
-    let s = Settings { capture, fps: number("T3BOX_FPS", 30)?,
-        video_bitrate: number("T3BOX_BITRATE_KBPS", 3000)?,
-        audio_bitrate: number("T3BOX_AUDIO_BITRATE_KBPS", 128)?,
-        max_frames: number("T3BOX_MAX_FRAMES", 0)? };
+    let s = Settings { capture, fps: number("STEPHANIA_FPS", 30)?,
+        video_bitrate: number("STEPHANIA_BITRATE_KBPS", 3000)?,
+        audio_bitrate: number("STEPHANIA_AUDIO_BITRATE_KBPS", 128)?,
+        max_frames: number("STEPHANIA_MAX_FRAMES", 0)? };
     run_with_settings(&url, &s, || false)
 }
 
@@ -537,7 +537,7 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
     let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
     while !cancelled() {
         let started = Instant::now();
-        let result = if env::var("T3BOX_PARALLEL_MEDIA").as_deref() == Ok("1") {
+        let result = if env::var("STEPHANIA_PARALLEL_MEDIA").as_deref() == Ok("1") {
             publish_parallel(url, s, &mut sources, &mut rate, &cancelled)
         } else {
             publish(url, s, &mut sources, &mut rate, &cancelled)
@@ -546,7 +546,7 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
             Ok(()) => return Ok(()),
             Err(e) if !reconnect::retryable(&e) => return Err(e),
             Err(e) => {
-                if env::var("T3BOX_ADAPTIVE_RATE").as_deref() == Ok("1") {
+                if env::var("STEPHANIA_ADAPTIVE_RATE").as_deref() == Ok("1") {
                     rate.reconnect();
                 }
                 if started.elapsed() >= Duration::from_secs(60) { failures = 0; }

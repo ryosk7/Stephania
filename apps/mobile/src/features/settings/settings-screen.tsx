@@ -17,7 +17,7 @@ export function SettingsScreen() {
       <List.Section heading={<SectionHeading icon="info" label="About" />}>
         <List.Row title="Licences" leading={<ListIcon icon="info" />} onPress={() => router.push('/licences')} />
       </List.Section>
-      <Mono tone="tertiary" className="text-center text-[12px]">T3Box Connect {version}</Mono>
+      <Mono tone="tertiary" className="text-center text-[12px]">Stephania Connect {version}</Mono>
     </Screen>
   );
 }

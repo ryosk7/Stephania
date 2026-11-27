@@ -1,0 +1,30 @@
+[Unit]
+Description=Stephania Raspberry Pi media engine
+After=network.target
+
+[Service]
+Type=simple
+User=stephania
+Group=stephania
+ExecStart=/usr/local/bin/stephania
+Environment=STEPHANIA_ENGINE_SOCKET=/run/stephania/engine.sock
+# Control service uid (see stephania.sysusers.conf); root and stephania are implicit.
+Environment=STEPHANIA_IPC_ALLOWED_UIDS=852
+# Phone ingest (crate::phone_ingest): only stephania-phone (uid 855).
+Environment=STEPHANIA_MEDIA_SOCKET=/run/stephania/media.sock
+Environment=STEPHANIA_MEDIA_ALLOWED_UIDS=855
+# Scene image assets (read-only for the engine; written by stephania-control).
+Environment=STEPHANIA_ASSETS_DIR=/var/lib/stephania/assets
+# Control socket directory; only the stephania group (control service) may enter.
+RuntimeDirectory=stephania
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

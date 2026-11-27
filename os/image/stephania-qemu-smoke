@@ -1,0 +1,58 @@
+#!/bin/sh
+# Image smoke test, run only when the kernel command line asks for it
+# (stephania.smoke=1 → stephania-qemu-smoke.service; ci/qemu-smoke.sh).
+# Prints SMOKE PASS/FAIL lines and a final SMOKE RESULT to the console.
+fails=0
+ok() { echo "SMOKE PASS $*"; }
+bad() { echo "SMOKE FAIL $*"; fails=$((fails + 1)); }
+info() { echo "SMOKE INFO $*"; }
+check() { msg=$1; shift; if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg"; fi; }
+
+# This unit is itself part of boot, so wait for every other start job
+# instead of `is-system-running --wait` (which would wait on us).
+for i in $(seq 300); do
+  [ -z "$(systemctl list-jobs --no-legend | grep -v stephania-qemu-smoke)" ] && break
+  sleep 1
+done
+info "system state $(systemctl is-system-running)"
+info "version $(cat /etc/stephania-version)"
+check "root is an overlay over a read-only SquashFS" sh -c 'findmnt -n -o FSTYPE / | grep -qx overlay && findmnt -n -o FSTYPE,OPTIONS /media/rofs | grep -q "^squashfs .*ro"'
+check "read-only root cannot be written" sh -c '! touch /media/rofs/.stephania-write-test'
+check "data partition mounted (ext4)" sh -c 'findmnt -n -o FSTYPE /data | grep -qx ext4'
+check "state bind-mounted from data" sh -c 'findmnt -n /var/lib/stephania'
+check "first-boot token created on data" test -s /data/stephania/config/control.env
+check "licence files of shipped packages are kept" sh -c 'test -s /usr/share/doc/libx264-164/copyright && test -s /usr/share/doc/libavcodec61/copyright'
+check "no compiler in the image" sh -c '! command -v gcc && ! command -v cc && ! command -v make'
+for u in stephania stephania-control stephania-firstboot stephania-phone; do check "$u active" systemctl is-active "$u"; done
+info "stephania-provision $(systemctl is-active stephania-provision) (no Wi-Fi device in QEMU)"
+STEPHANIA_CONTROL_TOKEN=
+[ -r /data/stephania/config/control.env ] && . /data/stephania/config/control.env
+# Ruby boot is slow under QEMU TCG: wait for Puma to listen.
+for i in $(seq 240); do curl -s -o /dev/null http://127.0.0.1:9292/ 2>/dev/null && break; sleep 1; done
+check "control API answers on loopback with the bootstrap token" \
+  curl -fsS -H "Authorization: Bearer $STEPHANIA_CONTROL_TOKEN" http://127.0.0.1:9292/api/v1/capabilities
+check "control reaches the engine over IPC" \
+  curl -fsS -H "Authorization: Bearer $STEPHANIA_CONTROL_TOKEN" http://127.0.0.1:9292/api/v1/status
+check "Studio is served by the control plane" sh -c 'curl -fsS http://127.0.0.1:9292/ | grep -q "<div id=\"root\""'
+check "phone service answers through the control plane" sh -c "curl -fsS -H 'Authorization: Bearer $STEPHANIA_CONTROL_TOKEN' http://127.0.0.1:9292/api/v1/cameras/session | grep -q '\"state\":\"none\"'"
+check "engine ingest socket for phone media exists" test -S /run/stephania/media.sock
+check "engine health via stephania-bootctl" env STEPHANIA_HEALTH_ATTEMPTS=30 /usr/local/bin/stephania-bootctl health
+check "device PKI published an endpoint" test -s /var/lib/stephania/pki/endpoint.json
+check "device CA served at /ca.pem" sh -c "curl -fsS --cacert /var/lib/stephania/pki/ca.pem --resolve $(hostname).local:9443:127.0.0.1 https://$(hostname).local:9443/ca.pem | cmp -s - /var/lib/stephania/pki/ca.pem"
+host=$(hostname)
+check "per-device host name kept on data" sh -c "echo '$host' | grep -qE '^stephania-[0-9a-f]{4}$' && grep -qx '$host' /data/stephania/config/hostname"
+check "device certificate names the host" grep -q "\"host\":\"$host.local\"" /var/lib/stephania/pki/endpoint.json
+check "avahi-daemon active" systemctl is-active avahi-daemon
+# DNS-SD: the management service is browsable with its port.
+for i in $(seq 30); do avahi-browse -rpt _stephania._tcp 2>/dev/null | grep -q '^=.*;9443;' && break; sleep 1; done
+check "mDNS publishes _stephania._tcp on 9443" sh -c "avahi-browse -rpt _stephania._tcp | grep -q '^=.*;9443;'"
+check "mDNS resolves the host name" avahi-resolve -4 -n "$host.local"
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /var/lib/stephania/pki/ca.pem --resolve "$host.local:9443:127.0.0.1" "https://$host.local:9443/api/v1/capabilities")
+[ "$code" = 401 ] && ok "LAN TLS listener verifies against the device CA and requires an issued token" || bad "LAN TLS listener ($code)"
+info "rauc: $(rauc status 2>&1 | head -3 | tr '\n' ' ')"
+if [ "$fails" != 0 ]; then
+  info "control: $(systemctl show -p ActiveState,SubState,NRestarts stephania-control | tr '\n' ' ')"
+  journalctl -b -u stephania-control -n 40 --no-pager | sed 's/^/SMOKE INFO control-log /'
+fi
+for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do info "failed unit $u: $(journalctl -b -u "$u" -n 5 --no-pager | tail -5 | tr '\n' ' ')"; done
+if [ "$fails" = 0 ]; then echo "SMOKE RESULT PASS"; else echo "SMOKE RESULT FAIL ($fails)"; fi
