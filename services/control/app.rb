@@ -10,6 +10,7 @@ require_relative "lib/scene_validator"
 require_relative "lib/event_hub"
 require_relative "lib/lan_access"
 require_relative "lib/audio_settings"
+require_relative "lib/accounts"
 
 # T3Box management plane. Contract: contracts/openapi.yaml.
 #
@@ -27,6 +28,12 @@ class Control < Sinatra::Base
   CAMERA_ROUTES = [%w[POST /api/v1/cameras/session/offer], %w[GET /api/v1/cameras/session], %w[DELETE /api/v1/cameras/session]].freeze
   MAX_CAMERA_TTL = 86_400
   MAX_CAMERA_CREDENTIALS = 8
+  LOGIN_ROUTE = %w[POST /api/v1/auth/session].freeze
+  # Operator role (docs/AUTH.md): run the show, change nothing structural.
+  # Reads are allowed except accounts and credentials.
+  OPERATOR_WRITES = [%w[POST /api/v1/stream/start], %w[POST /api/v1/stream/stop], %w[POST /api/v1/program/transition],
+    %w[PUT /api/v1/audio], %w[DELETE /api/v1/auth/session], %w[PUT /api/v1/auth/password]].freeze
+  ADMIN_ONLY_READS = %r{\A/api/v1/(users|credentials)(/|\z)}
 
   # Engine IPC error code -> HTTP status. Unknown codes are a contract
   # violation by the engine and surface as 502.
@@ -53,6 +60,9 @@ class Control < Sinatra::Base
   # HTTP 500 in the first foundation CI run.
   class << self
     attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone
+    attr_writer :throttle
+
+    def throttle = (@throttle ||= Accounts::Throttle.new)
     # Camera credential id that opened the current phone session (nil when
     # the owner opened it); revoking that credential ends the session.
     attr_accessor :phone_session_owner
@@ -174,6 +184,32 @@ class Control < Sinatra::Base
       settings.db[:scenes].where(id: id).first
     end
 
+    # Lowercase slug of `base` that is not taken yet ("name", "name-2", ...).
+    def unique_scene_id(base)
+      slug = base.to_s.downcase.gsub(/[^a-z0-9_-]+/, "-").gsub(/\A-+|-+\z/, "")[0, 48]
+      slug = "scene" if slug.empty?
+      taken = settings.db[:scenes].where(Sequel.like(:id, "#{slug}%")).select_map(:id)
+      return slug unless taken.include?(slug)
+
+      (2..).each { |n| return "#{slug}-#{n}" unless taken.include?("#{slug}-#{n}") }
+    end
+
+    def create_scene(base, document)
+      if (violation = SceneValidator.validate(document))
+        fail_with 422, "invalid_scene", violation.join(": ")
+      end
+      db = settings.db
+      raw = JSON.generate(document)
+      id = nil
+      db.transaction(mode: :immediate) do
+        id = unique_scene_id(base)
+        db[:scenes].insert(id: id, revision: 1, document: raw)
+        db[:scene_revisions].insert(scene_id: id, revision: 1, document: raw, created_at_unix: Time.now.to_i)
+      end
+      settings.events.publish("scene.updated", {id: id, revision: 1})
+      {id: id, revision: 1, document: document}
+    end
+
     def scene_json(row)
       {id: row[:id], revision: row[:revision], document: JSON.parse(row[:document])}
     end
@@ -196,6 +232,10 @@ class Control < Sinatra::Base
 
   before "/api/*" do
     content_type :json
+    # Login is the one unauthenticated API call (host/origin checks above
+    # still apply, so on the LAN it is TLS-only).
+    next if request.request_method == LOGIN_ROUTE[0] && request.path_info == LOGIN_ROUTE[1]
+
     token = settings.token
     env_token = token.is_a?(String) && token.bytesize >= 32
     unless env_token || settings.lan&.configured?
@@ -210,15 +250,178 @@ class Control < Sinatra::Base
       OpenSSL.fixed_length_secure_compare(supplied, token)
     owner = local || (bearer && settings.lan&.issued_token?(supplied))
     @camera = !owner && bearer && camera_credential(supplied)
-    fail_with 401, "unauthorized", "missing or invalid bearer token" unless owner || @camera
-    # Camera role: media session only (§26). Everything else is owner-only.
+    if owner
+      @principal = {kind: "owner", role: "admin"}
+    elsif !bearer && (found = Accounts.lookup_session(settings.db, request.cookies[Accounts::COOKIE]))
+      session, user = found
+      # Cookie sessions need the CSRF token on every state-changing call,
+      # in addition to the strict Origin check and SameSite=Strict.
+      unless %w[GET HEAD].include?(request.request_method)
+        csrf = request.env.fetch("HTTP_X_CSRF_TOKEN", "")
+        unless csrf.bytesize == session[:csrf_token].bytesize && OpenSSL.fixed_length_secure_compare(csrf, session[:csrf_token])
+          fail_with 403, "csrf_failed", "missing or invalid X-CSRF-Token"
+        end
+      end
+      @session = session
+      @principal = {kind: "user", role: user[:role], user_id: user[:id], username: user[:username]}
+    end
+    fail_with 401, "unauthorized", "missing or invalid credentials" unless @principal || @camera
+    # Camera role: media session only (§26).
     if @camera && !CAMERA_ROUTES.any? { |verb, path| request.request_method == verb && request.path_info == path }
       fail_with 403, "forbidden_role", "camera credentials only allow the camera session"
+    end
+    if @principal && @principal[:role] == "operator"
+      allowed = if %w[GET HEAD].include?(request.request_method)
+        !request.path_info.match?(ADMIN_ONLY_READS)
+      else
+        OPERATOR_WRITES.any? { |verb, path| request.request_method == verb && request.path_info == path }
+      end
+      fail_with 403, "forbidden_role", "operators cannot do this" unless allowed
     end
   end
 
   get "/api/v1/capabilities" do
-    json_reply({scene_drafts: true, program_apply: false, phone_camera: false, ble: false})
+    engine = begin
+      settings.engine.call("engine.capabilities", nil, request_id: request_id)
+    rescue EngineClient::Unavailable, EngineClient::RemoteError
+      {}
+    end
+    json_reply({scene_drafts: true, program_apply: engine["program_apply"] == true, phone_camera: true,
+                audio_mixer: true, accounts: true, engine_reachable: !engine.empty?})
+  end
+
+  # --- Accounts and sessions (docs/AUTH.md) -------------------------------
+
+  post "/api/v1/auth/session" do
+    input = read_json
+    unless input.is_a?(Hash) && input.keys.sort == %w[password username] && input["username"].is_a?(String) && input["password"].is_a?(String)
+      fail_with 422, "invalid_request", "body must be {username, password}"
+    end
+    name = input["username"].downcase
+    keys = ["user:#{name}", "ip:#{request.ip}"]
+    if (wait = settings.throttle.wait(keys)).positive?
+      headers "Retry-After" => wait.to_s
+      fail_with 429, "login_throttled", "too many failed logins; retry in #{wait} s"
+    end
+    user = name.match?(Accounts::USERNAME) ? settings.db[:users].where(username: name).first : nil
+    # Same scrypt work whether or not the user exists.
+    ok = Accounts.verify_password(input["password"], user ? user[:password_hash] : Accounts::DUMMY_HASH) && user && !user[:disabled]
+    unless ok
+      settings.throttle.failure(keys)
+      fail_with 401, "invalid_login", "unknown user or wrong password"
+    end
+    settings.throttle.success(keys)
+    value, session = Accounts.create_session(settings.db, user[:id])
+    response.set_cookie(Accounts::COOKIE, value: value, path: "/api/", httponly: true, secure: request.ssl?,
+      same_site: :strict, expires: Time.at(session[:expires_at_unix]))
+    json_reply({user: Accounts.user_json(user), csrf_token: session[:csrf_token], expires_at_unix: session[:expires_at_unix]}, 201)
+  end
+
+  delete "/api/v1/auth/session" do
+    if @session
+      settings.db[:sessions].where(token_sha256: @session[:token_sha256]).delete
+      settings.events.close_where { |sub| sub.session == @session[:token_sha256] }
+    end
+    response.delete_cookie(Accounts::COOKIE, path: "/api/", httponly: true, secure: request.ssl?, same_site: :strict)
+    status 204
+    ""
+  end
+
+  get "/api/v1/auth/me" do
+    fail_with 403, "forbidden_role", "camera credentials have no account" unless @principal
+    me = {kind: @principal[:kind], role: @principal[:role]}
+    if @session
+      me[:username] = @principal[:username]
+      me[:user_id] = @principal[:user_id]
+      me[:csrf_token] = @session[:csrf_token]
+      me[:expires_at_unix] = @session[:expires_at_unix]
+    end
+    json_reply(me)
+  end
+
+  put "/api/v1/auth/password" do
+    fail_with 422, "invalid_request", "only signed-in users have a password" unless @session
+    input = read_json
+    unless input.is_a?(Hash) && input.keys.sort == %w[current_password new_password]
+      fail_with 422, "invalid_request", "body must be {current_password, new_password}"
+    end
+    user = settings.db[:users].where(id: @principal[:user_id]).first
+    fail_with 403, "invalid_login", "current password is wrong" unless Accounts.verify_password(input["current_password"], user[:password_hash])
+    if (problem = Accounts.password_problem(input["new_password"]))
+      fail_with 422, "weak_password", problem
+    end
+    db = settings.db
+    db.transaction do
+      db[:users].where(id: user[:id]).update(password_hash: Accounts.hash_password(input["new_password"]))
+      # Every other session of this user ends.
+      db[:sessions].where(user_id: user[:id]).exclude(token_sha256: @session[:token_sha256]).delete
+    end
+    settings.events.close_where { |sub| sub.user_id == user[:id] && sub.session != @session[:token_sha256] }
+    status 204
+    ""
+  end
+
+  get "/api/v1/users" do
+    json_reply(settings.db[:users].order(:id).all.map { |r| Accounts.user_json(r) })
+  end
+
+  post "/api/v1/users" do
+    input = read_json
+    unless input.is_a?(Hash) && input.keys.sort == %w[password role username] && input["username"].is_a?(String) &&
+        input["username"].match?(Accounts::USERNAME) && Accounts::ROLES.include?(input["role"])
+      fail_with 422, "invalid_request", "body must be {username (#{Accounts::USERNAME.source}), password, role (admin|operator)}"
+    end
+    if (problem = Accounts.password_problem(input["password"]))
+      fail_with 422, "weak_password", problem
+    end
+    db = settings.db
+    fail_with 409, "user_exists", "username is taken" if db[:users].where(username: input["username"]).count.positive?
+    id = db[:users].insert(username: input["username"], password_hash: Accounts.hash_password(input["password"]),
+      role: input["role"], disabled: false, created_at_unix: Time.now.to_i)
+    json_reply(Accounts.user_json(db[:users].where(id: id).first), 201)
+  end
+
+  patch "/api/v1/users/:id" do
+    id = Integer(params[:id], exception: false)
+    db = settings.db
+    user = id && db[:users].where(id: id).first
+    fail_with 404, "not_found", "no such user" unless user
+    input = read_json
+    unless input.is_a?(Hash) && !input.empty? && (input.keys - %w[role disabled password]).empty? &&
+        (input["role"].nil? || Accounts::ROLES.include?(input["role"])) &&
+        (input["disabled"].nil? || [true, false].include?(input["disabled"]))
+      fail_with 422, "invalid_request", "body may contain role, disabled, password"
+    end
+    if input.key?("password") && (problem = Accounts.password_problem(input["password"]))
+      fail_with 422, "weak_password", problem
+    end
+    demoting = user[:role] == "admin" && !user[:disabled] && ((input["role"] && input["role"] != "admin") || input["disabled"] == true)
+    fail_with 409, "last_admin", "at least one enabled admin must remain" if demoting && Accounts.admins_remaining(db, user[:id]).zero?
+    changes = {}
+    changes[:role] = input["role"] if input["role"]
+    changes[:disabled] = input["disabled"] unless input["disabled"].nil?
+    changes[:password_hash] = Accounts.hash_password(input["password"]) if input["password"]
+    db.transaction do
+      db[:users].where(id: user[:id]).update(changes)
+      # A changed password, role or disabled account ends existing sessions.
+      db[:sessions].where(user_id: user[:id]).delete
+    end
+    settings.events.close_where { |sub| sub.user_id == user[:id] }
+    json_reply(Accounts.user_json(db[:users].where(id: user[:id]).first))
+  end
+
+  delete "/api/v1/users/:id" do
+    id = Integer(params[:id], exception: false)
+    db = settings.db
+    user = id && db[:users].where(id: id).first
+    fail_with 404, "not_found", "no such user" unless user
+    if user[:role] == "admin" && !user[:disabled] && Accounts.admins_remaining(db, user[:id]).zero?
+      fail_with 409, "last_admin", "at least one enabled admin must remain"
+    end
+    db[:users].where(id: user[:id]).delete
+    settings.events.close_where { |sub| sub.user_id == user[:id] }
+    status 204
+    ""
   end
 
   get "/api/v1/status" do
@@ -237,7 +440,7 @@ class Control < Sinatra::Base
     settings.poller.start
     settings.levels.start
     snapshot = {engine: settings.poller.last, scenes: settings.db[:scenes].order(:id).select(:id, :revision).all}
-    sub = hub.subscribe
+    sub = hub.subscribe(user_id: @principal&.dig(:user_id), session: @session&.dig(:token_sha256))
     fail_with 429, "too_many_streams", "at most #{EventHub::MAX_CLIENTS} event streams" unless sub
     headers "Content-Type" => "text/event-stream", "X-Accel-Buffering" => "no"
     halt 200, EventHub::Stream.new(hub, sub, snapshot)
@@ -282,6 +485,46 @@ class Control < Sinatra::Base
     settings.events.publish("scene.deleted", {id: row[:id]})
     status 204
     ""
+  end
+
+  # New scene from a name (and optionally a document). The id is derived
+  # from the name and made unique; revision 1 is recorded in the history.
+  post "/api/v1/scenes" do
+    input = read_json
+    unless input.is_a?(Hash) && (input.keys - %w[name document]).empty? && input["name"].is_a?(String)
+      fail_with 422, "invalid_request", "body must be {name, document?}"
+    end
+    document = input["document"] || {"version" => 1, "name" => input["name"],
+      "layers" => [{"id" => "hdmi", "source" => "hdmi", "x" => 0, "y" => 0, "width" => 1920, "height" => 1080, "visible" => true}]}
+    document = document.merge("name" => input["name"]) if document.is_a?(Hash)
+    json_reply(create_scene(input["name"], document), 201)
+  end
+
+  post "/api/v1/scenes/:id/duplicate" do
+    row = scene_row(params[:id])
+    fail_with 404, "not_found", "scene does not exist" unless row
+    document = JSON.parse(row[:document])
+    document["name"] = "#{document["name"]} (copy)"[0, 100]
+    json_reply(create_scene(row[:id], document), 201)
+  end
+
+  # Portable export: {format, version, id, document}. Importing never
+  # overwrites; it creates a new scene.
+  get "/api/v1/scenes/:id/export" do
+    row = scene_row(params[:id])
+    fail_with 404, "not_found", "scene does not exist" unless row
+    attachment "#{row[:id]}.t3box-scene.json"
+    json_reply({format: "t3box-scene", version: 1, id: row[:id], document: JSON.parse(row[:document])})
+  end
+
+  post "/api/v1/scenes/import" do
+    input = read_json
+    unless input.is_a?(Hash) && input["format"] == "t3box-scene" && input["version"] == 1 &&
+        (input.keys - %w[format version id document]).empty? && input["document"].is_a?(Hash)
+      fail_with 422, "invalid_request", "body must be a t3box-scene export (format, version 1, document)"
+    end
+    base = input["id"].is_a?(String) ? input["id"] : input["document"]["name"].to_s
+    json_reply(create_scene(base, input["document"]), 201)
   end
 
   # Draft save with optimistic concurrency. `revision` is the revision the

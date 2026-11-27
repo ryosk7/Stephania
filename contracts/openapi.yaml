@@ -17,6 +17,7 @@ servers:
       device: {default: t3box}
 security:
   - bearer: []
+  - session: []
 paths:
   /capabilities:
     get:
@@ -29,12 +30,137 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [scene_drafts, program_apply, phone_camera, ble]
+                required: [scene_drafts, program_apply, phone_camera, audio_mixer, accounts, engine_reachable]
                 properties:
                   scene_drafts: {type: boolean}
-                  program_apply: {const: false}
-                  phone_camera: {const: false}
-                  ble: {const: false}
+                  program_apply: {type: boolean, description: Engine reports frame-boundary scene.apply support}
+                  phone_camera: {type: boolean}
+                  audio_mixer: {type: boolean}
+                  accounts: {type: boolean}
+                  engine_reachable: {type: boolean}
+        default: {$ref: "#/components/responses/Error"}
+  /auth/session:
+    post:
+      summary: Sign in with a Studio account (sets the session cookie)
+      security: []
+      description: |
+        Sets `t3box_session` (HttpOnly, SameSite=Strict, Secure over TLS,
+        Path=/api/). Cookie-authenticated state-changing requests must send
+        the returned csrf_token as X-CSRF-Token. 5 failures per username or
+        client address lock for 60 s (doubling, max 15 min): 429 with
+        Retry-After.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string}
+      responses:
+        "201":
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, csrf_token, expires_at_unix]
+                properties:
+                  user: {$ref: "#/components/schemas/User"}
+                  csrf_token: {type: string}
+                  expires_at_unix: {type: integer}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Sign out (ends this session; no-op for bearer tokens)
+      responses:
+        "204": {description: Signed out}
+        default: {$ref: "#/components/responses/Error"}
+  /auth/me:
+    get:
+      summary: Current principal
+      responses:
+        "200":
+          description: Owner (bearer token) or signed-in user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kind, role]
+                properties:
+                  kind: {enum: [owner, user]}
+                  role: {$ref: "#/components/schemas/Role"}
+                  username: {type: string}
+                  user_id: {type: integer}
+                  csrf_token: {type: string}
+                  expires_at_unix: {type: integer}
+        default: {$ref: "#/components/responses/Error"}
+  /auth/password:
+    put:
+      summary: Change the signed-in user's password (other sessions end)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [current_password, new_password]
+              properties:
+                current_password: {type: string}
+                new_password: {type: string, minLength: 10, maxLength: 256}
+      responses:
+        "204": {description: Changed}
+        default: {$ref: "#/components/responses/Error"}
+  /users:
+    get:
+      summary: List accounts (admin)
+      responses:
+        "200": {description: Accounts, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/User"}}}}}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      summary: Create an account (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password, role]
+              properties:
+                username: {type: string, pattern: "^[a-z0-9][a-z0-9_.-]{0,31}$"}
+                password: {type: string, minLength: 10, maxLength: 256}
+                role: {$ref: "#/components/schemas/Role"}
+      responses:
+        "201": {description: Created, content: {application/json: {schema: {$ref: "#/components/schemas/User"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /users/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer}}
+    patch:
+      summary: Change role, disable, or reset password (admin; ends the user's sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                role: {$ref: "#/components/schemas/Role"}
+                disabled: {type: boolean}
+                password: {type: string, minLength: 10, maxLength: 256}
+      responses:
+        "200": {description: Updated, content: {application/json: {schema: {$ref: "#/components/schemas/User"}}}}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete an account (admin). The last enabled admin cannot be removed (409 last_admin).
+      responses:
+        "204": {description: Deleted}
         default: {$ref: "#/components/responses/Error"}
   /status:
     get:
@@ -118,6 +244,49 @@ paths:
           content:
             application/json:
               schema: {type: array, items: {$ref: "#/components/schemas/StoredScene"}}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      summary: Create a scene from a name (id derived from the name, made unique)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                document: {$ref: "scene.schema.json"}
+      responses:
+        "201": {description: Created at revision 1, content: {application/json: {schema: {$ref: "#/components/schemas/StoredScene"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes/import:
+    post:
+      summary: Import an export as a new scene (never overwrites)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SceneExport"}
+      responses:
+        "201": {description: Imported, content: {application/json: {schema: {$ref: "#/components/schemas/StoredScene"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes/{id}/duplicate:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/Id"}}
+    post:
+      summary: Copy a scene's current revision into a new scene
+      responses:
+        "201": {description: Copy, content: {application/json: {schema: {$ref: "#/components/schemas/StoredScene"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /scenes/{id}/export:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: "#/components/schemas/Id"}}
+    get:
+      summary: Portable export (Content-Disposition attachment)
+      responses:
+        "200": {description: Export, content: {application/json: {schema: {$ref: "#/components/schemas/SceneExport"}}}}
         default: {$ref: "#/components/responses/Error"}
   /scenes/{id}:
     parameters:
@@ -359,7 +528,30 @@ paths:
 components:
   securitySchemes:
     bearer: {type: http, scheme: bearer}
+    session: {type: apiKey, in: cookie, name: t3box_session, description: "Studio account session; writes also need X-CSRF-Token"}
   schemas:
+    Role:
+      enum: [admin, operator]
+      description: operator may start/stop, switch Program and change audio; it cannot edit scenes or manage accounts and credentials.
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, username, role, disabled, created_at_unix]
+      properties:
+        id: {type: integer}
+        username: {type: string}
+        role: {$ref: "#/components/schemas/Role"}
+        disabled: {type: boolean}
+        created_at_unix: {type: integer}
+    SceneExport:
+      type: object
+      additionalProperties: false
+      required: [format, version, document]
+      properties:
+        format: {const: t3box-scene}
+        version: {const: 1}
+        id: {$ref: "#/components/schemas/Id"}
+        document: {$ref: "scene.schema.json"}
     AudioInput:
       type: object
       required: [id, enabled, device, channels, gain_db, muted]
@@ -405,7 +597,8 @@ components:
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
                 program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
-                too_many_credentials(409)
+                too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
+                weak_password(422) user_exists(409) last_admin(409)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}

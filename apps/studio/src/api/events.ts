@@ -49,6 +49,7 @@ export class SseParser {
 export type ConnectionState = 'connecting' | 'open' | 'closed';
 
 export type EventsOptions = {
+  /** Bearer token; empty means the session cookie (sent by the browser). */
   token: () => string;
   onEvent: (e: ServerEvent) => void;
   onState?: (s: ConnectionState, detail?: string) => void;
@@ -74,7 +75,8 @@ export function subscribeEvents(opts: EventsOptions): () => void {
   async function once(): Promise<number | undefined | 'stop'> {
     opts.onState?.('connecting');
     const res = await fetcher('/api/v1/events', {
-      headers: {Authorization: 'Bearer ' + opts.token(), Accept: 'text/event-stream'},
+      headers: {...(opts.token() ? {Authorization: 'Bearer ' + opts.token()} : {}), Accept: 'text/event-stream'},
+      credentials: 'same-origin',
       signal: controller.signal,
       cache: 'no-store',
     });

@@ -9,6 +9,19 @@ export type AudioInput = components['schemas']['AudioInput'];
 export type AudioOverview = paths['/audio']['get']['responses']['200']['content']['application/json'];
 export type AudioUpdate = paths['/audio']['put']['requestBody']['content']['application/json'];
 export type Revision = paths['/scenes/{id}/revisions']['get']['responses']['200']['content']['application/json'][number];
+export type User = components['schemas']['User'];
+export type Role = components['schemas']['Role'];
+export type Me = paths['/auth/me']['get']['responses']['200']['content']['application/json'];
+export type Login = paths['/auth/session']['post']['responses']['201']['content']['application/json'];
+export type SceneExport = components['schemas']['SceneExport'];
+export type Capabilities = paths['/capabilities']['get']['responses']['200']['content']['application/json'];
+
+/**
+ * How requests authenticate: a bearer token (owner/bootstrap or enrolled
+ * device token) or the Studio session cookie, which the browser sends by
+ * itself; cookie writes carry the CSRF token.
+ */
+export type Credentials = {token?: string; csrf?: string};
 
 /** Error envelope `{error:{code,message,request_id}}` as a thrown value. */
 export class ApiError extends Error {
@@ -19,11 +32,17 @@ export class ApiError extends Error {
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-export function createClient(token: () => string, fetcher: Fetch = (i, n) => fetch(i, n)) {
+export function authHeaders(c: Credentials, method = 'GET'): Record<string, string> {
+  if (c.token) return {Authorization: 'Bearer ' + c.token};
+  return c.csrf && method !== 'GET' && method !== 'HEAD' ? {'X-CSRF-Token': c.csrf} : {};
+}
+
+export function createClient(credentials: () => Credentials, fetcher: Fetch = (i, n) => fetch(i, n)) {
   async function call<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
     const res = await fetcher('/api/v1' + path, {
       method,
-      headers: {Authorization: 'Bearer ' + token(), ...(body === undefined ? {} : {'Content-Type': 'application/json'})},
+      credentials: 'same-origin',
+      headers: {...authHeaders(credentials(), method), ...(body === undefined ? {} : {'Content-Type': 'application/json'})},
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (res.status === 204) return undefined as T;
@@ -39,6 +58,15 @@ export function createClient(token: () => string, fetcher: Fetch = (i, n) => fet
   }
   const id = (s: string) => encodeURIComponent(s);
   return {
+    login: (username: string, password: string) => call<Login>('/auth/session', 'POST', {username, password}),
+    logout: () => call<void>('/auth/session', 'DELETE'),
+    me: () => call<Me>('/auth/me'),
+    changePassword: (current_password: string, new_password: string) => call<void>('/auth/password', 'PUT', {current_password, new_password}),
+    users: () => call<User[]>('/users'),
+    createUser: (username: string, password: string, role: Role) => call<User>('/users', 'POST', {username, password, role}),
+    updateUser: (uid: number, change: {role?: Role; disabled?: boolean; password?: string}) => call<User>(`/users/${uid}`, 'PATCH', change),
+    deleteUser: (uid: number) => call<void>(`/users/${uid}`, 'DELETE'),
+    capabilities: () => call<Capabilities>('/capabilities'),
     status: () => call<EngineStatus>('/status'),
     start: () => call<Record<string, unknown>>('/stream/start', 'POST'),
     stop: () => call<Record<string, unknown>>('/stream/stop', 'POST'),
@@ -47,6 +75,10 @@ export function createClient(token: () => string, fetcher: Fetch = (i, n) => fet
     saveScene: (s: string, revision: number, document: SceneDocument) => call<StoredScene>(`/scenes/${id(s)}`, 'PUT', {revision, document}),
     deleteScene: (s: string, revision: number) => call<void>(`/scenes/${id(s)}?revision=${revision}`, 'DELETE'),
     revisions: (s: string) => call<Revision[]>(`/scenes/${id(s)}/revisions`),
+    createScene: (name: string, document?: SceneDocument) => call<StoredScene>('/scenes', 'POST', document ? {name, document} : {name}),
+    duplicateScene: (s: string) => call<StoredScene>(`/scenes/${id(s)}/duplicate`, 'POST'),
+    exportScene: (s: string) => call<SceneExport>(`/scenes/${id(s)}/export`),
+    importScene: (e: SceneExport) => call<StoredScene>('/scenes/import', 'POST', e),
     transition: (scene_id: string, revision: number) => call<unknown>('/program/transition', 'POST', {scene_id, revision}),
     audio: () => call<AudioOverview>('/audio'),
     saveAudio: (update: AudioUpdate) => call<AudioOverview & {applied: boolean}>('/audio', 'PUT', update),

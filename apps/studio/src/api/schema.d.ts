@@ -29,12 +29,12 @@ export interface paths {
                     content: {
                         "application/json": {
                             scene_drafts: boolean;
-                            /** @constant */
-                            program_apply: false;
-                            /** @constant */
-                            phone_camera: false;
-                            /** @constant */
-                            ble: false;
+                            /** @description Engine reports frame-boundary scene.apply support */
+                            program_apply: boolean;
+                            phone_camera: boolean;
+                            audio_mixer: boolean;
+                            accounts: boolean;
+                            engine_reachable: boolean;
                         };
                     };
                 };
@@ -47,6 +47,303 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sign in with a Studio account (sets the session cookie)
+         * @description Sets `t3box_session` (HttpOnly, SameSite=Strict, Secure over TLS,
+         *     Path=/api/). Cookie-authenticated state-changing requests must send
+         *     the returned csrf_token as X-CSRF-Token. 5 failures per username or
+         *     client address lock for 60 s (doubling, max 15 min): 429 with
+         *     Retry-After.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        username: string;
+                        password: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Signed in */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            user: components["schemas"]["User"];
+                            csrf_token: string;
+                            expires_at_unix: number;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        /** Sign out (ends this session; no-op for bearer tokens) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Signed out */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Current principal */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Owner (bearer token) or signed-in user */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {unknown} */
+                            kind: "owner" | "user";
+                            role: components["schemas"]["Role"];
+                            username?: string;
+                            user_id?: number;
+                            csrf_token?: string;
+                            expires_at_unix?: number;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Change the signed-in user's password (other sessions end) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        current_password: string;
+                        new_password: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Changed */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List accounts (admin) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Accounts */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"][];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /** Create an account (admin) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        username: string;
+                        password: string;
+                        role: components["schemas"]["Role"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete an account (admin). The last enabled admin cannot be removed (409 last_admin). */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        /** Change role, disable, or reset password (admin; ends the user's sessions) */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        role?: components["schemas"]["Role"];
+                        disabled?: boolean;
+                        password?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Updated */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["User"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
         trace?: never;
     };
     "/status": {
@@ -293,6 +590,157 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["StoredScene"][];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /** Create a scene from a name (id derived from the name, made unique) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        name: string;
+                        document?: components["schemas"]["scene.schema"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Created at revision 1 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredScene"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenes/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import an export as a new scene (never overwrites) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SceneExport"];
+                };
+            };
+            responses: {
+                /** @description Imported */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredScene"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenes/{id}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Copy a scene's current revision into a new scene */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["schemas"]["Id"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Copy */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["StoredScene"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scenes/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["schemas"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** Portable export (Content-Disposition attachment) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["schemas"]["Id"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Export */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SceneExport"];
                     };
                 };
                 default: components["responses"]["Error"];
@@ -818,6 +1266,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description operator may start/stop, switch Program and change audio; it cannot edit scenes or manage accounts and credentials.
+         * @enum {unknown}
+         */
+        Role: "admin" | "operator";
+        User: {
+            id: number;
+            username: string;
+            role: components["schemas"]["Role"];
+            disabled: boolean;
+            created_at_unix: number;
+        };
+        SceneExport: {
+            /** @constant */
+            format: "t3box-scene";
+            /** @constant */
+            version: 1;
+            id?: components["schemas"]["Id"];
+            document: components["schemas"]["scene.schema"];
+        };
         AudioInput: {
             /** @enum {unknown} */
             id: "hdmi" | "mic";
@@ -848,7 +1316,8 @@ export interface components {
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
                  *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
-                 *     too_many_credentials(409)
+                 *     too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
+                 *     weak_password(422) user_exists(409) last_admin(409)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */

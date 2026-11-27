@@ -5,3 +5,20 @@
 .meter .clip{position:absolute;right:-44px;top:-4px;color:#f44;font-size:11px;font-weight:700}
 .audio-input{margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .audio-input .meter{flex-basis:100%}
+main{max-width:1280px}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:12px}header h1{margin:8px 16px 8px 0}
+.routes{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.routes a{color:#cbd5e1;padding:6px 10px;border-radius:5px;text-decoration:none}.routes a[aria-current=page]{background:#1e3a5f;color:#fff}
+.livebar{padding:8px;background:#172030;border-radius:6px}
+.login form{display:flex;flex-wrap:wrap;align-items:end}.login details{margin-top:16px;color:#94a3b8}
+.studio{display:grid;grid-template-columns:240px 1fr;gap:16px}@media (max-width:900px){.studio{grid-template-columns:1fr}}
+.scenes ul,.layers ul{list-style:none;padding:0;margin:0}.scenes li button{width:100%;text-align:left}.scenes small{color:#94a3b8}
+button[aria-pressed=true]{background:#1e3a5f;border-color:#60a5fa}button:disabled{opacity:.45;cursor:default}
+select{font:inherit;background:#242d3c;color:inherit;border:1px solid #64748b;border-radius:5px;padding:6px;margin:4px}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center}[data-testid=dirty]{margin-left:8px;color:#94a3b8}
+.layers li{display:flex;flex-wrap:wrap;align-items:center;gap:2px;border-bottom:1px solid #1f2937}.layers li.selected{background:#172a45}
+.handle{position:absolute;width:12px;height:12px;background:#60a5fa;border:1px solid #0b1220;border-radius:2px;touch-action:none}
+.handle.nw{left:-6px;top:-6px;cursor:nwse-resize}.handle.n{left:calc(50% - 6px);top:-6px;cursor:ns-resize}.handle.ne{right:-6px;top:-6px;cursor:nesw-resize}
+.handle.e{right:-6px;top:calc(50% - 6px);cursor:ew-resize}.handle.se{right:-6px;bottom:-6px;cursor:nwse-resize}.handle.s{left:calc(50% - 6px);bottom:-6px;cursor:ns-resize}
+.handle.sw{left:-6px;bottom:-6px;cursor:nesw-resize}.handle.w{left:-6px;top:calc(50% - 6px);cursor:ew-resize}
+.canvas .layer{overflow:visible}
+table{border-collapse:collapse}td,th{padding:4px 8px;border-bottom:1px solid #1f2937;text-align:left}
