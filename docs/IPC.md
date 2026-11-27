@@ -28,7 +28,7 @@ Unknown top-level properties are rejected.
 
 | Method | Params | Result / behaviour |
 |---|---|---|
-| `engine.status` | none | `instance_id` (random per process; change ⇒ engine restarted), `uptime_ms`, `state`, `streaming_requested`, `native_worker_running`, `youtube_ingest_confirmed` (always `false`), `restart_attempts`, `last_error` |
+| `engine.status` | none | `instance_id` (random per process; change ⇒ engine restarted), `uptime_ms`, `state`, `streaming_requested`, `native_worker_running`, `youtube_ingest_confirmed` (always `false`), `restart_attempts`, `last_error`, `native_worker_started_unix_ms` (when the running native worker started, for elapsed on-air time; `null` while none runs) |
 | `engine.capabilities` | none | `ipc_version`, `methods`, `scene_versions`, `program_apply` and `compositor` (`true` unless `T3BOX_COMPOSITOR=0`), `phone_camera:false`, `max_frame_bytes`, `instance_id` |
 | `stream.start` | none | `accepted:true` — request taken; not ingest confirmation. `engine_start_failed` on configuration error |
 | `stream.stop` | none | `accepted:true, streaming_requested:false` (cooperative stop) |

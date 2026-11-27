@@ -1615,6 +1615,8 @@ export interface components {
             youtube_ingest_confirmed: false;
             restart_attempts: number;
             last_error: string;
+            /** @description Unix time in milliseconds the running native worker started (elapsed on-air time in the apps); null while none runs. Worker activity only, not evidence of ingest. */
+            native_worker_started_unix_ms: number | null;
             /** @description Stored scene on air, or null when none was applied in this engine process (HDMI passthrough default). */
             program: null | {
                 scene_id: string;

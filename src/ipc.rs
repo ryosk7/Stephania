@@ -71,6 +71,9 @@ pub struct EngineStatus {
     pub native_worker_running: bool,
     pub restart_attempts: u64,
     pub last_error: String,
+    /// Unix time (ms) the running native worker started, for elapsed
+    /// on-air time in the apps; None while no worker runs.
+    pub native_worker_started_unix_ms: Option<u64>,
 }
 
 /// Identity of this engine process. The management plane compares
@@ -206,6 +209,7 @@ fn status_result(s: &EngineStatus, instance: &EngineInstance) -> Value {
         "youtube_ingest_confirmed": false,
         "restart_attempts": s.restart_attempts,
         "last_error": s.last_error,
+        "native_worker_started_unix_ms": s.native_worker_started_unix_ms,
     })
 }
 
@@ -538,7 +542,7 @@ mod tests {
         fn instance(&self) -> &EngineInstance { &self.instance }
         fn status(&self) -> EngineStatus {
             self.calls.lock().unwrap().push("status");
-            EngineStatus { streaming_requested: false, native_worker_running: false, restart_attempts: 3, last_error: "x\"y".into() }
+            EngineStatus { streaming_requested: false, native_worker_running: false, restart_attempts: 3, last_error: "x\"y".into(), native_worker_started_unix_ms: None }
         }
         fn start(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push("start");
