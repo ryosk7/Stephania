@@ -3,7 +3,7 @@
 # Usage: customize.sh <rootdir> <repo> <bin-dir> <version> <build-packages> <runtime-packages>
 set -euo pipefail
 r=$1 repo=$2 bins=$3 version=$4 build=$5 runtime=$6
-in_root() { chroot "$r" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 "$@"; }
+in_root() { chroot "$r" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 "$@"; }
 
 echo "$version" >"$r/etc/t3box-version"
 echo t3box >"$r/etc/hostname"
