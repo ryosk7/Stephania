@@ -47,17 +47,22 @@ def stream(i):
     s.sendall(f"GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nAccept: text/event-stream\r\n\r\n".encode())
     s.settimeout(None)
     first = s.recv(4096)
-    stream_alive[i] = first.startswith(b"HTTP/1.1 200")
+    stream_heads[i] = first[:60]
+    stream_alive[i] = b" 200 " in first.split(b"\r\n", 1)[0]
     try:
         while s.recv(4096):
             pass
-    except OSError:
-        pass
-    stream_alive[i] = False if not stop.is_set() else stream_alive[i]
+        stream_end[i] = "closed by server"
+    except OSError as e:
+        stream_end[i] = repr(e)
+    if not stop.is_set():
+        stream_alive[i] = False
 
 stop = threading.Event()
 MAX_STREAMS = 8
 stream_alive = [False] * MAX_STREAMS
+stream_heads = [b""] * MAX_STREAMS
+stream_end = [None] * MAX_STREAMS
 threads = [threading.Thread(target=stream, args=(i,), daemon=True) for i in range(MAX_STREAMS)]
 for t in threads:
     t.start()
@@ -95,7 +100,7 @@ def worker(n):
         with lock:
             lat.setdefault(f"{method} {key}", []).append(dt)
             if s >= 400:
-                errors.append(f"{method} {key}: HTTP {s}")
+                errors.append(f"{method} {key}: HTTP {s} {d[:120]!r}")
     c.close()
 
 t0 = time.monotonic()
@@ -120,4 +125,5 @@ print(json.dumps({
     "routes": {k: {"n": len(v), "p50_ms": pct(v, 50), "p99_ms": pct(v, 99)} for k, v in sorted(lat.items())},
     "errors": len(errors), "error_samples": errors[:5],
     "streams_open": alive, "extra_stream_status": extra,
+    "stream_heads": sorted({h.decode("latin-1") for h in stream_heads}), "stream_ends": sorted({str(e) for e in stream_end}),
 }))
