@@ -10,7 +10,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "dev.ryosk7.t3box.connect",
       "infoPlist": {
-        "NSLocalNetworkUsageDescription": "同じWi-Fi上のT3Boxを操作するためにローカルネットワークを使用します。",
+        "NSLocalNetworkUsageDescription": "Uses the local network to control a T3Box on the same Wi-Fi.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }
@@ -32,7 +32,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "T3BoxのセットアップQRコードを読み取るためにカメラを使用します。",
+          "cameraPermission": "Uses the camera to read the T3Box setup QR code.",
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
@@ -43,7 +43,7 @@
         {
           "isBackgroundEnabled": false,
           "neverForLocation": true,
-          "bluetoothAlwaysPermission": "近くのT3Boxを見つけて初期設定するためにBluetoothを使用します。"
+          "bluetoothAlwaysPermission": "Uses Bluetooth to find and set up a nearby T3Box."
         }
       ]
     ],

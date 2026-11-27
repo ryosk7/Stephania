@@ -9,13 +9,13 @@ import {describeError, Screen, s} from '../ui';
 
 export default function Devices() {
   const [devices, setDevices] = useState<Device[]>([]);
-  const [status, setStatus] = useState('近くのT3Boxを探しています…');
+  const [status, setStatus] = useState('Looking for nearby T3Box devices…');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let stop: (() => void) | undefined;
     (async () => {
-      if (!(await ensurePermissions())) return setStatus('Bluetoothの権限が必要です。');
+      if (!(await ensurePermissions())) return setStatus('Bluetooth permission is required.');
       try { await waitPoweredOn(); } catch (e) { return setStatus(describeError(e)); }
       stop = scanDevices(
         d => setDevices(list => (list.some(x => x.id === d.id) ? list : [...list, d])),
@@ -27,14 +27,14 @@ export default function Devices() {
 
   async function open(device: Device) {
     setBusy(true);
-    setStatus('接続しています…');
+    setStatus('Connecting…');
     try {
       const session = new ProvisioningSession(await connectTransport(device.id));
       const info = await session.deviceInformation();
       const secret = pendingSecret();
       if (info.ownership === 'UNCLAIMED') {
         if (!secret) throw Object.assign(new Error('need_qr'), {code: 'need_qr'});
-        setStatus('所有者として登録しています…');
+        setStatus('Registering as the owner…');
         const key = await session.claim(secret, await ownerId());
         await saveOwnerKey(device.id, key);
         setPendingSecret(undefined);
@@ -47,7 +47,7 @@ export default function Devices() {
       router.push('/wifi');
     } catch (e) {
       await disconnect(device.id);
-      setStatus((e as {code?: string}).code === 'need_qr' ? '未登録のT3Boxです。先にセットアップQRを読み取ってください。' : describeError(e));
+      setStatus((e as {code?: string}).code === 'need_qr' ? 'This T3Box has no owner yet. Scan its setup QR code first.' : describeError(e));
     } finally {
       setBusy(false);
     }
@@ -62,7 +62,7 @@ export default function Devices() {
         renderItem={({item}) => (
           <Pressable disabled={busy} style={s.row} onPress={() => void open(item)} accessibilityRole="button">
             <Text style={s.h}>{item.localName ?? item.name ?? 'T3Box'}</Text>
-            <Text style={s.p}>信号 {item.rssi ?? '?'} dBm</Text>
+            <Text style={s.p}>Signal {item.rssi ?? '?'} dBm</Text>
           </Pressable>
         )}
       />

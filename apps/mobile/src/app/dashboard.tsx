@@ -8,17 +8,17 @@ import {DeviceClient, DeviceError, type AudioInput, type Status, type StoredScen
 import {loadEnrollment} from '../state/session';
 import {Button, s} from '../ui';
 
-const STATE: Record<string, string> = {idle: '停止中', starting_or_retrying: '開始中・再試行中', native_worker_active: '配信中', stopping: '停止処理中'};
+const STATE: Record<string, string> = {idle: 'Stopped', starting_or_retrying: 'Starting / retrying', native_worker_active: 'Streaming', stopping: 'Stopping'};
 
 export function describeDeviceError(e: unknown): string {
   if (e instanceof DeviceError) {
     const m: Record<string, string> = {
-      unreachable: 'T3Boxに接続できません。同じWi-Fiにいるか確認してください（証明書が一致しない接続には接続しません）。',
-      unauthorized: 'このスマホのアクセス権が無効です。Wi-Fi設定画面から再発行してください。',
-      program_inactive: '配信していないため切り替えできません。',
-      engine_unavailable: 'メディアエンジンが応答していません。',
+      unreachable: 'Cannot reach the T3Box. Check that you are on the same Wi-Fi (connections with a different certificate are refused).',
+      unauthorized: 'This phone\'s access is no longer valid. Issue it again from Wi-Fi setup.',
+      program_inactive: 'Not streaming, so the scene cannot be switched.',
+      engine_unavailable: 'The media engine is not responding.',
     };
-    return m[e.code] ?? `エラー: ${e.code} ${e.message}`;
+    return m[e.code] ?? `Error: ${e.code} ${e.message}`;
   }
   return String(e);
 }
@@ -30,12 +30,12 @@ export default function Dashboard() {
   const [scenes, setScenes] = useState<StoredScene[]>([]);
   const [audio, setAudio] = useState<AudioInput[]>([]);
   const [fade, setFade] = useState(true);
-  const [message, setMessage] = useState('接続しています…');
+  const [message, setMessage] = useState('Connecting…');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     loadEnrollment(device).then(e => {
-      if (!e) { setMessage('このT3Boxのアクセス権がありません。'); return; }
+      if (!e) { setMessage('This phone has no access to this T3Box.'); return; }
       setClient(new DeviceClient(e, PinnedFetch));
     }).catch(e => setMessage(String(e)));
   }, [device]);
@@ -67,36 +67,36 @@ export default function Dashboard() {
   return (
     <ScrollView contentContainerStyle={s.screen}>
       <Text style={s.h}>{status ? STATE[status.state] ?? status.state : '—'}</Text>
-      <Text style={s.p}>Program: {program ? `${program.scene_id} r${program.revision}` : 'HDMI（初期状態）'}</Text>
+      <Text style={s.p}>Program: {program ? `${program.scene_id} r${program.revision}` : 'HDMI (default)'}</Text>
       {status?.last_error ? <Text style={s.error}>{status.last_error}</Text> : null}
-      <Button title={streaming ? '配信を停止' : '配信を開始'} disabled={!client || busy}
-        onPress={() => void run(() => (streaming ? client!.stop() : client!.start()), streaming ? '停止を要求しました' : '開始を要求しました')} />
+      <Button title={streaming ? 'Stop stream' : 'Start stream'} disabled={!client || busy}
+        onPress={() => void run(() => (streaming ? client!.stop() : client!.start()), streaming ? 'Stop requested' : 'Start requested')} />
 
-      <Text style={s.h}>シーン</Text>
+      <Text style={s.h}>Scenes</Text>
       <View style={{flexDirection: 'row', alignItems: 'center', gap: 8}}>
-        <Switch value={fade} onValueChange={setFade} accessibilityLabel="フェードで切り替え" />
-        <Text style={s.p}>フェードで切り替え（0.5秒）</Text>
+        <Switch value={fade} onValueChange={setFade} accessibilityLabel="Switch with a fade" />
+        <Text style={s.p}>Switch with a 0.5 s fade</Text>
       </View>
       {sorted.map(sc => (
         <Pressable key={sc.id} accessibilityRole="button" disabled={busy || !streaming} style={s.row}
-          onPress={() => void run(() => client!.transition(sc.id, sc.revision, fade ? 500 : undefined), `${sc.document.name} に切り替えました`)}>
+          onPress={() => void run(() => client!.transition(sc.id, sc.revision, fade ? 500 : undefined), `Switched to ${sc.document.name}`)}>
           <Text style={[s.p, program?.scene_id === sc.id && {fontWeight: '700'}]}>
             {program?.scene_id === sc.id ? '● ' : ''}{sc.document.name} <Text style={{color: '#888'}}>r{sc.revision}</Text>
           </Text>
         </Pressable>
       ))}
-      {!streaming && sorted.length > 0 && <Text style={s.p}>シーンの切り替えは配信中に行えます。</Text>}
+      {!streaming && sorted.length > 0 && <Text style={s.p}>Scenes can be switched while streaming.</Text>}
 
-      <Text style={s.h}>音声</Text>
+      <Text style={s.h}>Audio</Text>
       {audio.map(a => (
         <View key={a.id} style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'}}>
-          <Text style={s.p}>{a.id === 'hdmi' ? 'HDMI音声' : 'マイク'}{a.enabled ? '' : '（無効）'}</Text>
-          <Switch value={!a.muted} disabled={busy || !a.enabled} accessibilityLabel={(a.id === 'hdmi' ? 'HDMI音声' : 'マイク') + 'を出す'}
+          <Text style={s.p}>{a.id === 'hdmi' ? 'HDMI audio' : 'Microphone'}{a.enabled ? '' : ' (disabled)'}</Text>
+          <Switch value={!a.muted} disabled={busy || !a.enabled} accessibilityLabel={(a.id === 'hdmi' ? 'HDMI audio' : 'Microphone') + ' on air'}
             onValueChange={on => void run(() => client!.setMuted(a.id, !on))} />
         </View>
       ))}
 
-      <Button title="PCのブラウザで開く" disabled={!client} onPress={() => router.push({pathname: '/open-on-pc', params: {device}})} />
+      <Button title="Open in a PC browser" disabled={!client} onPress={() => router.push({pathname: '/open-on-pc', params: {device}})} />
       {message !== '' && <Text style={s.p}>{message}</Text>}
     </ScrollView>
   );

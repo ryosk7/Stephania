@@ -9,18 +9,18 @@ export default function Home() {
   useEffect(() => { enrolledDevices().then(setEnrolled).catch(() => undefined); }, []);
   return (
     <Screen>
-      <Text style={s.h}>T3Boxを使い始める</Text>
+      <Text style={s.h}>Get started with T3Box</Text>
       <Text style={s.p}>
-        1. PCでセットアップページを開き「秘密値を作成」を押す{'\n'}
-        2. t3box-setup.txt をOSを書き込んだmicroSDのboot領域にコピー{'\n'}
-        3. microSDをT3Boxに入れて電源を入れる{'\n'}
-        4. 下のボタンからPC画面のQRを読み取る
+        1. On a PC, open the setup page and press “Create secret”{'\n'}
+        2. Copy t3box-setup.txt to the boot partition of the microSD card with the OS{'\n'}
+        3. Insert the card into the T3Box and power it on{'\n'}
+        4. Scan the QR code on the PC screen with the button below
       </Text>
-      <Button title="セットアップQRを読む" onPress={() => router.push('/scan')} />
-      <Button title="登録済みのT3Boxに接続" onPress={() => router.push('/devices')} />
-      {enrolled.length > 0 && <Text style={s.h}>操作パネル（Wi-Fi経由）</Text>}
+      <Button title="Scan setup QR" onPress={() => router.push('/scan')} />
+      <Button title="Connect to a registered T3Box" onPress={() => router.push('/devices')} />
+      {enrolled.length > 0 && <Text style={s.h}>Control over Wi-Fi</Text>}
       {enrolled.map(d => (
-        <Button key={d.deviceId} title={`${d.name} を操作`} onPress={() => router.push({pathname: '/dashboard', params: {device: d.deviceId}})} />
+        <Button key={d.deviceId} title={`Control ${d.name}`} onPress={() => router.push({pathname: '/dashboard', params: {device: d.deviceId}})} />
       ))}
     </Screen>
   );

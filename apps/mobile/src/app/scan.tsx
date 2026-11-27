@@ -11,12 +11,12 @@ export default function Scan() {
   const [error, setError] = useState('');
   const handled = useRef(false);
 
-  if (!permission) return <Screen><Text style={s.p}>カメラを準備しています…</Text></Screen>;
+  if (!permission) return <Screen><Text style={s.p}>Preparing the camera…</Text></Screen>;
   if (!permission.granted) {
     return (
       <Screen>
-        <Text style={s.p}>セットアップQRを読むためにカメラを使います。</Text>
-        <Button title="カメラを許可" onPress={() => void requestPermission()} />
+        <Text style={s.p}>The camera is used to read the setup QR code.</Text>
+        <Button title="Allow camera" onPress={() => void requestPermission()} />
       </Screen>
     );
   }
@@ -29,7 +29,7 @@ export default function Scan() {
         onBarcodeScanned={({data}) => {
           if (handled.current) return;
           const secret = parseSetupUri(data);
-          if (!secret) { setError('T3BoxのセットアップQRではありません。'); return; }
+          if (!secret) { setError('This is not a T3Box setup QR code.'); return; }
           handled.current = true;
           setPendingSecret(secret);
           router.replace('/devices');
