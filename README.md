@@ -22,13 +22,16 @@ export T3BOX_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'
 
 Optional experimental controls: T3BOX_PARALLEL_MEDIA=1, T3BOX_ADAPTIVE_RATE=1, T3BOX_DEADLINE_TRANSPORT=1, T3BOX_CONTENT_AWARE=1. They remain opt-in pending physical and composite-fault validation. Native supports YUYV/NV12 and ultrafast. Stop is cooperative. No automatic FFmpeg fallback.
 
+The engine is controlled over its Unix socket (`T3BOX_ENGINE_SOCKET`, docs/IPC.md), normally through the control service. For development and the Virtual Lab, a transitional loopback HTTP API can be turned on explicitly:
+
 ```bash
+export T3BOX_LEGACY_HTTP=127.0.0.1:8787   # loopback only; off when unset
 curl http://127.0.0.1:8787/status
 curl -X POST http://127.0.0.1:8787/stream/start
 curl -X POST http://127.0.0.1:8787/stream/stop
 ```
 
-The local API is loopback-only; native_worker_running is worker activity, not confirmed YouTube ingest. Never commit stream keys.
+native_worker_running is worker activity, not confirmed YouTube ingest. Never commit stream keys.
 
 ## Validation limits
 
