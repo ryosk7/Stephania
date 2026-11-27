@@ -63,3 +63,18 @@ The Studio signs in with an account; a "管理トークンで接続" fallback is
 kept for first-time setup and maintenance. Routes: `#/` dashboard,
 `#/studio` scenes and layout, `#/audio` program audio, `#/settings`
 password and (admins) users.
+
+## Phone app and PCs
+
+The phone app (apps/mobile) talks to the management API only through its
+native pinned client (`modules/t3box-pinned-fetch`): the TLS chain must end
+in the device CA whose SHA-256 the device delivered sealed over BLE
+(`management.enroll`), the leaf must validate with that CA as the only
+anchor (dates, signatures, host name), and system roots, proxies, cookies
+and redirects are not used. It tries the device's URLs in order (name, then
+addresses) and never falls back to weaker trust.
+
+A PC has no such pin. `GET /ca.pem` (no credentials; on the LAN only over
+TLS to a certified name) serves the device CA certificate; the phone app's
+"PCのブラウザで開く" screen shows the URL and the CA fingerprint so the user
+can compare before installing it as a trusted root.

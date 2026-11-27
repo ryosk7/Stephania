@@ -37,9 +37,26 @@ export async function ownerId(): Promise<string> {
 
 const enrollmentKey = (deviceId: string) => 't3box.lan.' + toHex(new TextEncoder().encode(deviceId));
 
+export type EnrolledDevice = {deviceId: string; name: string};
+const INDEX_KEY = 't3box.lan.index';
+
 /** LAN access token + CA pin from management.enroll (secure store only). */
-export async function saveEnrollment(deviceId: string, e: ManagementEnrollment) {
+export async function saveEnrollment(deviceId: string, e: ManagementEnrollment, name = 'T3Box') {
   await SecureStore.setItemAsync(enrollmentKey(deviceId), JSON.stringify(e), {keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY});
+  const list = (await enrolledDevices()).filter(d => d.deviceId !== deviceId);
+  await SecureStore.setItemAsync(INDEX_KEY, JSON.stringify([...list, {deviceId, name}]), {keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY});
+}
+
+/** Devices this phone holds LAN access for (no secrets in the list). */
+export async function enrolledDevices(): Promise<EnrolledDevice[]> {
+  const v = await SecureStore.getItemAsync(INDEX_KEY);
+  try { return v ? (JSON.parse(v) as EnrolledDevice[]) : []; } catch { return []; }
+}
+
+export async function forgetEnrollment(deviceId: string) {
+  await SecureStore.deleteItemAsync(enrollmentKey(deviceId));
+  const list = (await enrolledDevices()).filter(d => d.deviceId !== deviceId);
+  await SecureStore.setItemAsync(INDEX_KEY, JSON.stringify(list), {keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY});
 }
 
 export async function loadEnrollment(deviceId: string): Promise<ManagementEnrollment | null> {

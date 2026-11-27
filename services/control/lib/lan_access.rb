@@ -13,6 +13,7 @@ require "openssl"
 # malformed means "no LAN access" (fail closed).
 class LanAccess
   def initialize(pki_dir:, tokens_file:)
+    @pki_dir = pki_dir
     @endpoint_path = pki_dir && File.join(pki_dir, "endpoint.json")
     @tokens_path = tokens_file
     @mutex = Mutex.new
@@ -20,6 +21,9 @@ class LanAccess
   end
 
   def configured? = !@tokens_path.nil?
+
+  # The device CA certificate (public; crate::pki writes it 0644).
+  def ca_path = @pki_dir && File.join(@pki_dir, "ca.pem")
 
   # Hosts (lowercase, IPv6 without brackets) certified for LAN TLS.
   def hosts

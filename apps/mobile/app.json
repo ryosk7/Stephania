@@ -8,7 +8,13 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "dev.ryosk7.t3box.connect"
+      "bundleIdentifier": "dev.ryosk7.t3box.connect",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "同じWi-Fi上のT3Boxを操作するためにローカルネットワークを使用します。",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
     "android": {
       "adaptiveIcon": {
