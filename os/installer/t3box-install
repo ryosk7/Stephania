@@ -28,6 +28,10 @@ cmdline_value() { tr ' ' '\n' </proc/cmdline | sed -n "s/^$1=//p" | tail -1; }
 power_cut_after() {
   if [ "$(cmdline_value t3box.install_fail_at)" = "$1" ]; then
     log "TEST power cut after stage $1"
+    # Let the serial console drain the line first: sysrq raises the console
+    # log level for its own message, which would otherwise land inside it.
+    # Nothing is synced, so the disks still see an unclean cut.
+    sleep 1
     echo o >/proc/sysrq-trigger   # immediate, no sync: like pulling the plug
   fi
 }
