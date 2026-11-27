@@ -36,7 +36,7 @@ class Control < Sinatra::Base
   }.freeze
 
   set :bind, "127.0.0.1"
-  set :public_folder, File.expand_path("../../apps/studio/dist", __dir__)
+  set :public_folder, ENV.fetch("T3BOX_STUDIO_DIST", File.expand_path("../../apps/studio/dist", __dir__))
   set :show_exceptions, false
   set :raise_errors, false
   set :dump_errors, false

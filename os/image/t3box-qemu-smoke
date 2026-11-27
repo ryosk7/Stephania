@@ -1,0 +1,41 @@
+#!/bin/sh
+# Image smoke test, run only when the kernel command line asks for it
+# (t3box.smoke=1 → t3box-qemu-smoke.service; ci/qemu-smoke.sh).
+# Prints SMOKE PASS/FAIL lines and a final SMOKE RESULT to the console.
+fails=0
+ok() { echo "SMOKE PASS $*"; }
+bad() { echo "SMOKE FAIL $*"; fails=$((fails + 1)); }
+info() { echo "SMOKE INFO $*"; }
+check() { msg=$1; shift; if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg"; fi; }
+
+# This unit is itself part of boot, so wait for every other start job
+# instead of `is-system-running --wait` (which would wait on us).
+for i in $(seq 300); do
+  [ -z "$(systemctl list-jobs --no-legend | grep -v t3box-qemu-smoke)" ] && break
+  sleep 1
+done
+info "system state $(systemctl is-system-running)"
+info "version $(cat /etc/t3box-version)"
+check "root is an overlay over a read-only SquashFS" sh -c 'findmnt -n -o FSTYPE / | grep -qx overlay && findmnt -n -o FSTYPE,OPTIONS /media/rofs | grep -q "^squashfs .*ro"'
+check "read-only root cannot be written" sh -c '! touch /media/rofs/.t3box-write-test'
+check "data partition mounted (ext4)" sh -c 'findmnt -n -o FSTYPE /data | grep -qx ext4'
+check "state bind-mounted from data" sh -c 'findmnt -n /var/lib/t3box'
+check "first-boot token created on data" test -s /data/t3box/config/control.env
+check "no compiler in the image" sh -c '! command -v gcc && ! command -v cc && ! command -v make'
+for u in t3box t3box-control t3box-firstboot; do check "$u active" systemctl is-active "$u"; done
+info "t3box-provision $(systemctl is-active t3box-provision) (no Wi-Fi device in QEMU)"
+T3BOX_CONTROL_TOKEN=
+[ -r /data/t3box/config/control.env ] && . /data/t3box/config/control.env
+for i in $(seq 60); do curl -fs -o /dev/null http://127.0.0.1:9292/ 2>/dev/null; [ $? -ne 7 ] && break; sleep 1; done
+check "control API answers on loopback with the bootstrap token" \
+  curl -fsS -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9292/api/v1/capabilities
+check "control reaches the engine over IPC" \
+  curl -fsS -H "Authorization: Bearer $T3BOX_CONTROL_TOKEN" http://127.0.0.1:9292/api/v1/status
+check "Studio is served by the control plane" sh -c 'curl -fsS http://127.0.0.1:9292/ | grep -q "<div id=\"root\""'
+check "engine health via t3box-bootctl" env T3BOX_HEALTH_ATTEMPTS=30 /usr/local/bin/t3box-bootctl health
+check "device PKI published an endpoint" test -s /var/lib/t3box/pki/endpoint.json
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /var/lib/t3box/pki/ca.pem --resolve t3box.local:9443:127.0.0.1 https://t3box.local:9443/api/v1/capabilities)
+[ "$code" = 401 ] && ok "LAN TLS listener verifies against the device CA and requires an issued token" || bad "LAN TLS listener ($code)"
+info "rauc: $(rauc status 2>&1 | head -3 | tr '\n' ' ')"
+for u in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do info "failed unit $u: $(journalctl -b -u "$u" -n 5 --no-pager | tail -5 | tr '\n' ' ')"; done
+if [ "$fails" = 0 ]; then echo "SMOKE RESULT PASS"; else echo "SMOKE RESULT FAIL ($fails)"; fi

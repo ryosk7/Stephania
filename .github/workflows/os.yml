@@ -2,13 +2,14 @@ name: OS and updates
 on:
   push:
     branches: [main]
-    paths: ['os/**', 'src/bootctl.rs', 'src/bin/t3box-bootctl.rs', 'src/ipc.rs', 'ci/update-e2e.sh', 'ci/fake_engine.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/os.yml']
+    paths: ['os/**', 'src/**', 'services/control/**', 'apps/studio/**', 'ci/qemu-smoke.sh', 'ci/update-e2e.sh', 'ci/fake_engine.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/os.yml']
   pull_request:
-    paths: ['os/**', 'src/bootctl.rs', 'src/bin/t3box-bootctl.rs', 'src/ipc.rs', 'ci/update-e2e.sh', 'ci/fake_engine.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/os.yml']
+    paths: ['os/**', 'src/**', 'services/control/**', 'apps/studio/**', 'ci/qemu-smoke.sh', 'ci/update-e2e.sh', 'ci/fake_engine.py', 'systemd/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/os.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: os-${{ github.event.pull_request.number || github.ref }}
@@ -55,3 +56,42 @@ jobs:
       - run: cargo build --locked --no-default-features --bin t3box-bootctl
       - name: A/B update end to end (verity bundles)
         run: sudo env PATH="$PATH" ci/update-e2e.sh target/debug/t3box-bootctl
+
+  # Reference image (os/image/build.sh, docs/IMAGE.md) built on arm64 with
+  # the release engine (all native features), then booted in QEMU (generic
+  # kernel, virtio disk) with the in-image smoke test. Pi firmware, VideoCore
+  # and radios are not emulated (docs/QUALIFICATION.md).
+  image-qemu:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/studio/package-lock.json
+      - name: Build Studio
+        working-directory: apps/studio
+        run: npm ci --no-audit --no-fund && npm run build
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          ls -l /dev/kvm || true
+      - name: Build image
+        run: sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" os/image/build.sh "$RUNNER_TEMP/image" target/release
+      - name: Boot in QEMU and run the smoke test
+        run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" arm64
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-qemu-serial
+          path: ${{ runner.temp }}/image/serial.log
+          retention-days: 7
