@@ -198,7 +198,10 @@ jobs:
   # in QEMU; structure only (ci/pi-image-check.sh). Booting it is Q-BOOT in
   # docs/QUALIFICATION.md.
   image-pi:
-    if: github.event_name != 'pull_request'
+    needs: changes
+    # Also on PRs that touch the OS: the Pi variant is the product, and its
+    # package sources (Raspberry Pi archive) differ from the QEMU image.
+    if: github.event_name != 'pull_request' || needs.changes.outputs.os == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
