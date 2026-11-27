@@ -33,11 +33,12 @@ power_cut_after() {
 }
 
 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
-mkdir -p /run /mnt/src /mnt/sel /mnt/data /run/payload
+mkdir -p /run /mnt/src /mnt/sel /mnt/data /run/payload /tmp
 mount -t tmpfs -o size=90% tmpfs /run
+mount -t tmpfs tmpfs /tmp
 mkdir -p /run/payload /run/boot
 echo 1 >/proc/sys/kernel/sysrq
-for m in $(cat /etc/t3box/modules 2>/dev/null); do modprobe -q "$m" 2>/dev/null || true; done
+for m in $(cat /etc/t3box/modules 2>/dev/null); do modprobe "$m" 2>/tmp/modprobe.err || log "module $m: $(cat /tmp/modprobe.err)"; done
 
 INSTALL_ID=$(cmdline_value t3box.install_id)
 [ -n "$INSTALL_ID" ] || fatal "no t3box.install_id on the kernel command line"
@@ -63,16 +64,21 @@ manifest_field() { # file key -> value (flat JSON written by os/installer/build.
 # Candidate media: a fresh card (partition 1 = FAT with our signed manifest)
 # or one we already partitioned (GPT selector with our state file).
 fresh=""; resume=""
+log "block devices: $(ls /sys/block | tr '\n' ' ')"
 for d in $(ls /sys/block | grep -E '^(vd[a-z]+|sd[a-z]+|mmcblk[0-9]+|nvme[0-9]+n[0-9]+)$'); do
   p1=$(part "$d" 1)
-  [ -b "$p1" ] || continue
-  if mount -t vfat -o ro "$p1" /mnt/src 2>/dev/null; then
+  [ -b "$p1" ] || { log "$d: no partition 1"; continue; }
+  if mount -t vfat -o ro "$p1" /mnt/src 2>/tmp/mount.err; then
     if [ -f /mnt/src/t3box-install/state ] && grep -qx "install_id=$INSTALL_ID" /mnt/src/t3box-install/state; then
       resume="$resume $d"
     elif verify_manifest /mnt/src/t3box-install; then
       fresh="$fresh $d"
+    else
+      log "$d: no manifest for this install_id signed by the release key"
     fi
     umount /mnt/src
+  else
+    log "$d: partition 1 is not FAT ($(cat /tmp/mount.err))"
   fi
 done
 n=$(echo $fresh $resume | wc -w)
