@@ -31,6 +31,7 @@ pub mod pcm_framer;
 pub mod aac_adts;
 
 pub mod av_clock;
+pub mod audio_mixer;
 pub mod reconnect;
 pub mod rate_control;
 pub mod transport_deadline;
