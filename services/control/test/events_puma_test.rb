@@ -86,6 +86,22 @@ class EventsPumaTest < Minitest::Test
     buffer
   end
 
+  def test_open_streams_do_not_block_shutdown
+    sock, = open_stream
+    read_until(sock, "event: snapshot", +"")
+    started = Time.now
+    Process.kill("TERM", @pid)
+    deadline = started + 8
+    sleep 0.1 until Process.wait(@pid, Process::WNOHANG) || Time.now > deadline
+    exited = Time.now <= deadline
+    Process.kill("KILL", @pid) unless exited
+    Process.wait(@pid) unless exited
+    @pid = nil
+    assert exited, "puma ignored TERM with an open event stream:\n#{File.read(@log)}"
+  ensure
+    sock&.close
+  end
+
   def test_stream_is_flushed_incrementally_and_bounded
     sock, head = open_stream
     assert_match %r{\AHTTP/1.1 200}, head

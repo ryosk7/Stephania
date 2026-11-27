@@ -74,10 +74,20 @@ export class Stack {
     await waitFor(() => connects({port: this.port, host: '127.0.0.1'}), 'control', log);
   }
 
+  /** Stops everything; throws if the control plane ignores TERM for 10 s
+   * (open event streams must not block shutdown). */
   async stop() {
     await this.stopEngine();
     const p = this.control;
-    if (p && p.exitCode === null) await new Promise(r => { p.once('exit', r); p.kill('SIGTERM'); });
+    let hung = false;
+    if (p && p.exitCode === null) {
+      await new Promise<void>(r => {
+        const timer = setTimeout(() => { hung = true; p.kill('SIGKILL'); }, 10_000);
+        p.once('exit', () => { clearTimeout(timer); r(); });
+        p.kill('SIGTERM');
+      });
+    }
     rmSync(this.dir, {recursive: true, force: true});
+    if (hung) throw new Error('control plane did not stop within 10 s of SIGTERM');
   }
 }

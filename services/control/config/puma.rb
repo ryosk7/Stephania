@@ -12,5 +12,8 @@ threads Integer(ENV.fetch("T3BOX_CONTROL_MIN_THREADS", 1)), max_threads
 bind "tcp://127.0.0.1:#{Integer(ENV.fetch('T3BOX_CONTROL_PORT', 9292))}"
 environment ENV.fetch("RACK_ENV", "production")
 persistent_timeout 20
+# Event streams never finish on their own; without a bound, a graceful stop
+# (systemd TERM) would wait for every open Studio tab. Force-close them.
+force_shutdown_after 2
 first_data_timeout 10
 max_fast_inline 4
