@@ -1,0 +1,18 @@
+[Unit]
+Description=T3Box restore persistent data after a rejected update trial
+# Must finish before the control plane opens its database.
+DefaultDependencies=no
+After=local-fs.target
+Before=t3box-control.service t3box-update-confirm.service
+
+[Service]
+Type=oneshot
+Environment=T3BOX_AUTOBOOT=/boot/selector/autoboot.txt
+Environment=T3BOX_BOOT_STATE=/data/t3box/update/bootctl.json
+Environment=T3BOX_BOOT_SLOTS=A=2,B=3
+Environment=T3BOX_CONTROL_DB=/var/lib/t3box/control/control.db
+Environment=T3BOX_SNAPSHOT_DIR=/data/t3box/update/snapshot
+ExecStart=/usr/local/bin/t3box-bootctl restore-data
+
+[Install]
+WantedBy=multi-user.target

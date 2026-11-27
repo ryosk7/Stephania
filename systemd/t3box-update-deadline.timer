@@ -1,0 +1,9 @@
+[Unit]
+Description=Deadline for confirming an update trial
+
+[Timer]
+# Confirmation normally finishes within ~3 min (health retries 60 s).
+OnBootSec=10min
+
+[Install]
+WantedBy=timers.target

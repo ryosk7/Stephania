@@ -41,6 +41,9 @@ reboot_cleanup() {
   dmsetup ls 2>/dev/null | awk '$1 ~ /^rauc/ {print $1}' | xargs -r -n1 dmsetup remove --force 2>/dev/null || true
   losetup -a | awk -F: '/\.raucb/ {print $1}' | xargs -r -n1 losetup -d 2>/dev/null || true
 }
+# Stand-in control database: schema_info.version as Sequel keeps it.
+db_version() { sqlite3 "$T3BOX_CONTROL_DB" 'select version from schema_info'; }
+migrate_to() { sqlite3 "$T3BOX_CONTROL_DB" "pragma journal_mode=wal; update schema_info set version=$1; insert into scenes values('from-v$1');" >/dev/null; }
 firmware_boot() { # $1 = normal|tryboot
   reboot_cleanup
   local sect=all; [ "$1" = tryboot ] && sect=tryboot
@@ -48,14 +51,17 @@ firmware_boot() { # $1 = normal|tryboot
   python3 -c 'import struct,sys;open(sys.argv[1],"wb").write(struct.pack(">I",int(sys.argv[2])));open(sys.argv[3],"wb").write(struct.pack(">I",int(sys.argv[4])))' \
     "$w/dt/partition" "$p" "$w/dt/tryboot" "$([ "$1" = tryboot ] && echo 1 || echo 0)"
   booted=$([ "$p" = 2 ] && echo A || echo B)
+  "$bootctl" restore-data >>"$w/restore.log" 2>&1 || fail "restore-data"
   start_rauc "$booted"
 }
+export T3BOX_CONTROL_DB=$w/data/control.db T3BOX_SNAPSHOT_DIR=$w/data/snapshot
 export T3BOX_AUTOBOOT=$w/selector/autoboot.txt T3BOX_BOOT_STATE=$w/data/bootctl.json T3BOX_BOOT_SLOTS=A=2,B=3 \
   T3BOX_DEVICE_TREE=$w/dt T3BOX_ENGINE_SOCKET=$w/engine.sock T3BOX_DATA_DIR=$w/data T3BOX_HEALTH_ATTEMPTS=2 T3BOX_REBOOT=true
 
 cat >"$w/pre-install" <<SH
 #!/bin/sh
-exec "$bootctl" guard
+"$bootctl" guard || exit 1
+exec "$bootctl" snapshot
 SH
 chmod +x "$w/pre-install"
 cat >"$w/system.conf" <<CONF
@@ -123,6 +129,7 @@ make_bundle() { # $1 out, $2 version, $3 compatible, $4 key, $5 cert
 }
 slot_sha() { head -c "$(cat "$2.rootfs.size")" "${dev[$1]}" | sha256sum | cut -d' ' -f1; }
 
+sqlite3 "$T3BOX_CONTROL_DB" 'create table schema_info(version integer); insert into schema_info values(2); create table scenes(id text);'
 firmware_boot normal
 [ "$(primary)" = A ] || fail "initial primary"
 pass "booted A (emulated firmware + RAUC service)"
@@ -171,31 +178,50 @@ rauc install "$w/v2.raucb" >>"$w/install.log" 2>&1 || fail "install v2"
 [ "$(slot_sha rootfs-b "$w/v2.raucb")" = "$(cat "$w/v2.raucb.rootfs.sha256")" ] || fail "slot B content"
 pass "v2 written to inactive B and staged as a one-time trial (A still committed)"
 
+[ -f "$T3BOX_SNAPSHOT_DIR/control.db" ] || fail "pre-install snapshot missing"
 firmware_boot tryboot
+migrate_to 3   # v2 migrates the schema during its trial
 "$bootctl" confirm >>"$w/confirm.log" 2>&1 || fail "confirm healthy trial"
+[ ! -f "$T3BOX_SNAPSHOT_DIR/control.db" ] || fail "snapshot kept after commit"
 [ "$(committed)" = 3 ] || fail "not committed"
 firmware_boot normal
 [ "$("$bootctl" get-current)" = B ] || fail "normal boot after commit"
-pass "healthy trial committed; normal boots stay on B"
+[ "$(db_version)" = 3 ] || fail "committed data lost"
+pass "healthy trial committed with its migrated data; normal boots stay on B"
 
 make_bundle "$w/v3.raucb" 3.0.0 t3box-pi5 "$w/rel.key" "$w/rel.pem"
 rauc install "$w/v3.raucb" >>"$w/install.log" 2>&1 || fail "install v3"
 [ "$(primary)" = A ] || fail "v3 pending on A"
 kill "${pids[-1]}"; wait "${pids[-1]}" 2>/dev/null || true; rm -f "$w/engine.sock"  # engine broken in v3
 firmware_boot tryboot
+migrate_to 4
 "$bootctl" confirm >>"$w/confirm.log" 2>&1 && fail "unhealthy trial confirmed"
 firmware_boot normal
+[ "$(db_version)" = 3 ] || fail "data not restored after rollback: $(db_version)"
+[ "$(sqlite3 "$T3BOX_CONTROL_DB" "select count(*) from scenes where id='from-v4'")" = 0 ] || fail "trial writes survived"
 [ "$("$bootctl" get-current)" = B ] && [ "$(committed)" = 3 ] || fail "rollback after failed health"
 [ "$("$bootctl" get-state A)" = bad ] || fail "A not marked bad"
-pass "unhealthy trial (engine down) rolled back to B and marked bad"
+pass "unhealthy trial (engine down) rolled back to B, marked bad, data restored to the pre-update snapshot"
 
 python3 "$root/ci/fake_engine.py" "$w/engine.sock" idle & pids+=($!)
 sleep 0.5
 rauc install "$w/v3.raucb" >>"$w/install.log" 2>&1 || fail "reinstall v3"
 firmware_boot tryboot
+migrate_to 4
 firmware_boot normal   # trial crashed / watchdog / power loss before confirmation
+[ "$(db_version)" = 3 ] || fail "data not restored after crashed trial"
 "$bootctl" confirm >>"$w/confirm.log" 2>&1 || fail "confirm after crashed trial"
+sqlite3 "$T3BOX_CONTROL_DB" "insert into scenes values('after-rollback')"
+firmware_boot normal
+[ "$(sqlite3 "$T3BOX_CONTROL_DB" "select count(*) from scenes where id='after-rollback'")" = 1 ] || fail "second restore clobbered newer data"
 [ "$("$bootctl" get-current)" = B ] && [ "$(primary)" = B ] && [ "$("$bootctl" get-state A)" = bad ] || fail "crashed trial"
-pass "crashed trial falls back to B by firmware rule and is marked bad"
+pass "crashed trial falls back to B by firmware rule, marked bad, data restored exactly once"
+# Deadline: a trial that never gets confirmed is rejected by the timer.
+rauc install "$w/v3.raucb" >>"$w/install.log" 2>&1 || fail "install v3 (deadline)"
+firmware_boot tryboot
+"$bootctl" deadline >>"$w/confirm.log" 2>&1 || fail "deadline"
+firmware_boot normal
+[ "$("$bootctl" get-current)" = B ] && [ "$("$bootctl" get-state A)" = bad ] || fail "deadline rollback"
+pass "unconfirmed trial rejected at the deadline"
 rauc status --detailed >>"$w/rauc.log" 2>&1 || true
 echo "A/B update e2e: all checks passed"

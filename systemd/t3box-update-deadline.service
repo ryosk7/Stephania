@@ -1,0 +1,9 @@
+[Unit]
+Description=T3Box reject an update trial that was not confirmed in time
+
+[Service]
+Type=oneshot
+Environment=T3BOX_AUTOBOOT=/boot/selector/autoboot.txt
+Environment=T3BOX_BOOT_STATE=/data/t3box/update/bootctl.json
+Environment=T3BOX_BOOT_SLOTS=A=2,B=3
+ExecStart=/usr/local/bin/t3box-bootctl deadline

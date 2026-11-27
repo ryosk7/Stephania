@@ -1,0 +1,3 @@
+# Appended to config.txt in each boot partition (boot-a, boot-b).
+# Hardware watchdog for systemd (os/systemd/10-t3box-watchdog.conf).
+dtparam=watchdog=on

@@ -36,6 +36,18 @@ firmware partitions 2/3 (`os/rauc/system.conf`).
    boot is a normal boot, so the firmware uses `[all]` (A). `confirm` sees
    a pending trial while booted elsewhere and marks it bad.
 
+6. Persistent data: the pre-install handler also takes an online SQLite
+   backup of the control database (`t3box-bootctl snapshot`). When a trial
+   is rejected (health failure, crash, deadline), `t3box-data-restore.service`
+   restores it on the committed slot **before** the control plane starts
+   (the old version cannot read a schema the trial migrated). A crashed
+   trial is restored once; the later mark-bad does not restore again over
+   data written since. A committed trial discards the snapshot.
+7. Deadline and watchdog: `t3box-update-deadline.timer` rejects a trial not
+   confirmed 10 min after boot; the hardware watchdog
+   (`dtparam=watchdog=on`, `os/systemd/10-t3box-watchdog.conf`) turns a
+   hung system into a reset, i.e. a normal boot onto the committed slot.
+
 `set-state X good` commits only while actually booted from X, so nothing
 but a confirmed trial can change the permanent selection. State
 (`pending`, bad slots) is a small JSON file on the data partition; every
@@ -47,11 +59,14 @@ signing PKI generated per run, emulated tryboot firmware:
 untrusted signer refused; incompatible bundle refused; install refused
 while streaming; RAUC killed mid-write leaves A committed and bootable;
 healthy trial committed; unhealthy trial rolled back and marked bad;
-crashed trial falls back by the firmware rule.
+crashed trial falls back by the firmware rule; data migrated by a rejected
+or crashed trial restored to the pre-update snapshot (exactly once),
+committed data kept; unconfirmed trial rejected at the deadline. The
+watchdog itself needs hardware (Q-BOOT).
 
 ## Not yet done
 - Image build producing this layout, release signing infrastructure, and
   booting the image (QEMU cannot emulate Pi firmware tryboot; on-device
   tryboot behaviour is a physical qualification item, docs/ACCEPTANCE.md).
-- Persistent-data schema versioning and snapshot/restore on rollback.
-- Hardware watchdog arming during the trial.
+- Snapshots cover the control database only; assets/scenes directories
+  join when they exist. Watchdog timing is unqualified.
