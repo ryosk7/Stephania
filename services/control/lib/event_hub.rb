@@ -20,9 +20,15 @@ class EventHub
   HEARTBEAT_SECONDS = 15
 
   class Subscription
-    attr_reader :queue
+    attr_reader :queue, :user_id, :session
 
-    def initialize = @queue = SizedQueue.new(QUEUE_SIZE)
+    # user_id/session: the account session that opened the stream, so it can
+    # be closed when that session ends or the account changes.
+    def initialize(user_id: nil, session: nil)
+      @queue = SizedQueue.new(QUEUE_SIZE)
+      @user_id = user_id
+      @session = session
+    end
     def closed? = @queue.closed?
     def close = @queue.close
   end
@@ -35,12 +41,19 @@ class EventHub
   def subscriber_count = @mutex.synchronize { @subs.size }
 
   # Returns a Subscription or nil when the client limit is reached.
-  def subscribe
+  def subscribe(user_id: nil, session: nil)
     @mutex.synchronize do
       return nil if @subs.size >= MAX_CLIENTS
 
-      Subscription.new.tap { |sub| @subs << sub }
+      Subscription.new(user_id: user_id, session: session).tap { |sub| @subs << sub }
     end
+  end
+
+  # Ends the streams matching the block (sign-out, disabled account, ...).
+  def close_where(&match)
+    subs = @mutex.synchronize { @subs.select(&match).tap { |m| @subs -= m } }
+    subs.each(&:close)
+    subs.size
   end
 
   def unsubscribe(sub)
