@@ -62,7 +62,8 @@ fi
 [ -d "$tools/usr/lib/ssl" ] && mkdir -p "$ir/usr/lib/ssl" && cp -a "$tools/usr/lib/ssl/openssl.cnf" "$ir/usr/lib/ssl/" 2>/dev/null || true
 
 # Kernel modules for SD/USB/virtio storage and the filesystems used.
-mods="vfat nls_cp437 nls_iso8859_1 ext4 virtio_blk virtio_pci virtio_scsi sd_mod usb_storage uas mmc_block sdhci_brcmstb sdhci_iproc"
+# nls_utf8: Debian kernels mount FAT with iocharset=utf8 by default.
+mods="vfat nls_cp437 nls_iso8859_1 nls_utf8 ext4 virtio_blk virtio_pci virtio_scsi sd_mod usb_storage uas mmc_block sdhci_brcmstb sdhci_iproc"
 : >"$ir/etc/t3box/modules"
 for m in $mods; do
   deps=$(chroot "$img/rootfs" modprobe -S "$kver" --show-depends "$m" 2>/dev/null | awk '$1=="insmod"{print $2}') || true
@@ -70,6 +71,14 @@ for m in $mods; do
   echo "$m" >>"$ir/etc/t3box/modules"
   for d in $deps; do install -D -m 0644 "$img/rootfs$d" "$ir$d"; done
 done
+# vfat and its code pages are required to read the install medium: a
+# kernel where they are neither built in nor found as modules fails here,
+# not on the device.
+for m in vfat nls_cp437 nls_utf8; do
+  grep -qx "$m" "$ir/etc/t3box/modules" || grep -q "/$m.ko" "$img/rootfs/lib/modules/$kver/modules.builtin" \
+    || { echo "installer: kernel module $m not found for $kver" >&2; exit 1; }
+done
+echo "installer modules: $(tr '\n' ' ' <"$ir/etc/t3box/modules")"
 cp "$img/rootfs/lib/modules/$kver/modules.order" "$img/rootfs/lib/modules/$kver/modules.builtin"* "$ir/lib/modules/$kver/" 2>/dev/null || true
 # Store modules uncompressed: the initramfs is itself compressed, and a
 # plain .ko loads with any modprobe/insmod regardless of zstd/xz support.

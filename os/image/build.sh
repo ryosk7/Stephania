@@ -77,7 +77,11 @@ fi
 # variant. The Raspberry Pi key is pinned by fingerprint.
 RPI_KEY_FINGERPRINT=CF8A1AF502A2AA2D763BAE7E82B129927FA3303E
 sources=("deb $mirror $suite $components")
-keyrings=(--keyring="${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}")
+# One directory of keyrings: mmdebstrap passes a single keyring *file* to
+# apt as the only trusted file, so a second --keyring would replace the
+# Debian keys instead of adding to them.
+keydir="$out/apt-keyrings"; rm -rf "$keydir"; mkdir -p "$keydir"
+cp "${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}" "$keydir/debian-archive-keyring.gpg"
 if [ "$variant" = pi ]; then
   rpi_mirror=${T3BOX_IMAGE_RPI_MIRROR:-http://archive.raspberrypi.com/debian}
   rpi_keyring=${T3BOX_IMAGE_RPI_KEYRING:-$out/raspberrypi-archive.gpg}
@@ -87,8 +91,9 @@ if [ "$variant" = pi ]; then
   got=$(gpg --show-keys --with-colons "$rpi_keyring" | awk -F: '$1=="fpr"{print $10; exit}')
   [ "$got" = "$RPI_KEY_FINGERPRINT" ] || { echo "Raspberry Pi archive key fingerprint $got, expected $RPI_KEY_FINGERPRINT" >&2; exit 1; }
   sources+=("deb $rpi_mirror $suite main")
-  keyrings+=(--keyring="$rpi_keyring")
+  cp "$rpi_keyring" "$keydir/raspberrypi-archive.gpg"
 fi
+keyrings=(--keyring="$keydir")
 mmdebstrap --arch="$arch" --variant=apt --include="$runtime,$build" "${keyrings[@]}" "${cache_args[@]}" \
   --customize-hook="$repo/os/image/customize.sh \"\$1\" '$repo' '$bins' '$version' '$build' '$runtime'" \
   "$suite" "$root" "${sources[@]}"
