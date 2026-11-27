@@ -31,13 +31,15 @@ pub const MAX_REQUEST_ID_BYTES: usize = 64;
 /// Methods understood by IPC version 1. `scene.apply` is part of the contract
 /// but fails closed until a real compositor acknowledges frame-boundary
 /// application (docs/STUDIO-ARCHITECTURE.md safety gates).
-pub const METHODS: [&str; 6] = [
+pub const METHODS: [&str; 8] = [
     "engine.status",
     "engine.capabilities",
     "stream.start",
     "stream.stop",
     "scene.validate",
     "scene.apply",
+    "audio.status",
+    "audio.configure",
 ];
 
 /// Error codes. Kept small and stable; callers map them to HTTP statuses.
@@ -299,6 +301,19 @@ pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>
                 .map_err(|e| ipc_err(code::INVALID_SCENE, e.to_string()))?;
             // Fail closed: success only after a frame-boundary acknowledgement.
             engine.apply_scene(scene_id, revision, scene)
+        }
+        // Audio inputs (docs/AUDIO.md): configuration applies live; status
+        // carries per-input health and levels while streaming.
+        "audio.status" => {
+            no_params(params)?;
+            Ok(crate::audio::control().status())
+        }
+        "audio.configure" => {
+            let p = params.ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params required"))?;
+            if p.as_object().is_none_or(|m| m.len() != 1 || !m.contains_key("inputs")) {
+                return Err(ipc_err(code::INVALID_PARAMS, "params must be {inputs}"));
+            }
+            crate::audio::control().configure(p).map_err(|e| ipc_err(code::INVALID_PARAMS, e))
         }
         _ => Err(ipc_err(code::UNKNOWN_METHOD, "unknown method")),
     }
@@ -694,4 +709,24 @@ mod tests {
         assert_eq!(ok.expect("slot released")["result"]["state"], "idle");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn audio_status_and_configure_over_ipc() {
+        let f = Fake::default();
+        let r = call(&f, json!({"version":1,"request_id":"a1","method":"audio.status"}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["inputs"][0]["id"], "hdmi");
+        let r = call(&f, json!({"version":1,"request_id":"a2","method":"audio.configure",
+            "params":{"inputs":[{"id":"hdmi","gain_db":-3.0}]}}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["inputs"][0]["gain_db"], -3.0);
+        let r = call(&f, json!({"version":1,"request_id":"a3","method":"audio.configure",
+            "params":{"inputs":[{"id":"hdmi","gain_db":99}]}}));
+        assert_eq!(r["error"]["code"], "invalid_params");
+        let r = call(&f, json!({"version":1,"request_id":"a4","method":"audio.configure","params":{"inputs":[],"x":1}}));
+        assert_eq!(r["error"]["code"], "invalid_params");
+        // Restore the shared default for other tests.
+        call(&f, json!({"version":1,"request_id":"a5","method":"audio.configure","params":{"inputs":[{"id":"hdmi","gain_db":0.0}]}}));
+    }
+
 }

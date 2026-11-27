@@ -33,7 +33,7 @@ RULES = [
     ("src/rtmp*", ["rust", "media"]), ("src/flv*", ["rust", "media"]), ("src/amf0*", ["rust", "media"]),
     ("src/handshake.rs", ["rust", "media"]), ("src/session.rs", ["rust", "media"]), ("src/media_*", ["rust", "media"]),
     ("src/av_clock.rs", ["rust", "media"]), ("src/pcm_framer.rs", ["rust", "media"]), ("src/aac_adts.rs", ["rust", "media"]),
-    ("src/audio_mixer.rs", ["rust", "media"]), ("src/rate_control.rs", ["rust", "media"]), ("src/reconnect.rs", ["rust", "media"]),
+    ("src/audio_mixer.rs", ["rust", "media"]), ("src/audio.rs", ["rust", "media", "control"]), ("ci/audio*", ["media"]), ("src/rate_control.rs", ["rust", "media"]), ("src/reconnect.rs", ["rust", "media"]),
     ("src/transport_deadline.rs", ["rust", "media"]), ("src/tcp_telemetry.rs", ["rust", "media"]), ("src/stream.rs", ["rust", "media"]),
     ("src/accelerated_ci.rs", ["rust", "media"]), ("src/bin/t3box-native-*", ["rust", "media"]), ("src/bin/t3box-ci-encode.rs", ["rust", "media"]),
     ("ci/composition*", ["media"]), ("ci/rtmps-test-server.py", ["media"]), ("ci/report-benchmark.py", ["media"]),

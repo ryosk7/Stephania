@@ -48,7 +48,7 @@ def check(cond, msg):
 
 
 caps = call("engine.capabilities")
-check(caps["result"]["program_apply"] is True, "engine reports program_apply with T3BOX_COMPOSITOR=1")
+check(caps["result"]["program_apply"] is True, "engine reports program_apply (compositor on by default)")
 r = call("scene.apply", {"scene": PIP, "scene_id": "pip", "revision": 7})
 check(r["ok"] is False and r["error"]["code"] == "program_inactive", f"apply before streaming fails closed {r.get('error')}")
 check(call("stream.start")["ok"], "stream.start")

@@ -183,7 +183,7 @@ jobs:
           retention-days: 3
 
   arm64-composition:
-    # Opt-in live compositor: HDMI fast path, frame-boundary acknowledged
+    # Live compositor (on by default): HDMI fast path, frame-boundary acknowledged
     # scene.apply over IPC, and a virtual phone track, verified pixel-wise.
     needs: [plan, arm64-build]
     if: needs.plan.outputs.media == 'true'
@@ -204,6 +204,30 @@ jobs:
         with:
           name: composition
           path: composition-results/
+          retention-days: 3
+
+  arm64-audio:
+    # Program audio mix: two virtual inputs reconfigured live over IPC
+    # (enable, mute, gain) while publishing; recording analysed per phase.
+    needs: [plan, arm64-build]
+    if: needs.plan.outputs.media == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg openssl
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-native-binaries
+          path: target/release
+      - run: chmod +x target/release/t3box
+      - name: Program audio mix with live reconfiguration (30s)
+        run: timeout --kill-after=5s 60 bash ci/audio-e2e.sh target/release/t3box audio-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audio
+          path: audio-results/
           retention-days: 3
 
   arm64-quality:
@@ -256,7 +280,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [plan, rust-check, arm64-build, arm64-logical, arm64-transport, arm64-composition, arm64-quality, arm64-soak]
+    needs: [plan, rust-check, arm64-build, arm64-logical, arm64-transport, arm64-composition, arm64-audio, arm64-quality, arm64-soak]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -287,6 +311,7 @@ jobs:
           LOGICAL: ${{ needs.arm64-logical.result }}
           TRANSPORT: ${{ needs.arm64-transport.result }}
           COMPOSITION: ${{ needs.arm64-composition.result }}
+          AUDIO: ${{ needs.arm64-audio.result }}
           QUALITY: ${{ needs.arm64-quality.result }}
           SOAK: ${{ needs.arm64-soak.result }}
           SOAK_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.soak }}
@@ -302,7 +327,7 @@ jobs:
           # and must have been skipped otherwise (nothing silently missing).
           expect() { if [[ "$1" == true ]]; then test "$2" = success; else test "$2" = skipped; fi; }
           expect "$RUST_SELECTED" "$RUST"
-          for result in "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$QUALITY"; do expect "$MEDIA_SELECTED" "$result"; done
+          for result in "$BUILD" "$LOGICAL" "$TRANSPORT" "$COMPOSITION" "$AUDIO" "$QUALITY"; do expect "$MEDIA_SELECTED" "$result"; done
 
   arm64-soak:
     if: github.event_name == 'workflow_dispatch' && inputs.soak

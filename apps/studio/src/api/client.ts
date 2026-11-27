@@ -5,6 +5,9 @@ import type {components, paths} from './schema';
 export type StoredScene = components['schemas']['StoredScene'];
 export type SceneDocument = StoredScene['document'];
 export type EngineStatus = paths['/status']['get']['responses']['200']['content']['application/json'];
+export type AudioInput = components['schemas']['AudioInput'];
+export type AudioOverview = paths['/audio']['get']['responses']['200']['content']['application/json'];
+export type AudioUpdate = paths['/audio']['put']['requestBody']['content']['application/json'];
 export type Revision = paths['/scenes/{id}/revisions']['get']['responses']['200']['content']['application/json'][number];
 
 /** Error envelope `{error:{code,message,request_id}}` as a thrown value. */
@@ -45,5 +48,7 @@ export function createClient(token: () => string, fetcher: Fetch = (i, n) => fet
     deleteScene: (s: string, revision: number) => call<void>(`/scenes/${id(s)}?revision=${revision}`, 'DELETE'),
     revisions: (s: string) => call<Revision[]>(`/scenes/${id(s)}/revisions`),
     transition: (scene_id: string, revision: number) => call<unknown>('/program/transition', 'POST', {scene_id, revision}),
+    audio: () => call<AudioOverview>('/audio'),
+    saveAudio: (update: AudioUpdate) => call<AudioOverview & {applied: boolean}>('/audio', 'PUT', update),
   };
 }

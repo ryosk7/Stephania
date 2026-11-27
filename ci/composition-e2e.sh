@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Live composition end-to-end: controller binary with ci-virtual HDMI input,
-# a virtual phone:rear track and T3BOX_COMPOSITOR=1, publishing RTMPS to the
+# a virtual phone:rear track and the default compositor, publishing RTMPS to the
 # local test server, while scenes are applied over the engine IPC socket.
 # Usage: ci/composition-e2e.sh <t3box binary> [out-dir]
 set -Eeuo pipefail
@@ -21,7 +21,7 @@ T3BOX_CI_SESSIONS=1 T3BOX_CI_FIRST_LIMIT=1000000 python3 ci/rtmps-test-server.py
 for _ in $(seq 50); do [[ -f "$cert/ready" ]] && break; sleep 0.1; done
 test -f "$cert/ready"
 w=640; h=360
-T3BOX_CI_VIRTUAL=1 T3BOX_CI_VIRTUAL_PHONE=1 T3BOX_COMPOSITOR=1 T3BOX_CI_CA_DER="$cert/ca.der" \
+T3BOX_CI_VIRTUAL=1 T3BOX_CI_VIRTUAL_PHONE=1 T3BOX_CI_CA_DER="$cert/ca.der" \
   T3BOX_OUTPUT=rtmps://t3box-ci.test:19443/live/test T3BOX_WIDTH=$w T3BOX_HEIGHT=$h T3BOX_FPS=30 T3BOX_BITRATE_KBPS=1500 \
   T3BOX_ENGINE_SOCKET="$cert/engine.sock" "$bin" > "$out/engine.log" 2>&1 & pids+=($!)
 for _ in $(seq 100); do [[ -S "$cert/engine.sock" ]] && break; sleep 0.1; done

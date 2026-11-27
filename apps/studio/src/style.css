@@ -1,1 +1,7 @@
 *{box-sizing:border-box}body{margin:0;background:#10151e;color:#e5e7eb;font:16px system-ui}main{max-width:960px;margin:auto;padding:24px}button,input,textarea{font:inherit;background:#242d3c;color:inherit;border:1px solid #64748b;border-radius:5px;padding:8px;margin:4px}button{cursor:pointer}nav,section{margin:12px 0}label{display:inline-block;margin:6px}input[type=number]{width:100px}.canvas{position:relative;aspect-ratio:16/9;background:#05080d;overflow:hidden;touch-action:none}.layer{position:absolute;display:grid;place-items:center;background:#334155;border:1px solid #94a3b8;user-select:none;touch-action:none;cursor:move}.layer.selected{border:2px solid #60a5fa}textarea{width:100%;min-height:240px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.meter{position:relative;height:8px;background:#222;border-radius:2px;margin:4px 0;max-width:420px}
+.meter .rms{position:absolute;left:0;top:0;bottom:0;background:#3c9;border-radius:2px}
+.meter .peak{position:absolute;top:0;bottom:0;width:2px;background:#fd4}
+.meter .clip{position:absolute;right:-44px;top:-4px;color:#f44;font-size:11px;font-weight:700}
+.audio-input{margin:8px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.audio-input .meter{flex-basis:100%}

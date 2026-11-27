@@ -106,7 +106,9 @@ export interface paths {
          *     reconcile from it on every (re)connect. Then: engine.connected,
          *     engine.unavailable, engine.restarted, stream.state_changed
          *     ({state, streaming_requested, native_worker_running, last_error}),
-         *     program.changed ({scene_id, revision}), scene.updated
+         *     program.changed ({scene_id, revision}), audio.levels (~4 Hz while
+         *     streaming: {inputs:[{id,state,levels,muted,gain_db}], master}),
+         *     audio.configured ({inputs}), scene.updated
          *     ({id, revision}), scene.deleted ({id}). Comment lines are
          *     keepalives (every 15 s). Slow consumers are disconnected. Unknown
          *     event names must be ignored.
@@ -677,6 +679,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Program audio inputs (stored configuration and live engine status) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Configuration and status */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            stored: components["schemas"]["AudioInput"][];
+                            /** @description ipc.schema.json#/$defs/audio_status, or null when the engine is unreachable */
+                            engine: null | components["schemas"]["audio_status"];
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        /**
+         * Update audio inputs (partial; gain and mute apply live)
+         * @description Omitted fields keep their value. Saved, then applied to the engine;
+         *     when the engine is unreachable the configuration is applied as soon
+         *     as it reconnects (`applied: false`). Owner only.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["audio_configure_params"];
+                };
+            };
+            responses: {
+                /** @description Saved (and applied when the engine is reachable) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            stored: components["schemas"]["AudioInput"][];
+                            applied: boolean;
+                            engine?: null | components["schemas"]["audio_status"];
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/program/transition": {
         parameters: {
             query?: never;
@@ -741,6 +818,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AudioInput: {
+            /** @enum {unknown} */
+            id: "hdmi" | "mic";
+            enabled: boolean;
+            device: string;
+            /** @enum {unknown} */
+            channels: 1 | 2;
+            gain_db: number;
+            muted: boolean;
+        };
         CameraCredential: {
             id: string;
             label: string;
@@ -760,7 +847,7 @@ export interface components {
                  *     invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                 *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403)
+                 *     program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
                  *     too_many_credentials(409)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
@@ -813,6 +900,47 @@ export interface components {
                 width: number;
                 height: number;
                 visible: boolean;
+            }[];
+        };
+        /** @description audio.status result (docs/AUDIO.md). levels/master only while running. */
+        audio_status: {
+            running: boolean;
+            resyncs: number;
+            limited_blocks: number;
+            master?: {
+                peak_dbfs: number;
+                rms_dbfs: number;
+                clipped: boolean;
+            };
+            inputs: {
+                /** @enum {unknown} */
+                id: "hdmi" | "mic";
+                enabled: boolean;
+                device: string;
+                /** @enum {unknown} */
+                channels: 1 | 2;
+                gain_db: number;
+                muted: boolean;
+                /** @enum {unknown} */
+                state: "disabled" | "idle" | "waiting" | "active" | "stalled" | "error";
+                error?: string;
+                levels?: {
+                    peak_dbfs: number;
+                    rms_dbfs: number;
+                    clipped: boolean;
+                };
+            }[];
+        };
+        audio_configure_params: {
+            inputs: {
+                /** @enum {unknown} */
+                id: "hdmi" | "mic";
+                enabled?: boolean;
+                device?: string;
+                /** @enum {unknown} */
+                channels?: 1 | 2;
+                gain_db?: number;
+                muted?: boolean;
             }[];
         };
     };

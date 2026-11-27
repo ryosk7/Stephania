@@ -12,7 +12,12 @@ export type LiveState = {
   scenes: Record<string, number>;
   /** Set when the engine instance changed since the page last saw it. */
   engineRestarted: boolean;
+  /** Latest program audio meters (audio.levels), while streaming. */
+  audio?: AudioLevels;
 };
+
+export type Level = {peak_dbfs: number; rms_dbfs: number; clipped: boolean};
+export type AudioLevels = {at: number; master?: Level; inputs: {id: string; state: string; levels?: Level; muted?: boolean; gain_db?: number}[]};
 
 export const initialLive: LiveState = {engine: 'unknown', program: null, scenes: {}, engineRestarted: false};
 
@@ -45,6 +50,11 @@ export function reduceLive(s: LiveState, e: ServerEvent): LiveState {
       return {...s, streamState: typeof d.state === 'string' ? d.state : s.streamState, lastError: typeof d.last_error === 'string' && d.last_error ? d.last_error : undefined};
     case 'program.changed':
       return typeof d.scene_id === 'string' && typeof d.revision === 'number' ? {...s, program: {scene_id: d.scene_id, revision: d.revision}} : s;
+    case 'audio.levels': {
+      if (!Array.isArray(d.inputs)) return s;
+      const inputs = d.inputs.map(obj).filter(i => typeof i.id === 'string' && typeof i.state === 'string') as AudioLevels['inputs'];
+      return {...s, audio: {at: Date.now(), inputs, master: d.master as Level | undefined}};
+    }
     case 'scene.updated':
       return typeof d.id === 'string' && typeof d.revision === 'number' ? {...s, scenes: {...s.scenes, [d.id]: d.revision}} : s;
     case 'scene.deleted': {

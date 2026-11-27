@@ -36,7 +36,7 @@ impl EngineControl for IpcEngine {
         use t3box::composition::{apply, ApplyError, APPLY_TIMEOUT};
         use t3box::ipc::{code, IpcError};
         if !t3box::composition::enabled() {
-            return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "T3BOX_COMPOSITOR is not enabled; Program unchanged".into() });
+            return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "compositor disabled (T3BOX_COMPOSITOR=0); Program unchanged".into() });
         }
         let program = t3box::compositor::Program::from_scene(scene_id, revision, scene)
             .map_err(|e| IpcError { code: code::INVALID_SCENE, message: e.to_string() })?;
