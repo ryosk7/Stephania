@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {DeviceClient, DeviceError, formatFingerprint, type NativePinned} from './device';
+import {DeviceClient, DeviceError, formatFingerprint, type NativePinned} from './client';
 
 const PIN = 'ab'.repeat(32);
 const enrollment = {token: 't3b_' + '0'.repeat(64), tokenId: 'x', urls: ['https://t3box.local:9443/', 'https://192.168.1.20:9443/'], caSha256: PIN};

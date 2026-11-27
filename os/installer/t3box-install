@@ -38,6 +38,9 @@ mount -t tmpfs -o size=90% tmpfs /run
 mount -t tmpfs tmpfs /tmp
 mkdir -p /run/payload /run/boot
 echo 1 >/proc/sys/kernel/sysrq
+# Kernel messages below KERN_ALERT stay off the console, so they cannot
+# split the installer's own lines ("TE[ 5.69] sysrq: Power Off ST power cut").
+echo 1 >/proc/sys/kernel/printk
 for m in $(cat /etc/t3box/modules 2>/dev/null); do modprobe "$m" 2>/tmp/modprobe.err || log "module $m: $(cat /tmp/modprobe.err)"; done
 
 INSTALL_ID=$(cmdline_value t3box.install_id)

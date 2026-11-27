@@ -16,7 +16,12 @@ export class DeviceError extends Error {
 }
 
 export type Status = {state: string; streaming_requested: boolean; last_error: string; program: {scene_id: string; revision: number} | null; engine_restarted?: boolean};
-export type StoredScene = {id: string; revision: number; document: {name: string; version: number}};
+/** Layer of a stored scene (docs/SCENE.md); v1 layers have no `type` (video). */
+export type SceneLayer = {
+  id: string; type?: 'video' | 'image' | 'color' | 'text' | 'template'; source?: string;
+  x: number; y: number; width: number; height: number; visible: boolean; color?: string;
+};
+export type StoredScene = {id: string; revision: number; document: {name: string; version: number; layers?: SceneLayer[]; canvas?: {background?: string}}};
 export type AudioInput = {id: 'hdmi' | 'mic'; enabled: boolean; device: string; channels: number; gain_db: number; muted: boolean};
 
 export const TIMEOUT_MS = 8000;
@@ -73,6 +78,11 @@ export class DeviceClient {
       fadeMs ? {scene_id, revision, transition: {type: 'fade', duration_ms: fadeMs}} : {scene_id, revision});
   audio = () => this.call<{stored: AudioInput[]; engine: unknown}>('/audio');
   setMuted = (id: AudioInput['id'], muted: boolean) => this.call<{stored: AudioInput[]; applied: boolean}>('/audio', 'PUT', {inputs: [{id, muted}]});
+  // Phone camera session (docs/PHONE.md): non-trickle SDP offer/answer.
+  cameraOffer = (sdp: string, tracks: Record<string, 'rear' | 'front'>, replace = false) =>
+    this.call<{sdp: string}>('/cameras/session/offer', 'POST', replace ? {sdp, tracks, replace: true} : {sdp, tracks});
+  cameraSession = () => this.call<{state: string; access_units?: number; dropped?: number}>('/cameras/session');
+  cameraClose = () => this.call<void>('/cameras/session', 'DELETE');
 }
 
 /** "ab12…" → "AB12 CD34 …" for comparing fingerprints by eye. */

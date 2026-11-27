@@ -105,12 +105,26 @@ throttling.
 **Pass:** no data loss beyond the last unacknowledged write; boots
 unattended.
 
-### Q-PHONE: phone media (after WebRTC, task #14)
-iOS MultiCam devices and ≥3 Android vendors/SoCs: dual camera, hardware
-encoding, thermal state over 3 h on charge, background/interruption
-(call, lock, app switch), permission revocation.
-**Pass:** defined in the WebRTC design; until implemented, rows stay
-`Not run`.
+### Q-PHONE: phone media (docs/PHONE.md "Phone app sender")
+iOS MultiCam devices (and later ≥3 Android vendors/SoCs): T3Box Connect
+development build, phone on the same Wi-Fi as the Pi, HDMI streaming.
+1. Rear only, then Both: record `capabilities().dualProfiles`, the
+   profile used, and `GET /api/v1/status` `sources` (geometry, fps from
+   `access_units`, `fresh`).
+2. Hold landscape both ways: the program shows the picture upright both
+   times; portrait keeps the last landscape orientation.
+3. 3 h Both on charge at room temperature: log the thermal state shown,
+   plan changes and `dropped`; the HDMI broadcast has no interruption.
+4. Interruptions: incoming call, lock/unlock, app switch, Control Center
+   camera use. Each returns to `Live` without user action within 15 s of
+   the phone becoming usable again; HDMI continues throughout.
+5. A second phone: refused as busy; "Take over" moves the session.
+6. Revoke camera permission in Settings: the app says so, nothing else
+   breaks.
+7. Hardware encoding: Instruments (VideoToolbox) or energy log shows the
+   hardware H.264 encoder in use.
+**Pass:** all steps as described; no decoder errors on the Pi
+(`t3box-phone` log) outside the interruption windows.
 
 ## Results
 Add one row per run. Columns: ID, date (UTC), hardware (refer to the table
@@ -128,5 +142,5 @@ above), software (git commit / image version), result (`Not run`, `Pass`,
 | Q-AV HDMI+rear | | | | Not run | | requires task #14 |
 | Q-AV HDMI+dual | | | | Not run | | requires task #14 |
 | Q-POWER | | | | Not run | | |
-| Q-PHONE iOS | | | | Not run | | requires task #14 |
-| Q-PHONE Android | | | | Not run | | requires task #14 |
+| Q-PHONE iOS | | | | Not run | | |
+| Q-PHONE Android | | | | Not run | | Android paused |

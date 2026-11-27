@@ -25,7 +25,10 @@ LICENSE_FILES = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT|UNLICENSE)([-
 # docs/LICENSING.md spells out; they are allowed for dpkg components only.
 PERMISSIVE = {"MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "0BSD",
               "Unlicense", "Unicode-3.0", "Unicode-DFS-2016", "CDLA-Permissive-2.0", "BlueOak-1.0.0", "CC0-1.0", "Ruby", "BSD-2-Clause-Views",
-              "Python-2.0", "MPL-2.0", "CC-BY-4.0"}
+              "Python-2.0", "MPL-2.0", "CC-BY-4.0",
+              # Fonts bundled in T3Box Connect (Inter, JetBrains Mono): OFL permits
+              # embedding in apps; the licence text ships with them (docs/LICENSING.md).
+              "OFL-1.1"}
 
 
 def run(*cmd, cwd=ROOT):

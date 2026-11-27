@@ -74,6 +74,12 @@ obligation applies to the GPL/LGPL parts.
 Fonts: none ship. Text overlays are rendered by the browser on the user's
 machine (docs/SCENE.md), so no font licence applies to the device.
 
+T3Box Connect bundles two fonts so iPhone and Android look the same
+(DESIGN.md §3.6): Inter and JetBrains Mono, both under the SIL Open Font
+License 1.1 (via `@expo-google-fonts/*`, packaging MIT). OFL allows
+embedding in an application; the fonts are not sold on their own and the
+licence text ships in the app's third-party notices (`ci/sbom.py`).
+
 H.264/AAC patents: encoding H.264 and AAC may require patent licences in
 some jurisdictions depending on volume and use; this is independent of the
 copyright licences above and must be reviewed for a commercial product.
