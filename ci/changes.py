@@ -22,7 +22,7 @@ AREAS = ["rust", "media", "control", "studio", "provisioning", "mobile", "mobile
 
 # (glob, areas). A path may match several rules; the union is selected.
 RULES = [
-    ("docs/*.md", []), ("*.md", []), ("LICENSE*", []), (".gitignore", []),
+    ("docs/*.md", []), ("*.md", []), ("site/*", []), ("LICENSE*", []), (".gitignore", []),
     (".github/*", AREAS), ("ci/images/*", AREAS), ("Cargo.toml", AREAS), ("Cargo.lock", AREAS),
     ("rust-toolchain*", AREAS), ("build.rs", ["rust", "media", "phone", "os"]),
     ("ci/changes.py", AREAS), ("ci/plan.py", AREAS),

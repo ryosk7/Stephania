@@ -2,10 +2,19 @@ name: Mobile iOS build
 # Full simulator build of Stephania Connect with its native modules
 # (pinned-fetch, camera). macOS runners are billed at a multiple of Linux
 # minutes on private repositories, so this runs only when the native iOS
-# side or its dependencies change, and on demand.
+# side or its dependencies change, and on demand. arm64 simulator only, with
+# a ccache restored from earlier runs, to stay within a few minutes.
 on:
   workflow_dispatch:
   pull_request:
+    paths:
+      - apps/mobile/modules/*/ios/**
+      - apps/mobile/app.json
+      - apps/mobile/package-lock.json
+      - .github/workflows/mobile-ios-build.yml
+  # main fills the compiler cache that pull requests restore.
+  push:
+    branches: [main]
     paths:
       - apps/mobile/modules/*/ios/**
       - apps/mobile/app.json
@@ -26,11 +35,33 @@ jobs:
         working-directory: packages/provisioning-client
       - run: npm ci --no-audit --no-fund
         working-directory: apps/mobile
-      - name: Prebuild and build for the simulator
+      # Compiler cache: the first build fills it, later builds reuse it
+      # (React Native's Podfile honours apple.ccacheEnabled).
+      - name: Install ccache
+        run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ccache >/dev/null && ccache --version | head -1
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}-${{ github.run_id }}
+          restore-keys: |
+            ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}-
+            ios-ccache-
+      - name: Prebuild and build for the simulator (arm64 only)
         working-directory: apps/mobile
         env:
           CI: '1'
+          CCACHE_DIR: ~/Library/Caches/ccache
+          CCACHE_SLOPPINESS: clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
+          CCACHE_FILECLONE: 'true'
+          CCACHE_DEPEND: 'true'
+          CCACHE_INODECACHE: 'true'
         run: |
-          npx expo prebuild --platform ios --clean
+          export CCACHE_DIR="$HOME/Library/Caches/ccache"
+          npx expo prebuild --platform ios --clean --no-install
+          node -e "const f='ios/Podfile.properties.json',p=require('./'+f);p['apple.ccacheEnabled']='true';require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
+          (cd ios && pod install >/dev/null)
+          ccache -z >/dev/null
           xcodebuild -workspace ios/StephaniaConnect.xcworkspace -scheme StephaniaConnect -configuration Debug \
-            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -50
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build | tail -30
+          ccache -s

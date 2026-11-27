@@ -77,14 +77,22 @@ jobs:
 
   # PR image check: the same image recipe for x86_64, booted with KVM
   # (seconds instead of minutes of arm64 emulation), with binaries built
-  # for Debian trixie like the image (ci/build-device-bins.sh).
+  # for Debian trixie like the image (ci/build-device-bins.sh). One job
+  # builds the image and the installer; the checks run in parallel jobs on
+  # the packed result, so every job stays within about three minutes.
   image-qemu-x64:
     needs: changes
     if: needs.changes.outputs.os == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # Host packages install in the background while the binaries build.
+      - name: Host packages (background)
+        run: |
+          nohup bash -c 'sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq &&
+            sudo apt-get install -y -qq gnupg mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio zstd >/dev/null &&
+            touch /tmp/apt.ok' >/tmp/apt.log 2>&1 &
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -102,20 +110,18 @@ jobs:
       - name: Build Studio
         working-directory: apps/studio
         run: npm ci --no-audit --no-fund && npm run build
-      - run: |
-          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
-          sudo apt-get install -y -qq gnupg curl mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc zstd xz-utils >/dev/null
-          # trixie keys: the runner's debian-archive-keyring predates them.
-          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
-          echo "STEPHANIA_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
-          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/apt-archives
           key: image-apt-amd64-${{ hashFiles('os/image/build.sh') }}-${{ github.run_id }}
           restore-keys: image-apt-amd64-${{ hashFiles('os/image/build.sh') }}-
+      - name: Wait for host packages
+        run: |
+          for _ in $(seq 1 240); do [ -f /tmp/apt.ok ] && break; sleep 1; done
+          [ -f /tmp/apt.ok ] || { cat /tmp/apt.log; exit 1; }
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "STEPHANIA_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - name: Ephemeral release keys (CI only; releases use repository secrets)
         run: bash os/release/test-keys.sh "$RUNNER_TEMP/keys"
       - name: Build image (amd64)
@@ -123,25 +129,73 @@ jobs:
           sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="ci-${GITHUB_SHA::12}" STEPHANIA_IMAGE_ARCH=amd64 STEPHANIA_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" \
             STEPHANIA_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" os/image/build.sh "$RUNNER_TEMP/image" device-bins
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
-      - name: Boot with KVM and run the smoke test
-        run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" amd64
       - name: Build the installer ZIP (ephemeral signing key)
         run: |
           sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="ci-${GITHUB_SHA::12}" STEPHANIA_IMAGE_ARCH=amd64 STEPHANIA_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
             os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
-          ls -la "$RUNNER_TEMP/installer/zip" "$RUNNER_TEMP/installer/zip/stephania-install"
-      - name: Installer end-to-end (ambiguity, power cuts, resume, boot)
-        run: sudo ci/installer-e2e.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
-      - name: Assemble and verify release artifacts (ephemeral keys)
+      - name: Pack for the checks
         run: |
-          env STEPHANIA_RELEASE_VERSION="ci-${GITHUB_SHA::12}" STEPHANIA_RELEASE_NAME=stephania-os-qemu \
+          cd "$RUNNER_TEMP"
+          sudo tar --sparse -cf - image/stephania.img image/vmlinuz image/initrd.img image/rootfs.squashfs image/boot-a.vfat image/dpkg.tsv \
+            image/rootfs/usr/share/doc installer/zip installer/stephania-os.zip keys | zstd -q -T0 -1 -o "$GITHUB_WORKSPACE/x64.tar.zst"
+          ls -la "$GITHUB_WORKSPACE/x64.tar.zst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-x64
+          path: x64.tar.zst
+          compression-level: 0
+          retention-days: 1
+
+  # Checks on the x86_64 image, in parallel: boot it; the RAM installer
+  # (refusals, power cuts with resume, the installed card booting); and the
+  # release artifacts assembled and verified with the ephemeral keys.
+  image-qemu-x64-check:
+    needs: image-qemu-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [boot, installer-refuse, installer-staged, installer-written, release]
+    name: image-qemu-x64 (${{ matrix.check }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host packages (background)
+        run: |
+          pkgs="qemu-system-x86 dosfstools mtools fdisk zstd"
+          [ "${{ matrix.check }}" = release ] && pkgs="rauc xz-utils unzip zstd"
+          nohup bash -c "sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends $pkgs >/dev/null && touch /tmp/apt.ok" >/tmp/apt.log 2>&1 &
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-x64
+      - name: Unpack
+        run: |
+          for _ in $(seq 1 120); do command -v zstd >/dev/null && break; sleep 1; done
+          zstd -q -d -c x64.tar.zst | sudo tar --sparse -xf - -C "$RUNNER_TEMP" && rm x64.tar.zst
+          for _ in $(seq 1 240); do [ -f /tmp/apt.ok ] && break; sleep 1; done
+          [ -f /tmp/apt.ok ] || { cat /tmp/apt.log; exit 1; }
+          if [ "${{ matrix.check }}" != release ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          fi
+      - name: Boot with KVM and run the smoke test
+        if: matrix.check == 'boot'
+        run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" amd64
+      - name: Installer end-to-end
+        if: startsWith(matrix.check, 'installer-')
+        run: sudo ci/installer-e2e.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "${{ matrix.check }}"
+      - name: Assemble and verify release artifacts (ephemeral keys)
+        if: matrix.check == 'release'
+        run: |
+          # The raw image is compressed at level 1 here; releases use 9.
+          env STEPHANIA_RELEASE_VERSION="ci-${GITHUB_SHA::12}" STEPHANIA_RELEASE_NAME=stephania-os-qemu STEPHANIA_RELEASE_XZ_LEVEL=1 \
             STEPHANIA_RELEASE_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
             STEPHANIA_RAUC_CERT="$RUNNER_TEMP/keys/rauc-signing.pem" STEPHANIA_RAUC_KEY="$RUNNER_TEMP/keys/rauc-signing.key" \
             SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
             os/release/assemble.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "$RUNNER_TEMP/dist"
           openssl pkey -in "$RUNNER_TEMP/keys/release-signing.pem" -pubout -out "$RUNNER_TEMP/keys/release-signing.pub"
           os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/keys/release-signing.pub" "$RUNNER_TEMP/keys/rauc-ca.pem"
-      - if: always()
+      - if: always() && matrix.check == 'boot'
         uses: actions/upload-artifact@v4
         with:
           name: image-qemu-x64-serial
