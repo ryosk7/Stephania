@@ -200,7 +200,7 @@ jobs:
       - run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 >/dev/null
-          python3 -m pip install --break-system-packages -q aiortc
+          python3 -m pip install --break-system-packages -q aiortc numpy
       - name: Phone WebRTC end to end
         run: tests/phone/run-e2e.sh target/release
   provisioning-client:
