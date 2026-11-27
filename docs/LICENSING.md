@@ -43,10 +43,10 @@ compatible fix within SDK 58.
 
 The engine binary dynamically links system libraries:
 
-| Library | Licence (Ubuntu build) | Used for |
+| Library | Licence (Debian build) | Used for |
 |---|---|---|
 | libx264 | GPL-2.0-or-later | H.264 encoding |
-| libavcodec, libavutil (FFmpeg) | GPL-2.0-or-later as built by Ubuntu (`--enable-gpl`); LGPL-2.1-or-later otherwise | AAC encoding, phone H.264 decoding |
+| libavcodec, libavutil (FFmpeg) | GPL-2.0-or-later as built by Debian (`--enable-gpl`); LGPL-2.1-or-later otherwise | AAC encoding, phone H.264 decoding |
 | libasound | LGPL-2.1-or-later | ALSA capture |
 | libv4l (via v4l crate, kernel interface) | LGPL-2.1-or-later | V4L2 capture |
 
@@ -58,7 +58,7 @@ but every distribution of the OS image or the engine binary must:
    inside the image);
 2. provide the complete corresponding source: the T3Box source at the
    release tag, and the exact source packages of the GPL/LGPL system
-   components (Ubuntu source packages at the versions listed in the image
+   components (Debian and Raspberry Pi source packages at the versions listed in the image
    SBOM, `--dpkg` input of `ci/sbom.py`), either alongside the binaries or
    with a written offer valid for three years;
 3. not add terms that restrict recipients' GPL rights (no EULA forbidding

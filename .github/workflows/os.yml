@@ -76,8 +76,8 @@ jobs:
         run: sudo env PATH="$PATH" ci/update-e2e.sh target/debug/t3box-bootctl
 
   # PR image check: the same image recipe for x86_64, booted with KVM
-  # (seconds instead of minutes of arm64 emulation), using the shared
-  # x64-bins build (ci/build-bins.sh).
+  # (seconds instead of minutes of arm64 emulation), with binaries built
+  # for Debian trixie like the image (ci/build-device-bins.sh).
   image-qemu-x64:
     needs: changes
     if: needs.changes.outputs.os == 'true'
@@ -85,7 +85,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/x64-bins
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          profile: x64-device-bins
+          image: device-build
+          command: ci/build-device-bins.sh device-bins
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -96,7 +104,10 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip cpio zstd xz-utils >/dev/null
+          sudo apt-get install -y -qq gnupg curl mmdebstrap qemu-system-x86 squashfs-tools dosfstools mtools fdisk e2fsprogs zip unzip cpio rauc zstd xz-utils >/dev/null
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
@@ -105,21 +116,31 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: image-apt-amd64-${{ hashFiles('os/image/build.sh') }}-${{ github.run_id }}
           restore-keys: image-apt-amd64-${{ hashFiles('os/image/build.sh') }}-
+      - name: Ephemeral release keys (CI only; releases use repository secrets)
+        run: bash os/release/test-keys.sh "$RUNNER_TEMP/keys"
       - name: Build image (amd64)
         run: |
-          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 \
-            T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" os/image/build.sh "$RUNNER_TEMP/image" ci-bins
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" \
+            T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" os/image/build.sh "$RUNNER_TEMP/image" device-bins
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
       - name: Boot with KVM and run the smoke test
         run: sudo ci/qemu-smoke.sh "$RUNNER_TEMP/image" amd64
       - name: Build the installer ZIP (ephemeral signing key)
         run: |
-          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/install-key.pem"
-          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/install-key.pem" \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_ARCH=amd64 T3BOX_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
             os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
           ls -la "$RUNNER_TEMP/installer/zip" "$RUNNER_TEMP/installer/zip/t3box-install"
       - name: Installer end-to-end (ambiguity, power cuts, resume, boot)
         run: sudo ci/installer-e2e.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
+      - name: Assemble and verify release artifacts (ephemeral keys)
+        run: |
+          env T3BOX_RELEASE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_RELEASE_NAME=t3box-os-qemu \
+            T3BOX_RELEASE_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+            T3BOX_RAUC_CERT="$RUNNER_TEMP/keys/rauc-signing.pem" T3BOX_RAUC_KEY="$RUNNER_TEMP/keys/rauc-signing.key" \
+            SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            os/release/assemble.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "$RUNNER_TEMP/dist"
+          openssl pkey -in "$RUNNER_TEMP/keys/release-signing.pem" -pubout -out "$RUNNER_TEMP/keys/release-signing.pub"
+          os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/keys/release-signing.pub" "$RUNNER_TEMP/keys/rauc-ca.pem"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -144,6 +165,7 @@ jobs:
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-image
+          image: device-build
           command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
       - uses: actions/setup-node@v4
         with:
@@ -155,7 +177,10 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
-          sudo apt-get install -y -qq mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          sudo apt-get install -y -qq gnupg curl mmdebstrap qemu-system-arm squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/apt-archives
@@ -163,7 +188,7 @@ jobs:
           restore-keys: image-apt-arm64-${{ hashFiles('os/image/build.sh') }}-
       - name: Build image
         run: |
-          sudo env T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" \
+          sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_APT_CACHE="$RUNNER_TEMP/apt-archives" \
             os/image/build.sh "$RUNNER_TEMP/image" target/release
           sudo chown -R "$(id -u)" "$RUNNER_TEMP/apt-archives"
       - name: Boot in QEMU and run the smoke test
@@ -174,3 +199,41 @@ jobs:
           name: image-qemu-serial
           path: ${{ runner.temp }}/image/serial.log
           retention-days: 7
+
+  # Raspberry Pi 5 variant (linux-image-raspi, DTB, overlays). It cannot boot
+  # in QEMU; structure only (ci/pi-image-check.sh). Booting it is Q-BOOT in
+  # docs/QUALIFICATION.md.
+  image-pi:
+    needs: changes
+    # Also on PRs that touch the OS: the Pi variant is the product, and its
+    # package sources (Raspberry Pi archive) differ from the QEMU image.
+    if: github.event_name != 'pull_request' || needs.changes.outputs.os == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate read-only GHCR access
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/cached-build
+        with:
+          profile: arm64-image
+          image: device-build
+          command: cargo build --release --locked --bin t3box --bin t3box-provision --bin t3box-pki --bin t3box-bootctl && cargo build --release --locked -p t3box-phone
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build Studio
+        working-directory: apps/studio
+        run: npm ci --no-audit --no-fund && npm run build
+      - run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
+          sudo apt-get install -y -qq gnupg curl mmdebstrap squashfs-tools dosfstools mtools fdisk e2fsprogs >/dev/null
+          # trixie keys: the runner's debian-archive-keyring predates them.
+          docker run --rm debian:trixie cat /usr/share/keyrings/debian-archive-keyring.gpg >"$RUNNER_TEMP/debian-archive-keyring.gpg"
+          echo "T3BOX_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
+      - name: Build the Pi image
+        run: sudo env T3BOX_IMAGE_DEBIAN_KEYRING="$T3BOX_IMAGE_DEBIAN_KEYRING" T3BOX_IMAGE_VERSION="ci-${GITHUB_SHA::12}" T3BOX_IMAGE_VARIANT=pi os/image/build.sh "$RUNNER_TEMP/image" target/release
+      - name: Check the boot slots
+        run: ci/pi-image-check.sh "$RUNNER_TEMP/image"

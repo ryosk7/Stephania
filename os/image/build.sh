@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
-# Reference image build (docs/IMAGE.md): Debian-family root filesystem with
-# the T3Box services, assembled into the A/B GPT layout of docs/UPDATE.md.
+# Reference image build (docs/IMAGE.md): Raspberry Pi OS Lite reference
+# (docs/MASTER-ARCHITECTURE.md §6) — Debian 13 trixie plus, for the Pi
+# variant, the Raspberry Pi archive (kernel, device trees), the way pi-gen
+# builds Raspberry Pi OS Lite — with the T3Box services, assembled into the
+# A/B GPT layout of docs/UPDATE.md.
 #
 # Usage (root): os/image/build.sh <out-dir> <bin-dir>
 #   <bin-dir> holds t3box, t3box-phone, t3box-provision, t3box-pki, t3box-bootctl built
-#   for the target architecture.
+#   for the target architecture against Debian trixie
+#   (ci/images/device-build.Dockerfile), so library sonames match.
 # Environment:
-#   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (local iteration only)
-#   T3BOX_IMAGE_SUITE  noble (default: same distribution as the CI runner
-#                      that builds the binaries, so library sonames match;
-#                      see docs/IMAGE.md for the Raspberry Pi OS variant)
-#   T3BOX_IMAGE_MIRROR ports.ubuntu.com (arm64) / archive.ubuntu.com (amd64)
-#   T3BOX_IMAGE_COMPONENTS main,universe
-#   T3BOX_IMAGE_KERNEL linux-image-virtual (generic kernel, QEMU variant)
+#   T3BOX_IMAGE_ARCH   arm64 (default) | amd64 (QEMU smoke tests)
+#   T3BOX_IMAGE_SUITE  trixie (default)
+#   T3BOX_IMAGE_MIRROR http://deb.debian.org/debian
+#   T3BOX_IMAGE_DEBIAN_KEYRING Debian archive keyring (default: the host's
+#                      debian-archive-keyring; CI takes it from debian:trixie
+#                      because older hosts lack the trixie keys)
+#   T3BOX_IMAGE_RPI_MIRROR http://archive.raspberrypi.com/debian (pi variant)
+#   T3BOX_IMAGE_RPI_KEYRING Raspberry Pi archive keyring (binary); default:
+#                      downloaded and checked against RPI_KEY_FINGERPRINT
+#   T3BOX_IMAGE_COMPONENTS main
+#   T3BOX_IMAGE_KERNEL linux-image-<arch> (QEMU) | linux-image-rpi-2712 (pi)
 #   T3BOX_IMAGE_EXTRA  runtime libraries of the native engine
 #   T3BOX_IMAGE_VERSION version string written to /etc/t3box-version
+#   T3BOX_IMAGE_VARIANT qemu (default: Debian kernel, direct kernel boot) |
+#                      pi (Raspberry Pi 5: Raspberry Pi kernel, DTB, overlays,
+#                      config.txt for the Pi firmware; docs/IMAGE.md)
+#   T3BOX_RAUC_KEYRING  release CA certificate (PEM) RAUC trusts; without it
+#                      the image refuses every bundle
+#   SOURCE_DATE_EPOCH   fixed timestamps for reproducible filesystems
 #
 # Outputs: rootfs.squashfs, boot-a.vfat, boot-b.vfat, vmlinuz, initrd.img, t3box.img
 # (GPT: selector, boot-a, boot-b, rootfs-a, rootfs-b, data).
@@ -23,13 +37,19 @@ out=$(mkdir -p "$1" && cd "$1" && pwd)
 bins=$(cd "$2" && pwd)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 arch=${T3BOX_IMAGE_ARCH:-arm64}
-suite=${T3BOX_IMAGE_SUITE:-noble}
-if [ "$arch" = arm64 ]; then default_mirror=http://ports.ubuntu.com/ubuntu-ports; else default_mirror=http://archive.ubuntu.com/ubuntu; fi
-mirror=${T3BOX_IMAGE_MIRROR:-$default_mirror}
-kernel=${T3BOX_IMAGE_KERNEL:-linux-image-virtual}
-extra=${T3BOX_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec60,libavutil58}
+suite=${T3BOX_IMAGE_SUITE:-trixie}
+mirror=${T3BOX_IMAGE_MIRROR:-http://deb.debian.org/debian}
+variant=${T3BOX_IMAGE_VARIANT:-qemu}
+case $variant in
+  qemu) default_kernel=linux-image-$arch ;;
+  pi) [ "$arch" = arm64 ] || { echo "the pi variant is arm64 only" >&2; exit 1; }; default_kernel=linux-image-rpi-2712 ;;
+  *) echo "unknown T3BOX_IMAGE_VARIANT $variant" >&2; exit 1 ;;
+esac
+kernel=${T3BOX_IMAGE_KERNEL:-$default_kernel}
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$(dirname "$0")" log -1 --format=%ct 2>/dev/null || date +%s)}
+extra=${T3BOX_IMAGE_EXTRA:-libasound2t64,libx264-164,libavcodec61,libavutil59}
 version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
-components=${T3BOX_IMAGE_COMPONENTS:-main,universe}
+components=${T3BOX_IMAGE_COMPONENTS:-main}
 root="$out/rootfs"
 . "$repo/os/layout.env"
 
@@ -53,32 +73,86 @@ if [ -n "${T3BOX_IMAGE_APT_CACHE:-}" ]; then
     --setup-hook="sync-in '$T3BOX_IMAGE_APT_CACHE' /var/cache/apt/archives/"
     --customize-hook="sync-out /var/cache/apt/archives '$T3BOX_IMAGE_APT_CACHE'")
 fi
-mmdebstrap --arch="$arch" --variant=apt --components="$components" --include="$runtime,$build" "${cache_args[@]}" \
+# Package sources: Debian, plus the Raspberry Pi archive for the Pi
+# variant. The Raspberry Pi key is pinned by fingerprint.
+RPI_KEY_FINGERPRINT=CF8A1AF502A2AA2D763BAE7E82B129927FA3303E
+sources=("deb $mirror $suite $components")
+# One directory of keyrings: mmdebstrap passes a single keyring *file* to
+# apt as the only trusted file, so a second --keyring would replace the
+# Debian keys instead of adding to them.
+keydir="$out/apt-keyrings"; rm -rf "$keydir"; mkdir -p "$keydir"
+cp "${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}" "$keydir/debian-archive-keyring.gpg"
+if [ "$variant" = pi ]; then
+  rpi_mirror=${T3BOX_IMAGE_RPI_MIRROR:-http://archive.raspberrypi.com/debian}
+  rpi_keyring=${T3BOX_IMAGE_RPI_KEYRING:-$out/raspberrypi-archive.gpg}
+  if [ -z "${T3BOX_IMAGE_RPI_KEYRING:-}" ]; then
+    curl -fsSL --retry 3 https://archive.raspberrypi.com/debian/raspberrypi.gpg.key | gpg --dearmor >"$rpi_keyring"
+  fi
+  got=$(gpg --show-keys --with-colons "$rpi_keyring" | awk -F: '$1=="fpr"{print $10; exit}')
+  [ "$got" = "$RPI_KEY_FINGERPRINT" ] || { echo "Raspberry Pi archive key fingerprint $got, expected $RPI_KEY_FINGERPRINT" >&2; exit 1; }
+  sources+=("deb $rpi_mirror $suite main")
+  cp "$rpi_keyring" "$keydir/raspberrypi-archive.gpg"
+fi
+keyrings=(--keyring="$keydir")
+mmdebstrap --arch="$arch" --variant=apt --include="$runtime,$build" "${keyrings[@]}" "${cache_args[@]}" \
   --customize-hook="$repo/os/image/customize.sh \"\$1\" '$repo' '$bins' '$version' '$build' '$runtime'" \
-  "$suite" "$root" "$mirror"
+  "$suite" "$root" "${sources[@]}"
 
-# Kernel and initramfs for direct kernel boot (QEMU variant).
+if [ -n "${T3BOX_RAUC_KEYRING:-}" ]; then
+  install -m 0644 "$T3BOX_RAUC_KEYRING" "$root/etc/rauc/keyring.pem"
+fi
+# Package inventory for the SBOM (ci/sbom.py --dpkg) and source obligations
+# (docs/LICENSING.md).
+chroot "$root" dpkg-query -W -f='${Package}\t${Version}\t${source:Package}\n' | LC_ALL=C sort >"$out/dpkg.tsv"
+
+# Kernel and initramfs (direct kernel boot in QEMU; Pi firmware loads the
+# same files from the boot partition).
 kver=$(ls "$root/lib/modules" | sort -V | tail -1)
 cp -L "$root/boot/vmlinuz-$kver" "$out/vmlinuz"
 cp -L "$root/boot/initrd.img-$kver" "$out/initrd.img"
+if [ "$variant" = pi ]; then
+  # Raspberry Pi kernel packages ship device trees and overlays under
+  # /usr/lib/linux-image-<version>.
+  dt="$root/usr/lib/linux-image-$kver"
+  [ -f "$dt/broadcom/bcm2712-rpi-5-b.dtb" ] || { echo "no Pi 5 device tree in $dt" >&2; exit 1; }
+  cp "$dt/broadcom/bcm2712-rpi-5-b.dtb" "$out/"
+  rm -rf "$out/overlays"; cp -r "$dt/overlays" "$out/overlays"
+fi
 
-mksquashfs "$root" "$out/rootfs.squashfs" -noappend -comp zstd -quiet -e boot/efi
+# Reproducible: fixed timestamps, no xattr ordering surprises.
+mksquashfs "$root" "$out/rootfs.squashfs" -noappend -comp zstd -quiet -e boot/efi \
+  -mkfs-time "$SOURCE_DATE_EPOCH" -all-time "$SOURCE_DATE_EPOCH" -no-xattrs
 # Fixed slot sizes (os/layout.env) so every future update fits its slot.
 rootfs_mib=$T3BOX_ROOT_MIB
 [ "$(stat -c %s "$out/rootfs.squashfs")" -le $((rootfs_mib * 1048576)) ] || { echo "rootfs.squashfs exceeds the ${rootfs_mib} MiB slot" >&2; exit 1; }
 
-# Boot partition content (identical for A and B in the QEMU variant; the
-# Pi variant adds firmware, kernel, DTBs and config.txt).
+# Boot partitions. QEMU: cmdline.txt/config.txt only (the harness passes the
+# kernel). Pi: kernel, initramfs, DTB and overlays for the firmware.
 boot_dir=$(mktemp -d)
-cat "$repo/os/firmware/config.txt.fragment" >"$boot_dir/config.txt"
+vfat() { # file label size-MiB
+  truncate -s "${3}M" "$1"
+  mkfs.vfat --invariant -i 7e3b0000 -n "$2" "$1" >/dev/null 2>&1 || mkfs.vfat -i 7e3b0000 -n "$2" "$1" >/dev/null
+}
 for slot in a b; do
   upper=$(echo "$slot" | tr a-z A-Z)
-  printf 'root=PARTLABEL=rootfs-%s ro rootfstype=squashfs init=/usr/local/sbin/t3box-overlay-init rauc.slot=%s\n' "$slot" "$upper" >"$boot_dir/cmdline.txt"
-  truncate -s 64M "$out/boot-$slot.vfat"; mkfs.vfat -n "BOOT-$upper" "$out/boot-$slot.vfat" >/dev/null
-  mcopy -i "$out/boot-$slot.vfat" "$boot_dir/cmdline.txt" ::cmdline.txt
-  mcopy -i "$out/boot-$slot.vfat" "$boot_dir/config.txt" ::config.txt
+  cmd="root=PARTLABEL=rootfs-$slot ro rootfstype=squashfs init=/usr/local/sbin/t3box-overlay-init rauc.slot=$upper"
+  {
+    if [ "$variant" = pi ]; then
+      printf '# T3Box boot slot %s (Raspberry Pi 5)\n[all]\narm_64bit=1\nkernel=vmlinuz\ninitramfs initrd.img followkernel\nenable_uart=1\n' "$upper"
+      cmd="console=serial0,115200 console=tty1 $cmd rootwait"
+    fi
+    cat "$repo/os/firmware/config.txt.fragment"
+  } >"$boot_dir/config.txt"
+  echo "$cmd" >"$boot_dir/cmdline.txt"
+  vfat "$out/boot-$slot.vfat" "BOOT-$upper" "$T3BOX_BOOT_MIB"
+  touch -d "@$SOURCE_DATE_EPOCH" "$boot_dir"/*
+  mcopy -m -i "$out/boot-$slot.vfat" "$boot_dir/cmdline.txt" "$boot_dir/config.txt" ::
+  if [ "$variant" = pi ]; then
+    mcopy -i "$out/boot-$slot.vfat" "$out/vmlinuz" "$out/initrd.img" "$out/bcm2712-rpi-5-b.dtb" ::
+    mcopy -s -i "$out/boot-$slot.vfat" "$out/overlays" ::
+  fi
 done
-truncate -s "${T3BOX_SELECTOR_MIB}M" "$out/selector.vfat"; mkfs.vfat -n SELECTOR "$out/selector.vfat" >/dev/null
+vfat "$out/selector.vfat" SELECTOR "$T3BOX_SELECTOR_MIB"
 printf '[all]\ntryboot_a_b=1\nboot_partition=2\n[tryboot]\nboot_partition=3\n' >"$boot_dir/autoboot.txt"
 mcopy -i "$out/selector.vfat" "$boot_dir/autoboot.txt" ::autoboot.txt
 
@@ -86,7 +160,8 @@ mcopy -i "$out/selector.vfat" "$boot_dir/autoboot.txt" ::autoboot.txt
 # read-only root bind-mounts (os/image/customize.sh writes fstab).
 data_dir=$(mktemp -d)
 mkdir -p "$data_dir/t3box/varlib" "$data_dir/t3box/config" "$data_dir/t3box/update" "$data_dir/t3box/rauc"
-truncate -s "${T3BOX_DATA_MIN_MIB}M" "$out/data.ext4"; mkfs.ext4 -q -L data -d "$data_dir" "$out/data.ext4"
+truncate -s "${T3BOX_DATA_MIN_MIB}M" "$out/data.ext4"
+E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH mkfs.ext4 -q -L data -U 7e3b0000-0000-4000-8000-000000000006 -E hash_seed=7e3b0000-0000-4000-8000-000000000006,root_owner=0:0 -d "$data_dir" "$out/data.ext4"
 
 # GPT disk image.
 img="$out/t3box.img"
@@ -115,4 +190,4 @@ write_part 6 "$out/data.ext4"
 # rootfs-b stays empty: the first update fills it (RAUC writes the inactive slot).
 rm -rf "$boot_dir" "$data_dir"
 sfdisk -l "$img"
-echo "t3box image $version ($arch, $suite): $img"
+echo "t3box image $version ($arch, $suite, $variant): $img"

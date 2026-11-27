@@ -13,13 +13,17 @@ inputs:
     description: Cache profile shared by jobs with compatible builds
     required: false
     default: default
+  image:
+    description: Build image recipe in ci/images (build = Ubuntu 24.04 test environment, device-build = Debian trixie like the device)
+    required: false
+    default: build
 runs:
   using: composite
   steps:
     - id: key
       shell: bash
       run: |
-        echo "prefix=rust-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles('ci/images/build.Dockerfile', 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+        echo "prefix=rust-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles(format('ci/images/{0}.Dockerfile', inputs.image), 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       id: restore
       with:
@@ -34,10 +38,11 @@ runs:
     - shell: bash
       env:
         BUILD_COMMAND: ${{ inputs.command }}
+        BUILD_IMAGE: ${{ inputs.image }}
       run: |
         set -Eeuo pipefail
         start=$SECONDS
-        ref="$(bash ci/images/pull.sh build)"
+        ref="$(bash ci/images/pull.sh "$BUILD_IMAGE")"
         echo "Build image preparation: $((SECONDS-start))s (cache: ${{ steps.restore.outputs.cache-matched-key || 'cold' }})" >> "$GITHUB_STEP_SUMMARY"
         start=$SECONDS
         mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.cache/t3box-sccache" target

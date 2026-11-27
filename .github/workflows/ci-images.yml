@@ -26,6 +26,12 @@ jobs:
             image: build
           - runner: ubuntu-24.04-arm
             arch: arm64
+            image: device-build
+          - runner: ubuntu-24.04
+            arch: amd64
+            image: device-build
+          - runner: ubuntu-24.04-arm
+            arch: arm64
             image: runtime
           - runner: ubuntu-24.04-arm
             arch: arm64

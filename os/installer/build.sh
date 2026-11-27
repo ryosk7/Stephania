@@ -18,9 +18,9 @@ out=$(mkdir -p "$2" && cd "$2" && pwd)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 key=${T3BOX_INSTALL_SIGNING_KEY:?T3BOX_INSTALL_SIGNING_KEY (Ed25519 PEM) is required}
 arch=${T3BOX_IMAGE_ARCH:-arm64}
-suite=${T3BOX_IMAGE_SUITE:-noble}
-if [ "$arch" = arm64 ]; then default_mirror=http://ports.ubuntu.com/ubuntu-ports; else default_mirror=http://archive.ubuntu.com/ubuntu; fi
-mirror=${T3BOX_IMAGE_MIRROR:-$default_mirror}
+# Same distribution as the image (Debian 13 trixie, os/image/build.sh).
+suite=${T3BOX_IMAGE_SUITE:-trixie}
+mirror=${T3BOX_IMAGE_MIRROR:-http://deb.debian.org/debian}
 version=${T3BOX_IMAGE_VERSION:-0.0.0-dev}
 id=${T3BOX_INSTALL_ID:-$(openssl rand -hex 8)}
 . "$repo/os/layout.env"
@@ -33,7 +33,7 @@ kver=$(ls "$img/rootfs/lib/modules" | sort -V | tail -1)
 tools="$out/tools-root"
 rm -rf "$tools"
 mmdebstrap --arch="$arch" --variant=essential --include=busybox-static,fdisk,dosfstools,e2fsprogs,openssl,kmod,libzstd1 \
-  "$suite" "$tools" "$mirror" >/dev/null
+  --keyring="${T3BOX_IMAGE_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}" "$suite" "$tools" "deb $mirror $suite main" >/dev/null
 ir="$out/initramfs"
 rm -rf "$ir"; mkdir -p "$ir"/{bin,sbin,etc/t3box,proc,sys,dev,run,mnt,lib,lib64,usr}
 cp "$tools/bin/busybox" "$ir/bin/busybox"
@@ -62,7 +62,17 @@ fi
 [ -d "$tools/usr/lib/ssl" ] && mkdir -p "$ir/usr/lib/ssl" && cp -a "$tools/usr/lib/ssl/openssl.cnf" "$ir/usr/lib/ssl/" 2>/dev/null || true
 
 # Kernel modules for SD/USB/virtio storage and the filesystems used.
-mods="vfat nls_cp437 nls_iso8859_1 ext4 virtio_blk virtio_pci virtio_scsi sd_mod usb_storage uas mmc_block sdhci_brcmstb sdhci_iproc"
+# FAT needs its default code page (CONFIG_FAT_DEFAULT_CODEPAGE) and I/O
+# charset (CONFIG_FAT_DEFAULT_IOCHARSET; Debian's is "ascii", the Raspberry
+# Pi kernel's "iso8859-1") at mount time, so both are taken from the kernel
+# config rather than guessed.
+kcfg="$img/rootfs/boot/config-$kver"
+[ -f "$kcfg" ] || { echo "installer: no kernel config $kcfg" >&2; exit 1; }
+cp_mod="nls_cp$(sed -n 's/^CONFIG_FAT_DEFAULT_CODEPAGE=//p' "$kcfg")"
+io=$(sed -n 's/^CONFIG_FAT_DEFAULT_IOCHARSET="\(.*\)"$/\1/p' "$kcfg")
+io_mod="nls_$(echo "${io:-iso8859-1}" | tr - _)"
+mods="vfat $cp_mod $io_mod nls_cp437 nls_iso8859_1 nls_utf8 ext4 virtio_blk virtio_pci virtio_scsi sd_mod usb_storage uas mmc_block sdhci_brcmstb sdhci_iproc"
+mods=$(printf '%s\n' $mods | awk '!seen[$0]++' | tr '\n' ' ')
 : >"$ir/etc/t3box/modules"
 for m in $mods; do
   deps=$(chroot "$img/rootfs" modprobe -S "$kver" --show-depends "$m" 2>/dev/null | awk '$1=="insmod"{print $2}') || true
@@ -70,6 +80,14 @@ for m in $mods; do
   echo "$m" >>"$ir/etc/t3box/modules"
   for d in $deps; do install -D -m 0644 "$img/rootfs$d" "$ir$d"; done
 done
+# vfat and its code pages are required to read the install medium: a
+# kernel where they are neither built in nor found as modules fails here,
+# not on the device.
+for m in vfat $cp_mod $io_mod; do
+  grep -qx "$m" "$ir/etc/t3box/modules" || grep -q "/$m.ko" "$img/rootfs/lib/modules/$kver/modules.builtin" \
+    || { echo "installer: kernel module $m not found for $kver" >&2; exit 1; }
+done
+echo "installer modules: $(tr '\n' ' ' <"$ir/etc/t3box/modules")"
 cp "$img/rootfs/lib/modules/$kver/modules.order" "$img/rootfs/lib/modules/$kver/modules.builtin"* "$ir/lib/modules/$kver/" 2>/dev/null || true
 # Store modules uncompressed: the initramfs is itself compressed, and a
 # plain .ko loads with any modprobe/insmod regardless of zstd/xz support.
