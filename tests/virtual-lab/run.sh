@@ -25,6 +25,8 @@ peer=$!
 for i in $(seq 1 50); do [[ -f "$work/ready" ]] && break; sleep .1; done
 test -f "$work/ready"
 export T3BOX_CI_CA_DER="$work/ca.der" T3BOX_OUTPUT=rtmps://t3box-ci.test:19443/live/lab
+# The lab drives the engine through its transitional loopback HTTP API.
+export T3BOX_LEGACY_HTTP=127.0.0.1:8787
 export T3BOX_WIDTH="${LAB_WIDTH:-1920}" T3BOX_HEIGHT="${LAB_HEIGHT:-1080}" T3BOX_FPS=30 T3BOX_BITRATE_KBPS="${LAB_BITRATE:-6000}"
 export T3BOX_PARALLEL_MEDIA=1 T3BOX_ADAPTIVE_RATE=1 T3BOX_DEADLINE_TRANSPORT=1 T3BOX_CONTENT_AWARE=1
 if [[ "${LAB_INPUT:-virtual}" == physical ]]; then

@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- mDNS/DNS-SD publication of the management plane (docs/IMAGE.md).
+     Install as /etc/avahi/services/t3box.service. The host name itself
+     (<t3box-xxxx>.local) is published by avahi-daemon. -->
+<service-group>
+  <name replace-wildcards="yes">T3Box %h</name>
+  <service>
+    <type>_https._tcp</type>
+    <port>9443</port>
+    <txt-record>path=/</txt-record>
+  </service>
+  <service>
+    <type>_t3box._tcp</type>
+    <port>9443</port>
+    <txt-record>api=/api/v1</txt-record>
+    <txt-record>ca=/ca.pem</txt-record>
+  </service>
+</service-group>

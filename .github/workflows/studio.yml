@@ -328,12 +328,13 @@ jobs:
         env:
           CI: '1'
           EXPO_OFFLINE: '1'
-        run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/t3box-export"
-  # Native module (modules/t3box-pinned-fetch). Not on pushes to main: the
-  # PR already ran it; nightly and manual runs cover main.
+        run: npx expo export --platform ios --output-dir "$RUNNER_TEMP/t3box-export"
+  # Native module (modules/t3box-pinned-fetch), Android side. Android is
+  # paused: the iOS app is the supported client for now, so this job runs
+  # only when started by hand.
   mobile-android:
     needs: [changes, bins]
-    if: needs.changes.outputs.mobile_native == 'true' && github.event_name != 'push'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
