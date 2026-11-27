@@ -6,9 +6,9 @@ subprocess. `VideoSource` and `AudioSource` are independent Rust interfaces.
 
 ```sh
 sudo apt install libasound2-dev pkg-config clang libclang-dev v4l-utils alsa-utils
-cargo build --release --features native-capture --bin t3box-native-probe
-T3BOX_VIDEO=/dev/video0 T3BOX_AUDIO=plughw:1,0 \
-  ./target/release/t3box-native-probe
+cargo build --release --features native-capture --bin stephania-native-probe
+STEPHANIA_VIDEO=/dev/video0 STEPHANIA_AUDIO=plughw:1,0 \
+  ./target/release/stephania-native-probe
 ```
 
 The V4L2 backend requests 1280x720 YUYV by default. If that format is not
@@ -30,7 +30,7 @@ retry; the rest of the media pipeline still needs error-state propagation.
 
 **Feature scope:** This demonstrates native device acquisition and frame
 transport only. It does not yet connect this data to the encoder or the
-main `t3box` controller. No YUV conversion, JPEG decoding, AAC or H.264
+main `stephania` controller. No YUV conversion, JPEG decoding, AAC or H.264
 encoding, GPIO, or actual YouTube publishing is performed by the probe.
 Testing CI without physical HDMI/ALSA hardware only validates compilation,
 interfaces and configuration boundaries. Real Pi 5 tests remain mandatory.

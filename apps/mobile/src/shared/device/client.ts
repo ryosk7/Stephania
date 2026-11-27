@@ -1,8 +1,8 @@
-// Management API client for an enrolled T3Box (docs/AUTH.md, contracts/openapi.yaml).
+// Management API client for an enrolled Stephania (docs/AUTH.md, contracts/openapi.yaml).
 // Every request goes through the native pinned client: TLS must chain to the
 // device CA whose SHA-256 the device delivered sealed over BLE. There is no
 // fallback to the system trust store or to plain HTTP.
-import type {ManagementEnrollment} from '@t3box/provisioning-client';
+import type {ManagementEnrollment} from '@stephania/provisioning-client';
 
 export type NativePinned = {
   request(url: string, method: string, headersJson: string, body: string | null, caSha256: string, timeoutMs: number):
@@ -66,7 +66,7 @@ export class DeviceClient {
       }
       return data as T;
     }
-    throw new DeviceError('unreachable', `Cannot reach the T3Box (${String((lastError as Error)?.message ?? lastError)})`);
+    throw new DeviceError('unreachable', `Cannot reach the Stephania device (${String((lastError as Error)?.message ?? lastError)})`);
   }
 
   status = () => this.call<Status>('/status');

@@ -1,5 +1,5 @@
 #!/bin/sh
 # RAUC pre-install handler: never update while a stream is requested, then
 # take an online snapshot of persistent data for rollback.
-/usr/local/bin/t3box-bootctl guard || exit 1
-exec /usr/local/bin/t3box-bootctl snapshot
+/usr/local/bin/stephania-bootctl guard || exit 1
+exec /usr/local/bin/stephania-bootctl snapshot

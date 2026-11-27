@@ -2,7 +2,7 @@ import {useEffect, useState} from 'react';
 import type {Status} from './client';
 import {elapsedSince} from './status';
 
-/** Elapsed on-air time, ticking every second while the T3Box reports a start time. */
+/** Elapsed on-air time, ticking every second while the Stephania device reports a start time. */
 export function useOnAirTime(status: Status | null | undefined): string | undefined {
   const since = status?.state === 'native_worker_active' ? status.native_worker_started_unix_ms : undefined;
   const [now, setNow] = useState(Date.now);

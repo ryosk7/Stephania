@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real libwebrtc offer from the iOS sender core (apps/mobile/modules/
-# t3box-camera/ios/CameraSender, produced by `swift test` on macOS with
-# T3BOX_OFFER_OUT) through control signaling into t3box-phone: the device
+# stephania-camera/ios/CameraSender, produced by `swift test` on macOS with
+# STEPHANIA_OFFER_OUT) through control signaling into stephania-phone: the device
 # must accept it and answer H.264 constrained baseline (any level) for
 # both tracks.
 # Media is not exchanged here (the offer's candidates are the macOS
@@ -19,12 +19,12 @@ fail() { echo "FAIL $*"; for f in "$w"/*.log; do echo "--- $f"; tail -40 "$f"; d
 port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
 token=ios-offer-token-0123456789abcdef01234
 
-T3BOX_PHONE_SOCKET="$w/phone.sock" T3BOX_MEDIA_SOCKET="$w/media.sock" T3BOX_PHONE_ADDRS=127.0.0.1 \
-  T3BOX_PHONE_UDP_PORT=0 "$target/t3box-phone" >"$w/phone.log" 2>&1 & pids+=($!)
+STEPHANIA_PHONE_SOCKET="$w/phone.sock" STEPHANIA_MEDIA_SOCKET="$w/media.sock" STEPHANIA_PHONE_ADDRS=127.0.0.1 \
+  STEPHANIA_PHONE_UDP_PORT=0 "$target/stephania-phone" >"$w/phone.log" 2>&1 & pids+=($!)
 for _ in $(seq 50); do [ -S "$w/phone.sock" ] && break; sleep 0.1; done
-[ -S "$w/phone.sock" ] || fail "t3box-phone socket"
-(cd "$root/services/control" && T3BOX_CONTROL_PORT=$port T3BOX_CONTROL_TOKEN=$token T3BOX_ENGINE_SOCKET="$w/none.sock" \
-  T3BOX_PHONE_SOCKET="$w/phone.sock" T3BOX_CONTROL_DB="$w/c.db" RACK_ENV=production \
+[ -S "$w/phone.sock" ] || fail "stephania-phone socket"
+(cd "$root/services/control" && STEPHANIA_CONTROL_PORT=$port STEPHANIA_CONTROL_TOKEN=$token STEPHANIA_ENGINE_SOCKET="$w/none.sock" \
+  STEPHANIA_PHONE_SOCKET="$w/phone.sock" STEPHANIA_CONTROL_DB="$w/c.db" RACK_ENV=production \
   bundle exec puma -C config/puma.rb config.ru >"$w/control.log" 2>&1) & pids+=($!)
 for _ in $(seq 100); do curl -s -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.2; done
 
@@ -59,4 +59,4 @@ status, st = call("GET")
 assert status == 200 and st["state"] != "none", st
 print("ios offer accepted:", {k: v for k, v in st.items() if k != "age_ms"})
 PY
-echo "PASS iOS sender offer accepted by t3box-phone"
+echo "PASS iOS sender offer accepted by stephania-phone"

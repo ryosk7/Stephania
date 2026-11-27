@@ -5,7 +5,7 @@
 //! its own after a reboot or an access-point outage.
 //!
 //! Join semantics, chosen so a failed attempt never breaks a working setup:
-//! 1. add a fresh profile `t3box-<hex ssid>` (autoconnect, DHCP);
+//! 1. add a fresh profile `stephania-<hex ssid>` (autoconnect, DHCP);
 //! 2. activate it on the Wi-Fi device and wait for ACTIVATED (≤ 35 s);
 //! 3. on success delete older profiles with the same id; on failure delete
 //!    only the new profile, leaving any previous profile untouched.
@@ -57,7 +57,7 @@ pub fn strength_to_rssi(strength: u8) -> i32 {
 }
 
 pub fn profile_id(ssid: &[u8]) -> String {
-    format!("t3box-{}", hex(ssid))
+    format!("stephania-{}", hex(ssid))
 }
 
 fn uuid_v4() -> String {
@@ -245,7 +245,7 @@ mod tests {
     fn settings_store_psk_system_owned_and_autoconnect() {
         let cfg = WifiConfiguration { ssid: b"LT Hall".to_vec(), security: WifiSecurity::WpaPsk("correct horse".into()) };
         let s = connection_settings(&cfg, "wlan0", "u");
-        assert_eq!(s["connection"]["id"], Value::from("t3box-4c542048616c6c"));
+        assert_eq!(s["connection"]["id"], Value::from("stephania-4c542048616c6c"));
         assert_eq!(s["connection"]["autoconnect"], Value::from(true));
         assert_eq!(s["802-11-wireless"]["ssid"], Value::from(b"LT Hall".to_vec()));
         assert_eq!(s["802-11-wireless-security"]["psk"], Value::from("correct horse"));

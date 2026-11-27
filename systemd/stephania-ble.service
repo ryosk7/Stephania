@@ -1,0 +1,42 @@
+[Unit]
+Description=Stephania BLE provisioning adapter (BlueZ GATT)
+# Restarted together with bluetoothd so the GATT application and
+# advertisement are always re-registered against a fresh daemon.
+BindsTo=bluetooth.service
+After=bluetooth.service stephania-provision.service
+Wants=stephania-provision.service
+PartOf=bluetooth.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=stephania-ble
+Group=stephania-ble
+# bluetooth: BlueZ D-Bus access (see stephania-ble.dbus.conf);
+# stephania-provision: reach /run/stephania-provision/provisioning.sock
+SupplementaryGroups=bluetooth stephania-provision
+ExecStart=/usr/local/bin/stephania-ble
+Environment=STEPHANIA_PROVISION_SOCKET=/run/stephania-provision/provisioning.sock
+# auto = prefer an external USB controller over the on-board CYW43455.
+Environment=STEPHANIA_BLE_ADAPTER=auto
+# The adapter exits on bluetoothd/adapter loss; always come back.
+Restart=always
+RestartSec=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+MemoryMax=48M
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

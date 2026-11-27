@@ -1,4 +1,4 @@
-// Input controls drawn by T3Box (same on every platform): Segmented
+// Input controls drawn by Stephania (same on every platform): Segmented
 // (compound, state through context; icon or word per item), Toggle, Field.
 import * as Haptics from 'expo-haptics';
 import {createContext, use, useEffect, useRef, useState, type ReactNode} from 'react';
@@ -46,7 +46,7 @@ Segmented.Item = function SegmentedItem({value, label, icon, unavailable}: {valu
 };
 
 /**
- * On/off control drawn by T3Box (not the system switch): a 48×28 track in
+ * On/off control drawn by Stephania (not the system switch): a 48×28 track in
  * the text colour when on, so the look is the same on iOS and Android.
  */
 export function Toggle({value, onChange, label, disabled}: {value: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean}) {

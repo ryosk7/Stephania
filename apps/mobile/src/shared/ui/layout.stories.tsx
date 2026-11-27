@@ -56,7 +56,7 @@ export const Lists: Story = {
   ),
 };
 
-export const Status: Story = {render: () => <View className="h-80"><StatusView icon="done" tone="success" title="Hall A is ready" body="Reachable at https://t3box-8f21.local/" /></View>};
+export const Status: Story = {render: () => <View className="h-80"><StatusView icon="done" tone="success" title="Hall A is ready" body="Reachable at https://stephania-8f21.local/" /></View>};
 
 function SheetDemo() {
   const [open, setOpen] = useState(false);

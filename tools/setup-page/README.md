@@ -1,9 +1,9 @@
-# T3Box setup page
+# Stephania setup page
 
-Single-file static page (`dist/index.html`) that generates the device setup secret **in the browser**, shows it as a QR code for the T3Box Connect app and downloads `t3box-setup.txt` for the microSD boot (FAT32) partition. Decided resolution of risk R02 without printed labels; see `contracts/ble-protocol.md` § Setup secret delivery.
+Single-file static page (`dist/index.html`) that generates the device setup secret **in the browser**, shows it as a QR code for the Stephania Connect app and downloads `stephania-setup.txt` for the microSD boot (FAT32) partition. Decided resolution of risk R02 without printed labels; see `contracts/ble-protocol.md` § Setup secret delivery.
 
 - No network: CSP `default-src 'none'`, inline script pinned by its SHA-256; works offline and from `file://`.
-- Format: `t3box-setup:v1:<32 hex>:<8 hex SHA-256 check>` (`contracts/fixtures/ble/setup-uris.json`).
+- Format: `stephania-setup:v1:<32 hex>:<8 hex SHA-256 check>` (`contracts/fixtures/ble/setup-uris.json`).
 - QR generation: vendored `qrcode-generator` 1.4.4 (MIT, Kazuhiko Arase), inlined at build.
 - `npm test` builds the page and tests the exact embedded script: fixture format, randomness, and QR round-trip through an independent decoder (jsQR).
 

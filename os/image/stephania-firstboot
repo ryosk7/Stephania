@@ -1,0 +1,10 @@
+#!/bin/sh
+# First boot on the data partition: bootstrap control token (loopback only),
+# directory skeleton. Idempotent.
+set -eu
+install -d -m 0755 /data/stephania/config /data/stephania/update /data/stephania/rauc
+if [ ! -s /data/stephania/config/control.env ]; then
+  umask 077
+  printf 'STEPHANIA_CONTROL_TOKEN=%s\n' "$(openssl rand -hex 32)" >/data/stephania/config/control.env.new
+  mv /data/stephania/config/control.env.new /data/stephania/config/control.env
+fi

@@ -5,13 +5,13 @@ phone, up to two independent camera tracks (`phone:rear`, `phone:front`),
 received over WebRTC and decoded on the Pi into the compositor.
 
 ```
-phone app ──HTTPS (SDP)──▶ control (Sinatra) ──Unix socket──▶ t3box-phone
-phone app ══WebRTC (ICE/DTLS-SRTP/RTP, UDP 40100)══▶ t3box-phone
-t3box-phone ──Unix socket (H.264 access units)──▶ engine ── libavcodec ──▶ compositor sources
+phone app ──HTTPS (SDP)──▶ control (Sinatra) ──Unix socket──▶ stephania-phone
+phone app ══WebRTC (ICE/DTLS-SRTP/RTP, UDP 40100)══▶ stephania-phone
+stephania-phone ──Unix socket (H.264 access units)──▶ engine ── libavcodec ──▶ compositor sources
 ```
 
 ## Processes
-- **t3box-phone** (`services/phone`, webrtc-rs): terminates WebRTC in its
+- **stephania-phone** (`services/phone`, webrtc-rs): terminates WebRTC in its
   own unprivileged process (uid 855). H.264 only
   (`packetization-mode=1`, constrained baseline 42e01f), LAN host
   candidates on one UDP port, no STUN/TURN, non-trickle answer. RTP is
@@ -20,11 +20,11 @@ t3box-phone ──Unix socket (H.264 access units)──▶ engine ── libavc
   output freezes briefly instead of showing corrupt frames. A crash or
   restart never touches the engine.
 - **engine** (`src/phone_ingest.rs`, `src/h264_decode.rs`): ingest socket
-  `/run/t3box/media.sock`, only uid 855. One libavcodec decoder per source
+  `/run/stephania/media.sock`, only uid 855. One libavcodec decoder per source
   (slice threads, low delay); decoded I420 frames go to the
   `SourceRegistry`, where frames older than 500 ms are not composed (the
   layer falls back). Decoder errors and streams joined mid-GOP produce
-  keyframe requests back to t3box-phone (rate-limited).
+  keyframe requests back to stephania-phone (rate-limited).
 - **control**: `POST /api/v1/cameras/session/offer {sdp, tracks, replace?}`
   → `{sdp}`; `GET`/`DELETE /api/v1/cameras/session`. `tracks` maps the
   offer's MediaStreamTrack ids to `rear`/`front`. A second phone gets
@@ -58,16 +58,16 @@ duplicates), decoder round-trip with the engine's own x264 encoder,
 ingest protocol and keyframe requests.
 
 ## Phone app sender (iOS)
-`apps/mobile/modules/t3box-camera` (native) + `apps/mobile/src/features/camera`
+`apps/mobile/modules/stephania-camera` (native) + `apps/mobile/src/features/camera`
 (shared TypeScript). The split is the cross-platform contract
-(`modules/t3box-camera/src/T3BoxCamera.types.ts`): native code captures,
+(`modules/stephania-camera/src/StephaniaCamera.types.ts`): native code captures,
 encodes and transports; TypeScript decides. An Android implementation
 provides the same interface and reuses everything in `src/features/camera`.
 
 - **Capture** (`ios/CameraCapture.swift`): built-in wide cameras,
   `AVCaptureMultiCamSession` for rear+front. Output is always landscape
   16:9: each connection is rotated in the ISP to the horizon-level angle
-  (iOS 17 `RotationCoordinator`), because t3box-phone ignores the RTP
+  (iOS 17 `RotationCoordinator`), because stephania-phone ignores the RTP
   orientation extension. Frames go from the capture queue straight into
   the WebRTC video sources; no frame crosses the JS bridge.
 - **Profiles** (§12): dual `720p30+720p30`, `720p30+540p24`,
@@ -77,10 +77,10 @@ provides the same interface and reuses everything in `src/features/camera`.
 - **Encode / transport** (`ios/CameraSender`, SwiftPM, also the pod's
   sources): libwebrtc (`WebRTC-SDK` 150.7871.09), VideoToolbox H.264 via
   the default encoder factory. The local offer is restricted to H.264
-  constrained baseline (`42e0xx`; t3box-phone matches profile and
+  constrained baseline (`42e0xx`; stephania-phone matches profile and
   packetization mode, not level), `packetization-mode=1` (+RTX) before
   `setLocalDescription`; one sendonly transceiver per camera, stream
-  `t3box`, track ids `rear-…`/`front-…`; LAN only (no STUN/TURN), the
+  `stephania`, track ids `rear-…`/`front-…`; LAN only (no STUN/TURN), the
   offer is sent after ICE gathering completes (non-trickle). Plans change
   `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` and `active` on
   the running senders, without renegotiation.
@@ -95,7 +95,7 @@ provides the same interface and reuses everything in `src/features/camera`.
   devices' system pressure selects the plan; dual mode steps down one
   profile per level and switches the front (audience) camera off at
   `critical`, keeping the presenter. The offer is checked against what
-  t3box-phone accepts before it is sent.
+  stephania-phone accepts before it is sent.
 - **Screen** (`src/features/camera/camera-screen.tsx`): native Metal previews of what is fed
   to the encoder, rear/front/both selector (both only when a dual profile
   is available), status, thermal notice, take-over prompt; the screen
@@ -107,14 +107,14 @@ sender and clock, plans, offer checks); `mobile-ios-camera` (macOS,
 tracks with different synthetic content arrive decoded as H.264 at the
 planned size, not swapped; switching the front track off stops it, rear
 drops to 540p, and both come back; `phone-ios-offer`: that libwebrtc offer
-is accepted by the real t3box-phone through control and answered with
+is accepted by the real stephania-phone through control and answered with
 H.264 42e01f for both tracks. Capture, rotation, MultiCam cost, hardware
 encoder use and thermal behaviour on a real iPhone are physical
 qualification (Q-PHONE); none has been run.
 
 ## Not done yet
 - Android sender (Kotlin, Camera2 concurrent cameras, MediaCodec): paused;
-  it implements `T3BoxCamera.types.ts`.
+  it implements `StephaniaCamera.types.ts`.
 - WSS/trickle ICE, audio from the phone.
 - Decode load on the Pi 5 (two 720p30 software decodes next to x264) is
   unmeasured: physical qualification Q-PHONE / Q-AV.

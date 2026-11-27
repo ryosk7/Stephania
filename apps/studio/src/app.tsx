@@ -71,7 +71,7 @@ export function App() {
   return (
     <main className="mx-auto flex max-w-[1280px] flex-col gap-3 p-6">
       <header className="flex flex-wrap items-center gap-3">
-        <h1 className="my-2 mr-4 text-2xl font-bold tracking-tight">T3Box Studio</h1>
+        <h1 className="my-2 mr-4 text-2xl font-bold tracking-tight">Stephania Studio</h1>
         {!me && <><span className="flex-1"/><ThemeSwitch/></>}
       </header>
       {!me && !checking && <Login onToken={t => void connectToken(t)} onLogin={(u, p) => void login(u, p)} busy={false}/>}

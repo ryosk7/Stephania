@@ -1,4 +1,4 @@
-// Operating one T3Box over the LAN (DESIGN.md §6 Control): name and state
+// Operating one Stephania device over the LAN (DESIGN.md §6 Control): name and state
 // on top, layouts as tiles (the on-air one marked), audio, and the stream
 // action pinned at the bottom. Sections are headed by icons.
 import * as Haptics from 'expo-haptics';

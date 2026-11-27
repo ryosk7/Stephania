@@ -1,6 +1,6 @@
 """Drive the program audio mix over the engine IPC during a CI broadcast.
 
-Timeline (virtual capture with T3BOX_CI_AUDIO_TONES: hdmi = 440 Hz stereo,
+Timeline (virtual capture with STEPHANIA_CI_AUDIO_TONES: hdmi = 440 Hz stereo,
 mic = 880 Hz mono, both at -12 dBFS peak):
   A  4 s  hdmi only
   B  4 s  mic enabled          -> both tones

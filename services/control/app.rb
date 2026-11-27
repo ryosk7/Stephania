@@ -15,10 +15,10 @@ require_relative "lib/accounts"
 require_relative "lib/asset_store"
 require_relative "lib/template_validator"
 
-# T3Box management plane. Contract: contracts/openapi.yaml.
+# Stephania management plane. Contract: contracts/openapi.yaml.
 #
 # Never carries media. Talks to the engine only through EngineClient
-# (Unix socket IPC). Plain HTTP is loopback-only (T3BOX_CONTROL_TOKEN).
+# (Unix socket IPC). Plain HTTP is loopback-only (STEPHANIA_CONTROL_TOKEN).
 # The LAN is served only over TLS with the device-CA certificate
 # (crate::pki) and accepts only owner-issued tokens enrolled over
 # authenticated BLE (crate::management_tokens); see LanAccess.
@@ -50,7 +50,7 @@ class Control < Sinatra::Base
   }.freeze
 
   set :bind, "127.0.0.1"
-  set :public_folder, ENV.fetch("T3BOX_STUDIO_DIST", File.expand_path("../../apps/studio/dist", __dir__))
+  set :public_folder, ENV.fetch("STEPHANIA_STUDIO_DIST", File.expand_path("../../apps/studio/dist", __dir__))
   set :show_exceptions, false
   set :raise_errors, false
   set :dump_errors, false
@@ -92,15 +92,15 @@ class Control < Sinatra::Base
     end
 
     def configure_from_env(env = ENV)
-      self.token = env["T3BOX_CONTROL_TOKEN"]
-      self.lan = LanAccess.new(pki_dir: env["T3BOX_PKI_DIR"], tokens_file: env["T3BOX_CONTROL_TOKENS_FILE"])
-      self.engine = EngineClient.new(socket_path: env.fetch("T3BOX_ENGINE_SOCKET", EngineClient::DEFAULT_SOCKET))
-      # t3box-phone speaks the same framing (docs/PHONE.md); answers wait for
+      self.token = env["STEPHANIA_CONTROL_TOKEN"]
+      self.lan = LanAccess.new(pki_dir: env["STEPHANIA_PKI_DIR"], tokens_file: env["STEPHANIA_CONTROL_TOKENS_FILE"])
+      self.engine = EngineClient.new(socket_path: env.fetch("STEPHANIA_ENGINE_SOCKET", EngineClient::DEFAULT_SOCKET))
+      # stephania-phone speaks the same framing (docs/PHONE.md); answers wait for
       # ICE gathering, hence the longer timeout.
-      self.phone = EngineClient.new(socket_path: env.fetch("T3BOX_PHONE_SOCKET", "/run/t3box-phone/phone.sock"), timeout: 8.0)
-      self.assets_dir = env.fetch("T3BOX_ASSETS_DIR") { File.join(Dir.tmpdir, "t3box-assets-#{Process.pid}") }
-      configure_storage(env.fetch("T3BOX_CONTROL_DB", ":memory:"))
-      configure_events(interval: Float(env.fetch("T3BOX_CONTROL_POLL_SECONDS", "1.0")))
+      self.phone = EngineClient.new(socket_path: env.fetch("STEPHANIA_PHONE_SOCKET", "/run/stephania-phone/phone.sock"), timeout: 8.0)
+      self.assets_dir = env.fetch("STEPHANIA_ASSETS_DIR") { File.join(Dir.tmpdir, "stephania-assets-#{Process.pid}") }
+      configure_storage(env.fetch("STEPHANIA_CONTROL_DB", ":memory:"))
+      configure_events(interval: Float(env.fetch("STEPHANIA_CONTROL_POLL_SECONDS", "1.0")))
     end
 
     # The poller reads `Control.engine` on every tick, so tests that swap
@@ -262,7 +262,7 @@ class Control < Sinatra::Base
     token = settings.token
     env_token = token.is_a?(String) && token.bytesize >= 32
     unless env_token || settings.lan&.configured?
-      fail_with 503, "not_configured", "T3BOX_CONTROL_TOKEN must be at least 32 bytes"
+      fail_with 503, "not_configured", "STEPHANIA_CONTROL_TOKEN must be at least 32 bytes"
     end
     header = request.env.fetch("HTTP_AUTHORIZATION", "")
     supplied = header.delete_prefix("Bearer ")
@@ -536,15 +536,15 @@ class Control < Sinatra::Base
   get "/api/v1/scenes/:id/export" do
     row = scene_row(params[:id])
     fail_with 404, "not_found", "scene does not exist" unless row
-    attachment "#{row[:id]}.t3box-scene.json"
-    json_reply({format: "t3box-scene", version: 1, id: row[:id], document: JSON.parse(row[:document])})
+    attachment "#{row[:id]}.stephania-scene.json"
+    json_reply({format: "stephania-scene", version: 1, id: row[:id], document: JSON.parse(row[:document])})
   end
 
   post "/api/v1/scenes/import" do
     input = read_json
-    unless input.is_a?(Hash) && input["format"] == "t3box-scene" && input["version"] == 1 &&
+    unless input.is_a?(Hash) && input["format"] == "stephania-scene" && input["version"] == 1 &&
         (input.keys - %w[format version id document]).empty? && input["document"].is_a?(Hash)
-      fail_with 422, "invalid_request", "body must be a t3box-scene export (format, version 1, document)"
+      fail_with 422, "invalid_request", "body must be a stephania-scene export (format, version 1, document)"
     end
     base = input["id"].is_a?(String) ? input["id"] : input["document"]["name"].to_s
     json_reply(create_scene(base, input["document"]), 201)
@@ -701,7 +701,7 @@ class Control < Sinatra::Base
   end
 
   # Phone camera session (docs/PHONE.md). The control plane relays SDP
-  # only; media flows phone → t3box-phone (WebRTC) → engine, never here.
+  # only; media flows phone → stephania-phone (WebRTC) → engine, never here.
   post "/api/v1/cameras/session/offer" do
     input = read_json
     unless input.is_a?(Hash) && (input.keys - %w[sdp tracks replace]).empty? && input["sdp"].is_a?(String) &&
@@ -826,7 +826,7 @@ class Control < Sinatra::Base
   get "/ca.pem" do
     path = settings.lan&.ca_path
     fail_with 404, "not_found", "device PKI is not configured" unless path && File.file?(path)
-    headers "Content-Disposition" => 'attachment; filename="t3box-ca.pem"'
+    headers "Content-Disposition" => 'attachment; filename="stephania-ca.pem"'
     send_file path, type: "application/x-pem-file"
   end
 

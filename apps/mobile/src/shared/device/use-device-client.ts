@@ -1,5 +1,5 @@
 import {useEffect, useState} from 'react';
-import PinnedFetch from '@modules/t3box-pinned-fetch';
+import PinnedFetch from '@modules/stephania-pinned-fetch';
 import {DeviceClient} from './client';
 import {enrolledDevices, loadEnrollment} from './enrollment';
 
@@ -19,7 +19,7 @@ export function useDeviceClient(deviceId: string | undefined): DeviceHandle {
         if (!alive) return;
         if (!e) { setHandle({state: 'missing'}); return; }
         const host = (() => { try { return new URL(e.urls[0]!).hostname; } catch { return ''; } })();
-        setHandle({state: 'ready', client: new DeviceClient(e, PinnedFetch), name: list.find(d => d.deviceId === deviceId)?.name ?? 'T3Box', host});
+        setHandle({state: 'ready', client: new DeviceClient(e, PinnedFetch), name: list.find(d => d.deviceId === deviceId)?.name ?? 'Stephania', host});
       })
       .catch(() => alive && setHandle({state: 'missing'}));
     return () => { alive = false; };

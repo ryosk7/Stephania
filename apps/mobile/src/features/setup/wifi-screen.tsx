@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import {router} from 'expo-router';
 import {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
-import type {ScanNetwork} from '@t3box/provisioning-client';
+import type {ScanNetwork} from '@stephania/provisioning-client';
 import {saveEnrollment} from '@/shared/device';
 import {Field, Icon, IconButton, List, Notice, PrimaryButton, Screen, StatusView, TextButton, Title, TopBar, useColor} from '@/shared/ui';
 import {describeSetupError} from './errors';
@@ -29,12 +29,12 @@ export function WifiScreen() {
   useEffect(() => { void scan(); }, [scan]);
 
   if (!active) {
-    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'bluetooth'} tone="warning" title="Not connected" body="Open the T3Box from the nearby list first.">
-      <PrimaryButton title="Nearby" icon="bluetooth" accessibilityLabel="Find the T3Box nearby" onPress={() => router.replace('/setup/nearby')} />
+    return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'bluetooth'} tone="warning" title="Not connected" body="Open the Stephania device from the nearby list first.">
+      <PrimaryButton title="Nearby" icon="bluetooth" accessibilityLabel="Find the Stephania device nearby" onPress={() => router.replace('/setup/nearby')} />
     </StatusView></Screen>;
   }
 
-  /** Joins `selected` (unless `skipJoin`: the T3Box is already on the LAN), then issues access. */
+  /** Joins `selected` (unless `skipJoin`: the Stephania device is already on the LAN), then issues access. */
   async function join(skipJoin = false) {
     if (!skipJoin && !selected) return;
     setError('');
@@ -48,7 +48,7 @@ export function WifiScreen() {
       }
       setStep({kind: 'issuing'});
       if (!(await active!.session.managementAvailable())) {
-        throw new Error('The T3Box is still preparing its certificate. Try again in a few minutes.');
+        throw new Error('The Stephania device is still preparing its certificate. Try again in a few minutes.');
       }
       const e = await active!.session.enrollManagement();
       await saveEnrollment(active!.deviceId, e, active!.name);
@@ -63,7 +63,7 @@ export function WifiScreen() {
   if (step.kind === 'joining' || step.kind === 'issuing') {
     return <Screen header={<TopBar onBack={() => router.back()} title="Wi-Fi" />}><StatusView icon={'wifi'} tone="info"
       title={step.kind === 'joining' ? `Joining ${selected?.ssid}…` : 'Setting up secure access…'}
-      body={step.kind === 'joining' ? 'This can take up to 30 seconds.' : 'The T3Box hands this phone its address and certificate.'}>
+      body={step.kind === 'joining' ? 'This can take up to 30 seconds.' : 'The Stephania device hands this phone its address and certificate.'}>
       <ActivityIndicator color={spinner} />
     </StatusView></Screen>;
   }

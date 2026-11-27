@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 # Runs the control client against the real Rust engine binary.
-# Enabled when T3BOX_ENGINE_BIN points at a built `t3box` executable.
+# Enabled when STEPHANIA_ENGINE_BIN points at a built `stephania` executable.
 require_relative "test_helper"
 
 class EngineIntegrationTest < Minitest::Test
   def setup
-    @bin = ENV["T3BOX_ENGINE_BIN"]
-    skip "T3BOX_ENGINE_BIN not set" unless @bin && File.executable?(@bin)
-    @dir = Dir.mktmpdir("t3box-engine")
+    @bin = ENV["STEPHANIA_ENGINE_BIN"]
+    skip "STEPHANIA_ENGINE_BIN not set" unless @bin && File.executable?(@bin)
+    @dir = Dir.mktmpdir("stephania-engine")
     @socket = File.join(@dir, "engine.sock")
     @log = File.join(@dir, "engine.log")
     start_engine
@@ -16,7 +16,7 @@ class EngineIntegrationTest < Minitest::Test
   end
 
   def start_engine
-    env = {"T3BOX_ENGINE_SOCKET" => @socket, "T3BOX_OUTPUT" => ""}
+    env = {"STEPHANIA_ENGINE_SOCKET" => @socket, "STEPHANIA_OUTPUT" => ""}
     @pid = Process.spawn(env, @bin, out: @log, err: @log)
     50.times { break if File.socket?(@socket) && can_connect?; sleep 0.1 }
     assert can_connect?, "engine did not serve socket: #{File.read(@log)}"

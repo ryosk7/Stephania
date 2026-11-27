@@ -1,4 +1,4 @@
-// Rename a T3Box on this phone (DESIGN.md §6 Control), in the app's own
+// Rename a Stephania device on this phone (DESIGN.md §6 Control), in the app's own
 // sheet so iOS and Android behave the same.
 import {useEffect, useState} from 'react';
 import {View} from 'react-native';

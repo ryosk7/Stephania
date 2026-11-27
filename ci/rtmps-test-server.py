@@ -11,8 +11,8 @@ import time
 
 out = pathlib.Path(sys.argv[1])
 import os
-sessions = int(os.environ.get("T3BOX_CI_SESSIONS", "2"))
-first_limit = int(os.environ.get("T3BOX_CI_FIRST_LIMIT", "30"))
+sessions = int(os.environ.get("STEPHANIA_CI_SESSIONS", "2"))
+first_limit = int(os.environ.get("STEPHANIA_CI_FIRST_LIMIT", "30"))
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(out / "server.pem", out / "server.key")
 

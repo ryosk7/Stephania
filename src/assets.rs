@@ -1,7 +1,7 @@
 //! Image assets for scene v2 image layers (docs/SCENE.md).
 //!
 //! The control plane stores uploads content-addressed as
-//! `<T3BOX_ASSETS_DIR>/<id>.png`, where `id` is the first 16 hex digits of
+//! `<STEPHANIA_ASSETS_DIR>/<id>.png`, where `id` is the first 16 hex digits of
 //! the file's SHA-256. The engine loads them only while preparing a Program
 //! (never on the media thread), re-checks the hash so a swapped file is never
 //! composed, enforces size limits and decodes to straight RGBA8. Decoded
@@ -11,7 +11,7 @@ use crate::compositor::Rgba;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub const DEFAULT_DIR: &str = "/var/lib/t3box/assets";
+pub const DEFAULT_DIR: &str = "/var/lib/stephania/assets";
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 4096;
 const CACHE_ENTRIES: usize = 32;
@@ -91,9 +91,9 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
 
 static STORE: OnceLock<AssetStore> = OnceLock::new();
 
-/// Process-wide store at `T3BOX_ASSETS_DIR` (default /var/lib/t3box/assets).
+/// Process-wide store at `STEPHANIA_ASSETS_DIR` (default /var/lib/stephania/assets).
 pub fn store() -> &'static AssetStore {
-    STORE.get_or_init(|| AssetStore::new(std::env::var("T3BOX_ASSETS_DIR").unwrap_or_else(|_| DEFAULT_DIR.into())))
+    STORE.get_or_init(|| AssetStore::new(std::env::var("STEPHANIA_ASSETS_DIR").unwrap_or_else(|_| DEFAULT_DIR.into())))
 }
 
 /// Ids referenced by a scene's image layers.
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn store_checks_id_hash_and_caches() {
-        let dir = std::env::temp_dir().join(format!("t3box-assets-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-assets-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = encode_png(1, 1, png::ColorType::Rgba, &[10, 20, 30, 40]);
         let id = id_of(&png);

@@ -2,43 +2,114 @@
 
 **The open-source operating system for live broadcasting.**
 
-Stephania (formerly T3Box) is a self-contained Linux-based broadcasting appliance for Raspberry Pi 5, combining a native Rust media engine, browser-based Studio, device management and smartphone integration.
+Stephania turns a Raspberry Pi 5 into a self-contained broadcasting box for
+lightning talks, meetups and small events. HDMI slides, both cameras of one
+phone and audio are composed on the device and streamed to YouTube Live —
+no cloud service, no laptop running OBS, no terminal.
 
-The name is inspired by the plant genus *Stephania* and also stands for **S**treaming and **T**ransmission **E**nvironment for **P**ortable **H**ardware, **A**utonomous **N**etworking and **I**ntegrated **A**rchitecture.
+The name comes from the plant genus *Stephania* and stands for
+**S**treaming and **T**ransmission **E**nvironment for **P**ortable
+**H**ardware, **A**utonomous **N**etworking and **I**ntegrated
+**A**rchitecture. The project was formerly called T3Box.
 
-The project is under development; see [Master Architecture](docs/MASTER-ARCHITECTURE.md) for the intended system and implementation status. Existing `t3box` binaries, environment variables and service identifiers remain unchanged during the branding transition.
+> **Status: in development.** The engine, management plane, Studio, phone
+> app, OS image and installer are implemented and tested in CI (QEMU and
+> ARM64 runners). Physical Raspberry Pi 5 qualification — real HDMI capture,
+> thermals, power and multi-hour endurance — is still open; see
+> [Validation](#validation). Release status of every part is tracked in
+> [docs/MASTER-ARCHITECTURE.md](docs/MASTER-ARCHITECTURE.md).
 
-## Production architecture
+## How it works
 
-Native is the only RTMPS backend. The controller runs V4L2/ALSA capture, NEON I420 conversion, libx264, AAC via libavcodec, and RTMPS via rustls in-process. No FFmpeg executable is required for production. FFmpeg is only an independent test stimulus/decoder; no publisher subprocess remains.
+1. **Install.** Download the release ZIP, extract it onto a FAT32 microSD
+   card and power the Pi on. A RAM installer verifies the signed payload and
+   lays out an A/B system ([docs/INSTALL.md](docs/INSTALL.md)).
+2. **Own it.** The [setup page](https://ryosk7.github.io/Stephania/) creates
+   a secret in the browser; it goes onto the card as `stephania-setup.txt`
+   and is shown as a QR code.
+3. **Connect.** The **Stephania Connect** app scans the QR code, registers
+   the phone as owner over Bluetooth LE, puts the device on Wi-Fi and
+   receives a pinned TLS certificate for the LAN
+   ([contracts/ble-protocol.md](contracts/ble-protocol.md)).
+4. **Produce.** **Stephania Studio** (in any browser on the LAN) edits
+   layouts of HDMI, phone cameras, images and text; Connect switches
+   layouts, mutes audio and sends the phone's front and rear cameras.
+5. **Go live.** The Rust engine composes Program, encodes H.264/AAC and
+   publishes over RTMPS. Updates arrive as signed RAUC bundles with
+   automatic rollback ([docs/UPDATE.md](docs/UPDATE.md)).
 
-## Raspberry Pi OS Lite (64-bit)
-
-Install Rust and native packages: libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config v4l-utils alsa-utils. Confirm device paths with v4l2-ctl and arecord.
-
-```bash
-cargo build --release --locked --bin t3box
-export T3BOX_VIDEO=/dev/video0
-export T3BOX_AUDIO=plughw:1,0
-export T3BOX_WIDTH=1920 T3BOX_HEIGHT=1080 T3BOX_FPS=30
-export T3BOX_BITRATE_KBPS=6000 T3BOX_PRESET=ultrafast
-export T3BOX_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'
-./target/release/t3box
+```text
+Stephania Connect ─ BLE ──▶ provisioning (BlueZ) ──▶ NetworkManager
+Stephania Connect ─ HTTPS ─▶ control (Ruby) ◀─ HTTPS ─ Stephania Studio
+                                  │ Unix socket (JSON IPC)
+HDMI (V4L2) ───────────▶ engine (Rust): sources ▶ compositor ▶ x264 + AAC ▶ RTMPS ▶ YouTube
+phone cameras ─ WebRTC ─▶ ┘                     ALSA audio ┘
 ```
 
-Optional experimental controls: T3BOX_PARALLEL_MEDIA=1, T3BOX_ADAPTIVE_RATE=1, T3BOX_DEADLINE_TRANSPORT=1, T3BOX_CONTENT_AWARE=1. They remain opt-in pending physical and composite-fault validation. Native supports YUYV/NV12 and ultrafast. Stop is cooperative. No automatic FFmpeg fallback.
+No media passes through the management plane, and a phone or browser
+failure never stops a healthy HDMI broadcast.
 
-The engine is controlled over its Unix socket (`T3BOX_ENGINE_SOCKET`, docs/IPC.md), normally through the control service. For development and the Virtual Lab, a transitional loopback HTTP API can be turned on explicitly:
+## Repository
+
+| Path | What it is |
+|---|---|
+| `src/` | Engine (Rust): capture, compositor, encoding, RTMPS, IPC, provisioning core, PKI |
+| `services/control` | Management plane (Ruby, Sinatra, SQLite): REST + SSE API, accounts, scenes |
+| `services/ble`, `services/phone` | BLE GATT adapter and WebRTC phone receiver (Rust) |
+| `apps/studio` | Stephania Studio (React, Vite, Tailwind CSS, TanStack Router) |
+| `apps/mobile` | Stephania Connect (Expo, React Native, Uniwind, native camera and pinned-TLS modules) |
+| `packages/provisioning-client` | TypeScript BLE provisioning client |
+| `tools/setup-page` | Offline setup-QR page, published on GitHub Pages |
+| `os/` | Debian 13 / Raspberry Pi OS image, RAM installer, RAUC, systemd units |
+| `contracts/` | OpenAPI, IPC and scene schemas, BLE protocol, shared test fixtures |
+| `ci/`, `tests/` | CI scripts, QEMU and virtual-lab tests, end-to-end suites |
+| `docs/` | Architecture, install, update, licensing and component documents |
+| `DESIGN.md` | Design system and UI architecture for Connect and Studio |
+
+## Development
+
+**Engine** (Linux; native media needs `libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config`):
 
 ```bash
-export T3BOX_LEGACY_HTTP=127.0.0.1:8787   # loopback only; off when unset
-curl http://127.0.0.1:8787/status
-curl -X POST http://127.0.0.1:8787/stream/start
-curl -X POST http://127.0.0.1:8787/stream/stop
+cargo test
+cargo build --release --locked --bin stephania
 ```
 
-native_worker_running is worker activity, not confirmed YouTube ingest. Never commit stream keys.
+Configuration is by environment variables, for example:
 
-## Validation limits
+```bash
+export STEPHANIA_VIDEO=/dev/video0 STEPHANIA_AUDIO=plughw:1,0
+export STEPHANIA_WIDTH=1920 STEPHANIA_HEIGHT=1080 STEPHANIA_FPS=30 STEPHANIA_BITRATE_KBPS=6000
+export STEPHANIA_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'   # never commit stream keys
+./target/release/stephania
+```
 
-ARM64 CI is not physical Raspberry Pi 5 hardware. Physical HDMI/ALSA, thermal behavior, power, long-run reliability and composite communication faults still need validation. See ci/README.md. Native file recording and legacy audio filtering parity are not implemented. Controller CI uses native RTMPS with explicit ci-virtual input and a local test CA. Builds without default features provide diagnostics but cannot publish RTMPS unless native features are enabled.
+The engine is controlled over its Unix socket (`STEPHANIA_ENGINE_SOCKET`,
+[docs/IPC.md](docs/IPC.md)), normally through the control service.
+
+**Studio:** `cd apps/studio && npm ci && npm run dev` · Storybook: `npm run storybook`
+
+**Connect:** `cd apps/mobile && npm ci && npx expo run:ios` (a development
+build; the app has native modules) · Storybook on the web:
+`npm run storybook:web`, on the phone: `npm run storybook`
+
+**OS image:** `os/image/build.sh` (see [docs/IMAGE.md](docs/IMAGE.md)); the
+CI builds the QEMU and Raspberry Pi variants and boots the QEMU one.
+
+## Validation
+
+CI runs unit and contract tests across Rust, Ruby and TypeScript;
+end-to-end tests of BLE provisioning, Wi-Fi, LAN TLS, the Studio, phone
+WebRTC, the RAM installer (with power cuts at every stage) and A/B
+updates; and native encoding and RTMPS transport on ARM64 runners
+([ci/README.md](ci/README.md)). ARM64 CI is not a Raspberry Pi 5:
+physical HDMI/ALSA capture, thermal behaviour, power and long-run
+reliability still need qualification ([docs/QUALIFICATION.md](docs/QUALIFICATION.md)).
+`native_worker_running` reports worker activity, never confirmed YouTube
+ingest.
+
+## Licence
+
+Stephania's own code is MIT ([LICENSE](LICENSE)). What else ships in the
+OS image and the apps, and under which terms, is in
+[docs/LICENSING.md](docs/LICENSING.md).

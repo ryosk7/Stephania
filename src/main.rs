@@ -1,4 +1,4 @@
-//! T3Box Pi 5 stream control, diagnostics and loopback-only configuration UI.
+//! Stephania Pi 5 stream control, diagnostics and loopback-only configuration UI.
 mod stream;
 mod wifi;
 #[allow(dead_code)] // Pipeline primitives are tested before being wired to a native media backend.
@@ -11,10 +11,10 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use stream::{Config, Controller};
-use t3box::ipc::{EngineControl, EngineInstance, EngineStatus, PeerPolicy};
+use stephania::ipc::{EngineControl, EngineInstance, EngineStatus, PeerPolicy};
 
 /// Default location of the versioned control socket (docs/IPC.md).
-const DEFAULT_ENGINE_SOCKET: &str = "/run/t3box/engine.sock";
+const DEFAULT_ENGINE_SOCKET: &str = "/run/stephania/engine.sock";
 
 struct IpcEngine(Arc<Controller>, EngineInstance);
 
@@ -34,24 +34,24 @@ impl EngineControl for IpcEngine {
     fn start(&self) -> Result<(), String> { self.0.start() }
     fn stop(&self) { self.0.stop() }
 
-    fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value, transition: t3box::compositor::Transition) -> Result<serde_json::Value, t3box::ipc::IpcError> {
-        use t3box::composition::{apply, ApplyError, APPLY_TIMEOUT};
-        use t3box::ipc::{code, IpcError};
-        if !t3box::composition::enabled() {
-            return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "compositor disabled (T3BOX_COMPOSITOR=0); Program unchanged".into() });
+    fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value, transition: stephania::compositor::Transition) -> Result<serde_json::Value, stephania::ipc::IpcError> {
+        use stephania::composition::{apply, ApplyError, APPLY_TIMEOUT};
+        use stephania::ipc::{code, IpcError};
+        if !stephania::composition::enabled() {
+            return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "compositor disabled (STEPHANIA_COMPOSITOR=0); Program unchanged".into() });
         }
         // Assets are loaded and static layers rendered here, on the IPC
         // thread, so the media thread only swaps a finished Program.
-        let store = t3box::assets::store();
-        let program = t3box::compositor::Program::from_scene_with(scene_id, revision, scene, &|id| store.load(id))
+        let store = stephania::assets::store();
+        let program = stephania::compositor::Program::from_scene_with(scene_id, revision, scene, &|id| store.load(id))
             .map_err(|e| IpcError { code: code::INVALID_SCENE, message: e.to_string() })?;
         match apply(program, transition, APPLY_TIMEOUT) {
             Ok(ack) => Ok(serde_json::json!({
                 "applied": true, "scene_id": ack.scene_id, "revision": ack.revision,
                 "first_frame_index": ack.first_frame_index,
                 "transition": match transition {
-                    t3box::compositor::Transition::Cut => serde_json::json!({"type": "cut"}),
-                    t3box::compositor::Transition::Fade { duration_us } => serde_json::json!({"type": "fade", "duration_ms": duration_us / 1000}),
+                    stephania::compositor::Transition::Cut => serde_json::json!({"type": "cut"}),
+                    stephania::compositor::Transition::Fade { duration_us } => serde_json::json!({"type": "fade", "duration_ms": duration_us / 1000}),
                 },
             })),
             Err(ApplyError::Inactive) => Err(IpcError { code: code::PROGRAM_INACTIVE, message: "no stream is running; Program unchanged".into() }),
@@ -59,16 +59,16 @@ impl EngineControl for IpcEngine {
         }
     }
 
-    fn program(&self) -> (String, u64) { t3box::composition::current_program() }
+    fn program(&self) -> (String, u64) { stephania::composition::current_program() }
 
-    fn compositor_enabled(&self) -> bool { t3box::composition::enabled() }
+    fn compositor_enabled(&self) -> bool { stephania::composition::enabled() }
 
-    fn sources(&self) -> Vec<serde_json::Value> { t3box::composition::sources().describe(std::time::Instant::now()) }
+    fn sources(&self) -> Vec<serde_json::Value> { stephania::composition::sources().describe(std::time::Instant::now()) }
 }
 
-/// Resolve the IPC socket path. `T3BOX_ENGINE_SOCKET=off` disables it.
+/// Resolve the IPC socket path. `STEPHANIA_ENGINE_SOCKET=off` disables it.
 fn engine_socket_path() -> Option<std::path::PathBuf> {
-    match std::env::var("T3BOX_ENGINE_SOCKET") {
+    match std::env::var("STEPHANIA_ENGINE_SOCKET") {
         Ok(v) if v == "off" => None,
         Ok(v) if !v.is_empty() => Some(v.into()),
         _ => Some(DEFAULT_ENGINE_SOCKET.into()),
@@ -81,45 +81,45 @@ fn start_engine_ipc(controller: &Arc<Controller>) {
     let Some(path) = engine_socket_path() else { return };
     let policy = match PeerPolicy::from_env() {
         Ok(p) => p,
-        Err(e) => { eprintln!("T3Box engine IPC disabled: {e}"); return; }
+        Err(e) => { eprintln!("Stephania engine IPC disabled: {e}"); return; }
     };
-    match t3box::ipc::bind(&path) {
+    match stephania::ipc::bind(&path) {
         Ok(listener) => {
             let engine: Arc<dyn EngineControl> = Arc::new(IpcEngine(Arc::clone(controller), EngineInstance::new()));
-            let spawned = std::thread::Builder::new().name("t3box-ipc-accept".into())
-                .spawn(move || t3box::ipc::serve(listener, engine, policy));
+            let spawned = std::thread::Builder::new().name("stephania-ipc-accept".into())
+                .spawn(move || stephania::ipc::serve(listener, engine, policy));
             match spawned {
-                Ok(_) => println!("T3Box engine IPC: {}", path.display()),
-                Err(e) => eprintln!("T3Box engine IPC thread failed: {e}"),
+                Ok(_) => println!("Stephania engine IPC: {}", path.display()),
+                Err(e) => eprintln!("Stephania engine IPC thread failed: {e}"),
             }
         }
-        Err(e) => eprintln!("T3Box engine IPC unavailable at {}: {e}", path.display()),
+        Err(e) => eprintln!("Stephania engine IPC unavailable at {}: {e}", path.display()),
     }
 }
 
 /// Phone media ingest socket (crate::phone_ingest, docs/PHONE.md).
-/// `T3BOX_MEDIA_SOCKET=off` disables it; peers are limited like the IPC
-/// socket, by `T3BOX_MEDIA_ALLOWED_UIDS` (the t3box-phone service).
+/// `STEPHANIA_MEDIA_SOCKET=off` disables it; peers are limited like the IPC
+/// socket, by `STEPHANIA_MEDIA_ALLOWED_UIDS` (the stephania-phone service).
 #[cfg(all(unix, feature = "native-aac"))]
 fn start_phone_ingest() {
-    let path = match std::env::var("T3BOX_MEDIA_SOCKET") {
+    let path = match std::env::var("STEPHANIA_MEDIA_SOCKET") {
         Ok(v) if v == "off" => return,
         Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => std::path::PathBuf::from("/run/t3box/media.sock"),
+        _ => std::path::PathBuf::from("/run/stephania/media.sock"),
     };
     let mut allowed = Vec::new();
-    for part in std::env::var("T3BOX_MEDIA_ALLOWED_UIDS").unwrap_or_default().split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        match part.parse() { Ok(uid) => allowed.push(uid), Err(_) => { eprintln!("T3Box phone ingest disabled: invalid uid {part}"); return; } }
+    for part in std::env::var("STEPHANIA_MEDIA_ALLOWED_UIDS").unwrap_or_default().split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.parse() { Ok(uid) => allowed.push(uid), Err(_) => { eprintln!("Stephania phone ingest disabled: invalid uid {part}"); return; } }
     }
     let policy = PeerPolicy { allowed_uids: allowed };
-    match t3box::ipc::bind(&path) {
+    match stephania::ipc::bind(&path) {
         Ok(listener) => {
-            match std::thread::Builder::new().name("t3box-phone-ingest".into()).spawn(move || t3box::phone_ingest::serve(listener, policy)) {
-                Ok(_) => println!("T3Box phone ingest: {}", path.display()),
-                Err(e) => eprintln!("T3Box phone ingest thread failed: {e}"),
+            match std::thread::Builder::new().name("stephania-phone-ingest".into()).spawn(move || stephania::phone_ingest::serve(listener, policy)) {
+                Ok(_) => println!("Stephania phone ingest: {}", path.display()),
+                Err(e) => eprintln!("Stephania phone ingest thread failed: {e}"),
             }
         }
-        Err(e) => eprintln!("T3Box phone ingest unavailable at {}: {e}", path.display()),
+        Err(e) => eprintln!("Stephania phone ingest unavailable at {}: {e}", path.display()),
     }
 }
 
@@ -325,13 +325,13 @@ fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
 
 static LEGACY_ORIGINS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
-/// `T3BOX_LEGACY_HTTP` = `127.0.0.1:<port>` (loopback only) or unset/empty.
+/// `STEPHANIA_LEGACY_HTTP` = `127.0.0.1:<port>` (loopback only) or unset/empty.
 fn legacy_http_addr() -> std::io::Result<Option<std::net::SocketAddr>> {
-    let Ok(raw) = std::env::var("T3BOX_LEGACY_HTTP") else { return Ok(None) };
+    let Ok(raw) = std::env::var("STEPHANIA_LEGACY_HTTP") else { return Ok(None) };
     if raw.is_empty() { return Ok(None); }
-    let addr: std::net::SocketAddr = raw.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "T3BOX_LEGACY_HTTP must be ip:port"))?;
+    let addr: std::net::SocketAddr = raw.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "STEPHANIA_LEGACY_HTTP must be ip:port"))?;
     if !addr.ip().is_loopback() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "T3BOX_LEGACY_HTTP must be a loopback address"));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "STEPHANIA_LEGACY_HTTP must be a loopback address"));
     }
     Ok(Some(addr))
 }
@@ -340,7 +340,7 @@ fn main() -> std::io::Result<()> {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(error) => {
-            eprintln!("T3Box configuration error: {error}");
+            eprintln!("Stephania configuration error: {error}");
             std::process::exit(2);
         }
     };
@@ -350,16 +350,16 @@ fn main() -> std::io::Result<()> {
     start_phone_ingest();
     // docs/MASTER-ARCHITECTURE.md §17: the Unix socket (engine.sock) is the
     // engine API. The old loopback HTTP dashboard is a transitional test
-    // interface, off unless T3BOX_LEGACY_HTTP names a loopback address
+    // interface, off unless STEPHANIA_LEGACY_HTTP names a loopback address
     // (the Virtual Lab uses it); production units never set it.
     let Some(addr) = legacy_http_addr()? else {
-        println!("T3Box engine: IPC only (legacy HTTP dashboard disabled)");
+        println!("Stephania engine: IPC only (legacy HTTP dashboard disabled)");
         loop { std::thread::park(); }
     };
     let listener = TcpListener::bind(addr)?;
     let port = listener.local_addr()?.port();
     let _ = LEGACY_ORIGINS.set(vec![format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")]);
-    println!("T3Box legacy dashboard (tests only): http://127.0.0.1:{port}");
+    println!("Stephania legacy dashboard (tests only): http://127.0.0.1:{port}");
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -377,17 +377,17 @@ mod tests {
     use super::*;
     #[test]
     fn legacy_http_is_off_by_default_and_loopback_only() {
-        std::env::remove_var("T3BOX_LEGACY_HTTP");
+        std::env::remove_var("STEPHANIA_LEGACY_HTTP");
         assert!(legacy_http_addr().unwrap().is_none());
-        std::env::set_var("T3BOX_LEGACY_HTTP", "");
+        std::env::set_var("STEPHANIA_LEGACY_HTTP", "");
         assert!(legacy_http_addr().unwrap().is_none());
-        std::env::set_var("T3BOX_LEGACY_HTTP", "127.0.0.1:8787");
+        std::env::set_var("STEPHANIA_LEGACY_HTTP", "127.0.0.1:8787");
         assert_eq!(legacy_http_addr().unwrap().unwrap().port(), 8787);
-        std::env::set_var("T3BOX_LEGACY_HTTP", "0.0.0.0:8787");
+        std::env::set_var("STEPHANIA_LEGACY_HTTP", "0.0.0.0:8787");
         assert!(legacy_http_addr().is_err());
-        std::env::set_var("T3BOX_LEGACY_HTTP", "nonsense");
+        std::env::set_var("STEPHANIA_LEGACY_HTTP", "nonsense");
         assert!(legacy_http_addr().is_err());
-        std::env::remove_var("T3BOX_LEGACY_HTTP");
+        std::env::remove_var("STEPHANIA_LEGACY_HTTP");
     }
     #[test]
     fn escapes_json() {assert_eq!(escape_json("a\"b\\c"),"a\\\"b\\\\c");}

@@ -1,11 +1,11 @@
-// Send this phone's camera(s) to the T3Box (docs/PHONE.md; DESIGN.md §6
+// Send this phone's camera(s) to the Stephania device (docs/PHONE.md; DESIGN.md §6
 // Camera). Renders CameraSession state only; capture, encoding and
 // transport are native.
 import * as Haptics from 'expo-haptics';
 import {router} from 'expo-router';
 import {useEffect, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
-import {CameraPreview, type CameraMode, type CameraRole} from '@modules/t3box-camera';
+import {CameraPreview, type CameraMode, type CameraRole} from '@modules/stephania-camera';
 import {DeviceGate, useDeviceClient, type DeviceClient} from '@/shared/device';
 import {ButtonRow, DestructiveButton, Footnote, Icon, IconButton, LiveBadge, Mono, Notice, PrimaryButton, Screen, SecondaryButton, Segmented, StatusChip, type IconName, type Tone} from '@/shared/ui';
 import {bestDual} from './plan';

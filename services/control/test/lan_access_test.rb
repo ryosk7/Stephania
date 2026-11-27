@@ -14,8 +14,8 @@ class LanAccessTest < Minitest::Test
   def app = Control
 
   def setup
-    @dir = Dir.mktmpdir("t3box-lan")
-    File.write(File.join(@dir, "endpoint.json"), JSON.generate(host: "t3box-ab12.local", port: 9443, ips: ["192.168.1.20", "fd00::5"],
+    @dir = Dir.mktmpdir("stephania-lan")
+    File.write(File.join(@dir, "endpoint.json"), JSON.generate(host: "stephania-ab12.local", port: 9443, ips: ["192.168.1.20", "fd00::5"],
       urls: [], ca_sha256: "0" * 64, not_after_unix: 2_000_000_000))
     @tokens = File.join(@dir, "tokens.json")
     write_tokens([ISSUED])
@@ -48,19 +48,19 @@ class LanAccessTest < Minitest::Test
 
   def test_ca_certificate_is_served_without_credentials_over_lan_tls_only
     File.write(File.join(@dir, "ca.pem"), "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
-    get "/ca.pem", {}, {"HTTP_HOST" => "t3box-ab12.local", "HTTPS" => "on", "rack.url_scheme" => "https"}
+    get "/ca.pem", {}, {"HTTP_HOST" => "stephania-ab12.local", "HTTPS" => "on", "rack.url_scheme" => "https"}
     assert_equal 200, last_response.status
     assert_includes last_response.body, "BEGIN CERTIFICATE"
     assert_match(/attachment/, last_response.headers["Content-Disposition"])
-    get "/ca.pem", {}, {"HTTP_HOST" => "t3box-ab12.local"}
+    get "/ca.pem", {}, {"HTTP_HOST" => "stephania-ab12.local"}
     assert_equal 403, last_response.status, "plain HTTP on the LAN is refused"
   end
 
   def test_lan_requires_tls_certified_host_and_issued_token
-    assert_equal [403, "forbidden_host"], call(host: "t3box-ab12.local", https: false, token: ISSUED)
+    assert_equal [403, "forbidden_host"], call(host: "stephania-ab12.local", https: false, token: ISSUED)
     assert_equal [403, "forbidden_host"], call(host: "evil.example", https: true, token: ISSUED)
-    assert_equal [401, "unauthorized"], call(host: "t3box-ab12.local", https: true, token: BOOT), "bootstrap token is loopback-only"
-    assert_equal 200, call(host: "t3box-ab12.local:9443", https: true, token: ISSUED).first
+    assert_equal [401, "unauthorized"], call(host: "stephania-ab12.local", https: true, token: BOOT), "bootstrap token is loopback-only"
+    assert_equal 200, call(host: "stephania-ab12.local:9443", https: true, token: ISSUED).first
     assert_equal 200, call(host: "192.168.1.20", https: true, token: ISSUED).first
     assert_equal 200, call(host: "[fd00::5]:9443", https: true, token: ISSUED).first
     assert_equal "max-age=31536000", last_response.headers["Strict-Transport-Security"]
@@ -74,19 +74,19 @@ class LanAccessTest < Minitest::Test
   end
 
   def test_cross_origin_is_rejected
-    assert_equal [403, "forbidden_origin"], call(host: "t3box-ab12.local:9443", https: true, token: ISSUED, origin: "https://evil.example")
-    assert_equal 200, call(host: "t3box-ab12.local:9443", https: true, token: ISSUED, origin: "https://t3box-ab12.local:9443").first
+    assert_equal [403, "forbidden_origin"], call(host: "stephania-ab12.local:9443", https: true, token: ISSUED, origin: "https://evil.example")
+    assert_equal 200, call(host: "stephania-ab12.local:9443", https: true, token: ISSUED, origin: "https://stephania-ab12.local:9443").first
   end
 
   def test_revocation_and_missing_files_fail_closed
-    assert_equal 200, call(host: "t3box-ab12.local", https: true, token: ISSUED).first
+    assert_equal 200, call(host: "stephania-ab12.local", https: true, token: ISSUED).first
     write_tokens([], mtime: Time.now + 5) # factory reset clears tokens
-    assert_equal [401, "unauthorized"], call(host: "t3box-ab12.local", https: true, token: ISSUED)
+    assert_equal [401, "unauthorized"], call(host: "stephania-ab12.local", https: true, token: ISSUED)
     File.write(@tokens, "{not json")
     File.utime(Time.now + 10, Time.now + 10, @tokens)
-    assert_equal [401, "unauthorized"], call(host: "t3box-ab12.local", https: true, token: ISSUED)
+    assert_equal [401, "unauthorized"], call(host: "stephania-ab12.local", https: true, token: ISSUED)
     File.delete(File.join(@dir, "endpoint.json"))
-    assert_equal [403, "forbidden_host"], call(host: "t3box-ab12.local", https: true, token: ISSUED)
+    assert_equal [403, "forbidden_host"], call(host: "stephania-ab12.local", https: true, token: ISSUED)
   end
 
   def test_issued_tokens_alone_configure_the_api

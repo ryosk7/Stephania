@@ -22,7 +22,7 @@ class AssetsTest < Minitest::Test
   def setup
     Control.configure_storage(":memory:")
     Control.token = TOKEN
-    @dir = Dir.mktmpdir("t3box-assets-test")
+    @dir = Dir.mktmpdir("stephania-assets-test")
     Control.assets_dir = @dir
     @applied = []
     @engine = FakeEngine.new do |req|

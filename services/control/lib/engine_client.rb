@@ -22,7 +22,7 @@ require "securerandom"
 class EngineClient
   VERSION = 1
   MAX_FRAME_BYTES = 64 * 1024
-  DEFAULT_SOCKET = "/run/t3box/engine.sock"
+  DEFAULT_SOCKET = "/run/stephania/engine.sock"
 
   # Engine could not be reached or violated the framing contract.
   class Unavailable < StandardError; end

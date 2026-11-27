@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Image assets for scene v2 image layers (docs/SCENE.md). Files live in
-# T3BOX_ASSETS_DIR as <id>.png, id = first 16 hex digits of their SHA-256.
+# STEPHANIA_ASSETS_DIR as <id>.png, id = first 16 hex digits of their SHA-256.
 Sequel.migration do
   up do
     create_table(:assets) do

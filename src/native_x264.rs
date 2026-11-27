@@ -1,7 +1,7 @@
 //! Direct libx264 encoder through a narrow C bridge. No FFmpeg process.
 //! This backend is intentionally optional: libx264 is GPL-licensed and must be
 //! evaluated for distribution obligations and Pi 5 real-time performance.
-//! Output is length-prefixed AVC NALs suitable for T3Box's RTMP packetizer.
+//! Output is length-prefixed AVC NALs suitable for Stephania's RTMP packetizer.
 use crate::colorspace::I420Frame;
 use std::{ffi::c_void, io, ptr::NonNull};
 

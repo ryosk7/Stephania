@@ -35,11 +35,11 @@ pub const PROTOCOL_VERSION: u64 = 2;
 /// New service UUID per protocol major version, so clients never apply a
 /// cached GATT layout of another version.
 pub const SERVICE_UUID: &str = "7c3b0100-5d1e-4a6f-9b0e-3a1f2c4d5e60";
-/// Static, tiny (fits one minimum-MTU read): `{"v":2,"p":"t3box"}`.
+/// Static, tiny (fits one minimum-MTU read): `{"v":2,"p":"steph"}`.
 pub const INFO_UUID: &str = "7c3b0101-5d1e-4a6f-9b0e-3a1f2c4d5e60";
 /// Write (with response) request fragments; responses are indicated.
 pub const RPC_UUID: &str = "7c3b0102-5d1e-4a6f-9b0e-3a1f2c4d5e60";
-pub const INFO_VALUE: &[u8] = br#"{"v":2,"p":"t3box"}"#;
+pub const INFO_VALUE: &[u8] = br#"{"v":2,"p":"steph"}"#;
 
 /// Scan results are returned in one response; 40 worst-case entries
 /// (~75 bytes each) stay under the 4096-byte message limit.
@@ -201,7 +201,7 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             replay: Vec::new(),
             network_state: NetworkState::Disconnected,
             network_error: None,
-            model: "t3box-pi5".into(),
+            model: "stephania-pi5".into(),
             firmware: env!("CARGO_PKG_VERSION").into(),
             management: None,
         }
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn file_store_is_durable_private_and_fails_safe() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("t3box-owner-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-owner-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = FileOwnershipStore { path: dir.join("ownership.json") };
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn management_enroll_issues_a_sealed_token_and_pin_only_to_the_owner() {
-        let dir = std::env::temp_dir().join(format!("t3box-enroll-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-enroll-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let tokens = TokenStore { path: dir.join("tokens.json") };
@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(phone.send(&mut s, json!({"op":"management.enroll","proof":hex(&proof)}), now), json!({"error":"management_unavailable"}));
         assert_eq!(tokens.count(), 0);
 
-        let (_, endpoint) = crate::pki::ensure(&dir.join("pki"), "t3box", &["192.168.0.9".parse().unwrap()], 9443, std::time::SystemTime::now()).unwrap();
+        let (_, endpoint) = crate::pki::ensure(&dir.join("pki"), "stephania", &["192.168.0.9".parse().unwrap()], 9443, std::time::SystemTime::now()).unwrap();
         assert_eq!(phone.send(&mut s, json!({"op":"management.endpoint"}), now), json!({"available": true}));
 
         // Wrong key: rejected.

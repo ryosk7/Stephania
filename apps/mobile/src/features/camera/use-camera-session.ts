@@ -2,7 +2,7 @@
 // screen: lifecycle, app background, preview of the selected cameras.
 import {useEffect, useState} from 'react';
 import {AppState} from 'react-native';
-import NativeCamera, {type CameraMode, type Capabilities} from '@modules/t3box-camera';
+import NativeCamera, {type CameraMode, type Capabilities} from '@modules/stephania-camera';
 import type {DeviceClient} from '@/shared/device';
 import {CameraSession, type Snapshot} from './session';
 

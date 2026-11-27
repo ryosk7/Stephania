@@ -11,18 +11,18 @@ cmp -s "$pub" "$dist/release-signing.pub" || fail "release-signing.pub differs f
 echo "PASS SHA256SUMS signed by the release key; all artifacts match"
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
 unzip -q "$dist/$name.zip" -d "$w/zip"
-openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$w/zip/t3box-install/manifest.json" -sigfile "$w/zip/t3box-install/manifest.sig" >/dev/null || fail "installer manifest signature"
+openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$w/zip/stephania-install/manifest.json" -sigfile "$w/zip/stephania-install/manifest.sig" >/dev/null || fail "installer manifest signature"
 for f in boot.vfat rootfs.squashfs; do
-  want=$(sed -n "s/.*\"$f\_sha256\": *\"\([0-9a-f]*\)\".*/\1/p" "$w/zip/t3box-install/manifest.json")
-  [ "$(sha256sum "$w/zip/t3box-install/$f" | cut -d' ' -f1)" = "$want" ] || fail "installer payload $f"
+  want=$(sed -n "s/.*\"$f\_sha256\": *\"\([0-9a-f]*\)\".*/\1/p" "$w/zip/stephania-install/manifest.json")
+  [ "$(sha256sum "$w/zip/stephania-install/$f" | cut -d' ' -f1)" = "$want" ] || fail "installer payload $f"
 done
 echo "PASS installer ZIP: manifest signed, payload matches"
 # Verify the way the device does (os/rauc/system.conf): the signer must
 # hold a code-signing certificate (check-purpose=codesign); RAUC's default
 # purpose would reject it.
-printf '[system]\ncompatible=t3box-pi5\nbootloader=noop\n[keyring]\npath=%s\ncheck-purpose=codesign\n' "$(cd "$(dirname "$keyring")" && pwd)/$(basename "$keyring")" >"$w/rauc.conf"
+printf '[system]\ncompatible=stephania-pi5\nbootloader=noop\n[keyring]\npath=%s\ncheck-purpose=codesign\n' "$(cd "$(dirname "$keyring")" && pwd)/$(basename "$keyring")" >"$w/rauc.conf"
 rauc -c "$w/rauc.conf" info "$dist/$name.raucb" >"$w/rauc.txt" 2>&1 || { cat "$w/rauc.txt"; fail "RAUC bundle signature"; }
-grep -q "Compatible: *'t3box-pi5'" "$w/rauc.txt" || grep -q "t3box-pi5" "$w/rauc.txt" || fail "bundle compatible"
+grep -q "Compatible: *'stephania-pi5'" "$w/rauc.txt" || grep -q "stephania-pi5" "$w/rauc.txt" || fail "bundle compatible"
 echo "PASS update bundle verifies against the release keyring"
 python3 - "$dist/sbom.spdx.json" <<'PY' || fail "SBOM"
 import json, sys

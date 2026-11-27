@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn issues_hash_only_bounded_and_clears() {
-        let dir = std::env::temp_dir().join(format!("t3box-tokens-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-tokens-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = TokenStore { path: dir.join("tokens.json") };
         let first = store.issue(1).unwrap();

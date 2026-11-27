@@ -84,10 +84,10 @@ jobs:
           profile: x64-check
           command: |
             cargo clippy --all-targets --locked --all-features -- -D warnings
-            cargo clippy --locked -p t3box-phone --all-targets -- -D warnings
+            cargo clippy --locked -p stephania-phone --all-targets -- -D warnings
             cargo test --locked --all-features -- --skip accelerated_ci::
             ${{ github.event_name == 'pull_request' && 'cargo check --locked --no-default-features --all-targets' || 'cargo test --locked --no-default-features' }}
-            cargo test --locked -p t3box-phone
+            cargo test --locked -p stephania-phone
 
   arm64-build:
     needs: plan
@@ -103,14 +103,14 @@ jobs:
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-release
-          command: cargo build --release --locked --all-features --bin t3box --bin t3box-native-av --bin t3box-ci-encode
+          command: cargo build --release --locked --all-features --bin stephania --bin stephania-native-av --bin stephania-ci-encode
       - uses: actions/upload-artifact@v4
         with:
           name: ci-native-binaries
           path: |
-            target/release/t3box
-            target/release/t3box-native-av
-            target/release/t3box-ci-encode
+            target/release/stephania
+            target/release/stephania-native-av
+            target/release/stephania-ci-encode
           retention-days: 1
           compression-level: 0
 
@@ -163,11 +163,11 @@ jobs:
         with:
           name: ci-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
+      - run: chmod +x target/release/stephania target/release/stephania-native-av target/release/stephania-ci-encode
       - name: Run selected transport suite (60s)
         env:
           SCENARIO: ${{ matrix.scenario }}
-          T3BOX_ROOT: ${{ github.workspace }}
+          STEPHANIA_ROOT: ${{ github.workspace }}
         run: timeout --kill-after=5s 60 bash ci/transport-suite.sh "$SCENARIO"
       - name: Publish transport results even on failure
         if: always()
@@ -196,9 +196,9 @@ jobs:
         with:
           name: ci-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box
+      - run: chmod +x target/release/stephania
       - name: Composed broadcast with scene changes (60s)
-        run: timeout --kill-after=5s 60 bash ci/composition-e2e.sh target/release/t3box composition-results
+        run: timeout --kill-after=5s 60 bash ci/composition-e2e.sh target/release/stephania composition-results
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -220,9 +220,9 @@ jobs:
         with:
           name: ci-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box
+      - run: chmod +x target/release/stephania
       - name: Program audio mix with live reconfiguration (30s)
-        run: timeout --kill-after=5s 60 bash ci/audio-e2e.sh target/release/t3box audio-results
+        run: timeout --kill-after=5s 60 bash ci/audio-e2e.sh target/release/stephania audio-results
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -250,15 +250,15 @@ jobs:
         with:
           name: ci-native-binaries
           path: target/release
-      - run: chmod +x target/release/t3box target/release/t3box-native-av target/release/t3box-ci-encode
+      - run: chmod +x target/release/stephania target/release/stephania-native-av target/release/stephania-ci-encode
       - name: Prepare constrained encoder image
         run: |
           bash ci/images/benchmark.sh
       - name: Measure quality profiles (60s)
         env:
-          T3BOX_BENCH_PRESET: ${{ matrix.preset }}
-          T3BOX_BENCH_BITRATE: ${{ matrix.bitrates }}
-          T3BOX_BENCH_PREBUILT: "1"
+          STEPHANIA_BENCH_PRESET: ${{ matrix.preset }}
+          STEPHANIA_BENCH_BITRATE: ${{ matrix.bitrates }}
+          STEPHANIA_BENCH_PREBUILT: "1"
         run: |
           timeout --kill-after=5s 60 bash ci/pi5-benchmark.sh ci-results
       - name: Publish quality results even on failure
@@ -345,7 +345,7 @@ jobs:
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg libx264-dev libavcodec-dev libavutil-dev pkg-config
-      - run: cargo build --release --locked --features native-aac,native-x264 --bin t3box-ci-encode
+      - run: cargo build --release --locked --features native-aac,native-x264 --bin stephania-ci-encode
       - run: bash ci/soak.sh
       - uses: actions/upload-artifact@v4
         if: always()

@@ -5,7 +5,7 @@
 // - Requests are written as fragments with response (ATT acknowledged).
 // - reconnect() re-establishes the link and subscription; the session then
 //   resends the identical request, which the device replays.
-import {fragment, ProvisioningError, Reassembler, UUID, type BleTransport} from '@t3box/provisioning-client';
+import {fragment, ProvisioningError, Reassembler, UUID, type BleTransport} from '@stephania/provisioning-client';
 import {fromBase64, toBase64} from './base64';
 
 /** The subset of BleManager this transport needs (keeps it unit-testable). */

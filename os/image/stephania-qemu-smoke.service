@@ -1,0 +1,15 @@
+[Unit]
+Description=Stephania image smoke test (only with stephania.smoke=1)
+ConditionKernelCommandLine=stephania.smoke=1
+After=multi-user.target
+SuccessAction=poweroff-force
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/stephania/stephania-qemu-smoke
+StandardOutput=journal+console
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

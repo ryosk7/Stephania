@@ -4,8 +4,8 @@ The broadcast's audio is a live mix of up to two inputs:
 
 | Input | Source | Default |
 |---|---|---|
-| `hdmi` | Embedded HDMI audio of the capture device (stereo) | enabled, device from `T3BOX_AUDIO` |
-| `mic` | USB microphone (mono or stereo) | disabled (or `T3BOX_AUDIO_MIC`) |
+| `hdmi` | Embedded HDMI audio of the capture device (stereo) | enabled, device from `STEPHANIA_AUDIO` |
+| `mic` | USB microphone (mono or stereo) | disabled (or `STEPHANIA_AUDIO_MIC`) |
 
 Every input, including the single-input case, goes through the same mixer
 (`src/audio_mixer.rs`); there is no separate code path or opt-in mode.
@@ -18,7 +18,7 @@ Every input, including the single-input case, goes through the same mixer
   and its PTS never stop. A block leaves as soon as every input
   that is still delivering has supplied it, so a single source adds no
   delay. Only while one input lags does the mixer wait, at most 40 ms
-  (`T3BOX_AUDIO_LATENCY_MS`, 20–200), before mixing silence for the missing
+  (`STEPHANIA_AUDIO_LATENCY_MS`, 20–200), before mixing silence for the missing
   part; an input whose newest sample is older than that budget is not
   waited on. Capture timestamps are kept, so A/V sync is unaffected.
 - **Gain and mute** change live and are ramped across one 21 ms block (no

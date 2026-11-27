@@ -1,9 +1,0 @@
-{
-  "platforms": ["apple", "android"],
-  "apple": {
-    "modules": ["T3BoxPinnedFetchModule"]
-  },
-  "android": {
-    "modules": ["expo.modules.t3boxpinnedfetch.T3BoxPinnedFetchModule"]
-  }
-}

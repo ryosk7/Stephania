@@ -4,9 +4,9 @@ The control plane (services/control) accepts three kinds of credentials.
 
 | Credential | Who | How it is presented | Scope |
 |---|---|---|---|
-| Bootstrap token (`T3BOX_CONTROL_TOKEN`) | Device owner, local maintenance | `Authorization: Bearer`, loopback only | admin |
+| Bootstrap token (`STEPHANIA_CONTROL_TOKEN`) | Device owner, local maintenance | `Authorization: Bearer`, loopback only | admin |
 | Enrolled token (`t3b_…`, BLE `management.enroll`) | Owner's phone / LAN clients | `Authorization: Bearer`, TLS only | admin |
-| Studio account session | People using the Studio | `t3box_session` cookie + `X-CSRF-Token` | its role |
+| Studio account session | People using the Studio | `stephania_session` cookie + `X-CSRF-Token` | its role |
 | Camera credential (`t3c_…`) | The phone camera | `Authorization: Bearer` | camera session only |
 
 ## Accounts
@@ -36,7 +36,7 @@ hides what an operator cannot do.
 
 ## Sessions
 
-- `POST /api/v1/auth/session {username, password}` sets `t3box_session`:
+- `POST /api/v1/auth/session {username, password}` sets `stephania_session`:
   256-bit random value, only its SHA-256 is stored; `HttpOnly`,
   `SameSite=Strict`, `Path=/api/`, `Secure` whenever the request is TLS.
   On the LAN the API is TLS-only, so the cookie is always `Secure` there.
@@ -67,7 +67,7 @@ password and (admins) users.
 ## Phone app and PCs
 
 The phone app (apps/mobile) talks to the management API only through its
-native pinned client (`modules/t3box-pinned-fetch`): the TLS chain must end
+native pinned client (`modules/stephania-pinned-fetch`): the TLS chain must end
 in the device CA whose SHA-256 the device delivered sealed over BLE
 (`management.enroll`), the leaf must validate with that CA as the only
 anchor (dates, signatures, host name), and system roots, proxies, cookies

@@ -134,7 +134,7 @@ class EventHub
     def start
       @mutex.synchronize do
         @thread ||= Thread.new do
-          Thread.current.name = "t3box-events"
+          Thread.current.name = "stephania-events"
           loop do
             begin
               tick
@@ -206,7 +206,7 @@ class EventHub
     def start
       @mutex.synchronize do
         @thread ||= Thread.new do
-          Thread.current.name = "t3box-levels"
+          Thread.current.name = "stephania-levels"
           loop do
             tick if @hub.subscriber_count.positive?
             sleep @interval

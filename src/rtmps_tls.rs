@@ -1,7 +1,7 @@
 //! Verified TLS transport and RTMPS URL parser.
 //!
 //! TLS uses rustls with WebPKI trust anchors and hostname verification.
-//! The RTMP session logic remains implemented in T3Box Rust.
+//! The RTMP session logic remains implemented in Stephania Rust.
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -85,8 +85,8 @@ pub fn tls_connect(target: &Target) -> io::Result<StreamOwned<ClientConnection, 
     #[cfg(feature = "ci-virtual")]
     let roots = {
         let mut roots = roots;
-        if target.host == "t3box-ci.test" {
-            if let Some(path) = std::env::var_os("T3BOX_CI_CA_DER") {
+        if target.host == "stephania-ci.test" {
+            if let Some(path) = std::env::var_os("STEPHANIA_CI_CA_DER") {
                 roots.add(rustls::pki_types::CertificateDer::from(std::fs::read(path)?))
                     .map_err(io::Error::other)?;
             }

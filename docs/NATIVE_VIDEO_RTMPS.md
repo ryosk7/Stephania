@@ -6,13 +6,13 @@ and the already implemented Rust RTMPS publisher.
 
 ```sh
 sudo apt install libasound2-dev libx264-dev libclang-dev pkg-config
-cargo build --release --features native-capture,native-x264 --bin t3box-native-video
-export T3BOX_VIDEO=/dev/video0
-export T3BOX_PIXEL_FORMAT=yuyv
-export T3BOX_WIDTH=1280 T3BOX_HEIGHT=720 T3BOX_FPS=30
-export T3BOX_BITRATE_KBPS=3000 T3BOX_MAX_FRAMES=900
-export T3BOX_OUTPUT='rtmps://a.rtmps.youtube.com/live2/PRIVATE_TEST_KEY'
-./target/release/t3box-native-video
+cargo build --release --features native-capture,native-x264 --bin stephania-native-video
+export STEPHANIA_VIDEO=/dev/video0
+export STEPHANIA_PIXEL_FORMAT=yuyv
+export STEPHANIA_WIDTH=1280 STEPHANIA_HEIGHT=720 STEPHANIA_FPS=30
+export STEPHANIA_BITRATE_KBPS=3000 STEPHANIA_MAX_FRAMES=900
+export STEPHANIA_OUTPUT='rtmps://a.rtmps.youtube.com/live2/PRIVATE_TEST_KEY'
+./target/release/stephania-native-video
 ```
 
 **Do not use this to broadcast a real event.** It has no audio, AAC or A/V sync,

@@ -1,4 +1,4 @@
-# T3Box physical acceptance gates
+# Stephania physical acceptance gates
 
 Docker/QEMU can run Linux AArch64 userspace, but cannot simulate Raspberry Pi 5
 VideoCore, RP1 I/O controller, GPIO, the selected HDMI UVC capture firmware,

@@ -5,7 +5,7 @@ import * as Haptics from 'expo-haptics';
 import {router} from 'expo-router';
 import {useRef, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
-import {parseSetupUri} from '@t3box/provisioning-client';
+import {parseSetupUri} from '@stephania/provisioning-client';
 import {Body, Icon, Notice, PrimaryButton, Screen, SecondaryButton, StatusView, TopBar} from '@/shared/ui';
 import {setPendingSecret} from './state';
 
@@ -18,7 +18,7 @@ export function ScanScreen() {
   if (!permission.granted) {
     return (
       <Screen header={<TopBar onBack={() => router.back()} title="Set up" />} footer={<PrimaryButton title="Allow camera" icon="camera" onPress={() => void requestPermission()} />}>
-        <StatusView icon={'qr'} title="Scan the code on your PC" body="The camera reads the QR code on the T3Box setup page." />
+        <StatusView icon={'qr'} title="Scan the code on your PC" body="The camera reads the QR code on the Stephania setup page." />
       </Screen>
     );
   }
@@ -29,7 +29,7 @@ export function ScanScreen() {
           onBarcodeScanned={({data}) => {
             if (handled.current) return;
             const secret = parseSetupUri(data);
-            if (!secret) { setError('This is not a T3Box setup code.'); return; }
+            if (!secret) { setError('This is not a Stephania setup code.'); return; }
             handled.current = true;
             void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             setPendingSecret(secret);

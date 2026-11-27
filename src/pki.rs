@@ -131,7 +131,7 @@ fn dt(t: SystemTime) -> Result<OffsetDateTime, String> {
 fn ca_params(host: &str) -> Result<CertificateParams, String> {
     let mut p = CertificateParams::default();
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, format!("T3Box device CA {host}"));
+    dn.push(DnType::CommonName, format!("Stephania device CA {host}"));
     p.distinguished_name = dn;
     p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
@@ -309,7 +309,7 @@ pub fn interface_addresses() -> Vec<IpAddr> {
 }
 
 pub fn default_dir() -> PathBuf {
-    std::env::var_os("T3BOX_PKI_DIR").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| "/data/t3box/pki".into())
+    std::env::var_os("STEPHANIA_PKI_DIR").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| "/data/stephania/pki".into())
 }
 
 #[cfg(test)]
@@ -320,7 +320,7 @@ mod tests {
     use std::sync::Arc;
 
     fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("t3box-pki-{}-{:x}", std::process::id(), rand_u64()));
+        let d = std::env::temp_dir().join(format!("stephania-pki-{}-{:x}", std::process::id(), rand_u64()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -350,16 +350,16 @@ mod tests {
         let now = SystemTime::now();
         let ip: IpAddr = "192.168.1.20".parse().unwrap();
         let public: IpAddr = "8.8.8.8".parse().unwrap();
-        let (r, e) = ensure(&dir, "t3box-ab12", &[ip, public], 9443, now).unwrap();
+        let (r, e) = ensure(&dir, "stephania-ab12", &[ip, public], 9443, now).unwrap();
         assert_eq!(r, Ensure::Issued);
         assert_eq!(e.ips, vec![ip], "public addresses are never certified");
-        assert_eq!(e.urls(), vec!["https://t3box-ab12.local:9443/", "https://192.168.1.20:9443/"]);
+        assert_eq!(e.urls(), vec!["https://stephania-ab12.local:9443/", "https://192.168.1.20:9443/"]);
         let c = chain(&dir);
         assert_eq!(c.len(), 2);
-        verify(&dir, "t3box-ab12.local", &c, now).unwrap();
+        verify(&dir, "stephania-ab12.local", &c, now).unwrap();
         verify(&dir, "192.168.1.20", &c, now).unwrap();
         assert!(verify(&dir, "other.local", &c, now).is_err());
-        assert!(verify(&dir, "t3box-ab12.local", &c, now + SERVER_VALIDITY + Duration::from_secs(86_400)).is_err());
+        assert!(verify(&dir, "stephania-ab12.local", &c, now + SERVER_VALIDITY + Duration::from_secs(86_400)).is_err());
         assert_eq!(Endpoint::load(&dir), Some(e.clone()));
         assert_eq!(e.ca_sha256, sha256_hex(&c[1]));
         #[cfg(unix)]
@@ -376,19 +376,19 @@ mod tests {
         let dir = tmp();
         let now = SystemTime::now();
         let a: IpAddr = "10.0.0.5".parse().unwrap();
-        let (_, first) = ensure(&dir, "t3box", &[a], 9443, now).unwrap();
+        let (_, first) = ensure(&dir, "stephania", &[a], 9443, now).unwrap();
         let leaf = std::fs::read(dir.join("server.pem")).unwrap();
-        assert_eq!(ensure(&dir, "t3box", &[a], 9443, now).unwrap().0, Ensure::Unchanged);
+        assert_eq!(ensure(&dir, "stephania", &[a], 9443, now).unwrap().0, Ensure::Unchanged);
         assert_eq!(std::fs::read(dir.join("server.pem")).unwrap(), leaf);
         let b: IpAddr = "10.0.0.6".parse().unwrap();
-        let (r, second) = ensure(&dir, "t3box", &[b], 9443, now).unwrap();
+        let (r, second) = ensure(&dir, "stephania", &[b], 9443, now).unwrap();
         assert_eq!(r, Ensure::Issued);
         assert_eq!(second.ca_sha256, first.ca_sha256, "a new address must not change the pinned CA");
         verify(&dir, "10.0.0.6", &chain(&dir), now).unwrap();
         // Renewal window.
         let later = now + SERVER_VALIDITY - RENEW_BEFORE + Duration::from_secs(60);
-        assert_eq!(ensure(&dir, "t3box", &[b], 9443, later).unwrap().0, Ensure::Issued);
-        verify(&dir, "t3box.local", &chain(&dir), later).unwrap();
+        assert_eq!(ensure(&dir, "stephania", &[b], 9443, later).unwrap().0, Ensure::Issued);
+        verify(&dir, "stephania.local", &chain(&dir), later).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -396,10 +396,10 @@ mod tests {
     fn name_constraints_stop_the_ca_certifying_other_sites() {
         let dir = tmp();
         let now = SystemTime::now();
-        ensure(&dir, "t3box", &[], 9443, now).unwrap();
+        ensure(&dir, "stephania", &[], 9443, now).unwrap();
         // Forge a leaf with the real CA key for a foreign name.
         let ca_key = KeyPair::from_pem(&std::fs::read_to_string(dir.join("ca-key.pem")).unwrap()).unwrap();
-        let issuer = Issuer::new(ca_params("t3box").unwrap(), ca_key);
+        let issuer = Issuer::new(ca_params("stephania").unwrap(), ca_key);
         for name in ["bank.example", "8.8.8.8"] {
             let key = KeyPair::generate().unwrap();
             let mut p = CertificateParams::new(vec![name.to_owned()]).unwrap();
@@ -415,10 +415,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_hosts_and_malformed_endpoint_files() {
-        assert!(!valid_host("T3Box"));
+        assert!(!valid_host("Stephania"));
         assert!(!valid_host("a.b"));
         assert!(!valid_host("-x"));
-        assert!(valid_host("t3box-8f21"));
+        assert!(valid_host("stephania-8f21"));
         assert!(ensure(&tmp(), "a.b", &[], 1, SystemTime::now()).is_err());
         assert_eq!(Endpoint::from_json(&json!({"host":"x.local","port":1,"ips":[],"ca_sha256":"zz","not_after_unix":1})), None);
         assert!(certifiable(&"fd12::1".parse().unwrap()));

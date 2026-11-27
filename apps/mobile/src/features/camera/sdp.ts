@@ -1,10 +1,10 @@
-// Checks a native offer against what t3box-phone accepts (docs/PHONE.md):
+// Checks a native offer against what stephania-phone accepts (docs/PHONE.md):
 // one video m-line per mapped track, H.264 constrained baseline (42e0xx) with
 // packetization-mode=1, every mapped track id present in a=msid, and ICE
 // candidates already gathered (the device answers non-trickle). A bad offer
 // is a bug in the native sender; catching it here gives a clear error
 // instead of a silent black source on the device.
-import type {Offer} from '@modules/t3box-camera';
+import type {Offer} from '@modules/stephania-camera';
 
 export class OfferError extends Error {}
 

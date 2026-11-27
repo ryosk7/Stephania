@@ -4,7 +4,7 @@ import {router} from 'expo-router';
 // this phone received sealed from the device.
 import {useEffect, useState} from 'react';
 import {Share} from 'react-native';
-import type {ManagementEnrollment} from '@t3box/provisioning-client';
+import type {ManagementEnrollment} from '@stephania/provisioning-client';
 import {formatFingerprint, loadEnrollment} from '@/shared/device';
 import {Card, Icon, List, ListIcon, Mono, Overline, PrimaryButton, Screen, SectionHeading, StatusView, Title, TopBar} from '@/shared/ui';
 import {View} from 'react-native';
@@ -13,7 +13,7 @@ export function PcAccessScreen({deviceId}: {deviceId: string}) {
   const [e, setE] = useState<ManagementEnrollment | null>();
   useEffect(() => { loadEnrollment(deviceId).then(setE).catch(() => setE(null)); }, [deviceId]);
   if (e === undefined) return <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />}><StatusView icon={'desktop'} title="Loading…" /></Screen>;
-  if (e === null) return <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />}><StatusView icon={'warning'} tone="warning" title="No access" body="This phone has no access to this T3Box. Set it up again from Wi-Fi setup." /></Screen>;
+  if (e === null) return <Screen header={<TopBar onBack={() => router.back()} title="Open on PC" />}><StatusView icon={'warning'} tone="warning" title="No access" body="This phone has no access to this Stephania device. Set it up again from Wi-Fi setup." /></Screen>;
   const url = e.urls[0]!;
   const fingerprint = formatFingerprint(e.caSha256);
   return (

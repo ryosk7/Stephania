@@ -1,5 +1,5 @@
 //! Live composition stage between capture conversion and the encoder
-//! (docs/COMPOSITOR.md). On by default (`T3BOX_COMPOSITOR=0` removes it); without it the
+//! (docs/COMPOSITOR.md). On by default (`STEPHANIA_COMPOSITOR=0` removes it); without it the
 //! media loop never touches this module.
 //!
 //! - One process-wide [`ProgramSwitch`]: the IPC `scene.apply` handler
@@ -30,10 +30,10 @@ static SOURCES: OnceLock<SourceRegistry> = OnceLock::new();
 static OUTPUT_SIZE: Mutex<(usize, usize)> = Mutex::new((0, 0));
 
 /// The compositor is part of the media path by default; HDMI-only Programs
-/// take the zero-copy fast path. `T3BOX_COMPOSITOR=0` removes the stage
+/// take the zero-copy fast path. `STEPHANIA_COMPOSITOR=0` removes the stage
 /// (diagnostics only).
 pub fn enabled() -> bool {
-    std::env::var("T3BOX_COMPOSITOR").as_deref() != Ok("0")
+    std::env::var("STEPHANIA_COMPOSITOR").as_deref() != Ok("0")
 }
 
 pub fn switch() -> &'static ProgramSwitch {

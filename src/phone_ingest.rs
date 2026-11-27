@@ -1,4 +1,4 @@
-//! Phone media ingest (docs/PHONE.md). `t3box-phone` terminates WebRTC
+//! Phone media ingest (docs/PHONE.md). `stephania-phone` terminates WebRTC
 //! (ICE, DTLS-SRTP, RTP) in its own process and forwards depacketized H.264
 //! access units here over a Unix socket; the engine decodes them and
 //! submits frames to the compositor's source registry. A WebRTC failure
@@ -126,8 +126,8 @@ pub fn serve(listener: std::os::unix::net::UnixListener, policy: crate::ipc::Pee
         let registry = crate::composition::sources();
         let result = serve_client(&mut stream, &mut |name, frame| registry.submit(name, frame));
         match result {
-            Ok(s) => eprintln!("T3Box phone ingest: client closed ({} AUs, {} frames, {} keyframe requests)", s.access_units, s.frames, s.keyframe_requests),
-            Err(e) => eprintln!("T3Box phone ingest: client dropped: {e}"),
+            Ok(s) => eprintln!("Stephania phone ingest: client closed ({} AUs, {} frames, {} keyframe requests)", s.access_units, s.frames, s.keyframe_requests),
+            Err(e) => eprintln!("Stephania phone ingest: client dropped: {e}"),
         }
     }
 }

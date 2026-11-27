@@ -1,6 +1,6 @@
 import {PermissionsAndroid, Platform} from 'react-native';
 import {BleManager, State, type Device} from 'react-native-ble-plx';
-import {UUID} from '@t3box/provisioning-client';
+import {UUID} from '@stephania/provisioning-client';
 import {BlePlxTransport} from './transport';
 
 let manager: BleManager | undefined;
@@ -27,7 +27,7 @@ export async function waitPoweredOn(timeoutMs = 5000): Promise<void> {
   });
 }
 
-/** Scan for devices advertising the T3Box provisioning service. */
+/** Scan for devices advertising the Stephania provisioning service. */
 export function scanDevices(onDevice: (d: Device) => void, onError: (e: Error) => void): () => void {
   void ble().startDeviceScan([UUID.service], null, (error, device) => {
     if (error) return onError(error);

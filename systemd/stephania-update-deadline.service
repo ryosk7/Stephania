@@ -1,0 +1,9 @@
+[Unit]
+Description=Stephania reject an update trial that was not confirmed in time
+
+[Service]
+Type=oneshot
+Environment=STEPHANIA_AUTOBOOT=/boot/selector/autoboot.txt
+Environment=STEPHANIA_BOOT_STATE=/data/stephania/update/bootctl.json
+Environment=STEPHANIA_BOOT_SLOTS=A=2,B=3
+ExecStart=/usr/local/bin/stephania-bootctl deadline

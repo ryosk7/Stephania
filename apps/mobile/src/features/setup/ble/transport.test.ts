@@ -9,11 +9,11 @@ import {connect, type Socket} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import {fragment, fromHex, ProvisioningSession, toHex, UUID} from '@t3box/provisioning-client';
+import {fragment, fromHex, ProvisioningSession, toHex, UUID} from '@stephania/provisioning-client';
 import {fromBase64, toBase64} from './base64';
 import {BlePlxTransport, type BleLike} from './transport';
 
-const bin = process.env.T3BOX_PROVISION_BIN;
+const bin = process.env.STEPHANIA_PROVISION_BIN;
 
 class FakeBle implements BleLike {
   private buf = Buffer.alloc(0);
@@ -74,16 +74,16 @@ describe('base64', () => {
       const b = Uint8Array.from({length: n}, (_, i) => (i * 37 + n) & 255);
       expect(fromBase64(toBase64(b))).toEqual(b);
     }
-    expect(toBase64(new TextEncoder().encode('t3box'))).toBe('dDNib3g=');
+    expect(toBase64(new TextEncoder().encode('stephania'))).toBe('c3RlcGhhbmlh');
   });
 });
 
 describe.skipIf(!bin)('BlePlxTransport against Rust device core', () => {
   let dir: string, child: ChildProcess, sock: Socket;
   beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 't3box-app-'));
-    child = spawn(bin!, [], {env: {...process.env, T3BOX_PROVISION_SOCKET: join(dir, 'p.sock'), T3BOX_CREDENTIALS_DIR: dir,
-      T3BOX_SETUP_FILE: join(dir, 'none'), T3BOX_NETWORK_BACKEND: 'virtual'}, stdio: 'ignore'});
+    dir = mkdtempSync(join(tmpdir(), 'stephania-app-'));
+    child = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(dir, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: dir,
+      STEPHANIA_SETUP_FILE: join(dir, 'none'), STEPHANIA_NETWORK_BACKEND: 'virtual'}, stdio: 'ignore'});
     for (let i = 0; i < 100 && !existsSync(join(dir, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
     sock = await new Promise<Socket>((ok, ko) => { const s = connect(join(dir, 'p.sock'), () => ok(s)); s.on('error', ko); });
   });

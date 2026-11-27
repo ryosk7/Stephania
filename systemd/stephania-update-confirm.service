@@ -1,0 +1,20 @@
+[Unit]
+Description=Stephania update trial confirmation (commit or roll back)
+# Runs on every boot; does nothing unless a tryboot trial is pending.
+After=stephania.service rauc.service
+Wants=stephania.service
+
+[Service]
+Type=oneshot
+Environment=STEPHANIA_AUTOBOOT=/boot/selector/autoboot.txt
+Environment=STEPHANIA_BOOT_STATE=/data/stephania/update/bootctl.json
+Environment=STEPHANIA_BOOT_SLOTS=A=2,B=3
+Environment=STEPHANIA_ENGINE_SOCKET=/run/stephania/engine.sock
+Environment=STEPHANIA_DATA_DIR=/data/stephania
+Environment=STEPHANIA_CONTROL_DB=/var/lib/stephania/control/control.db
+Environment=STEPHANIA_SNAPSHOT_DIR=/data/stephania/update/snapshot
+ExecStart=/usr/local/bin/stephania-bootctl confirm
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

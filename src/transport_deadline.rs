@@ -80,7 +80,7 @@ impl DeadlineWatchdog {
         #[cfg(not(target_os = "linux"))] _budget: Option<()>) -> io::Result<Self> {
         let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
         let copy = Arc::clone(&shared);
-        let worker = thread::Builder::new().name("t3box-deadline".into()).spawn(move || {
+        let worker = thread::Builder::new().name("stephania-deadline".into()).spawn(move || {
             let (lock, wake) = &*copy;
             let Ok(mut state) = lock.lock() else { return; };
             #[cfg(target_os = "linux")]

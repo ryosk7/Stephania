@@ -55,7 +55,7 @@ jobs:
           trap 'rm -rf "$ctx"' EXIT
           cp "ci/images/$IMAGE.Dockerfile" "$ctx/Dockerfile"
           hash="$(sha256sum "$ctx/Dockerfile" | cut -d' ' -f1)"
-          ref="ghcr.io/ryosk7/t3box-ci-$IMAGE:$ARCH-$hash"
+          ref="ghcr.io/ryosk7/stephania-ci-$IMAGE:$ARCH-$hash"
           if ! docker pull "$ref"; then
             docker build --platform "linux/$ARCH" -t "$ref" "$ctx"
             docker push "$ref"

@@ -5,15 +5,15 @@ and creates a **draft** GitHub release with the §7 artifacts:
 
 | Artifact | What it is |
 |---|---|
-| `t3box-os-pi5.zip` | extract onto a FAT32 card; RAM installer (docs/INSTALL.md) |
-| `t3box-os-pi5.img.xz` | raw A/B image for recovery flashing |
-| `t3box-os-pi5.raucb` | signed verity update bundle (docs/UPDATE.md) |
+| `stephania-os-pi5.zip` | extract onto a FAT32 card; RAM installer (docs/INSTALL.md) |
+| `stephania-os-pi5.img.xz` | raw A/B image for recovery flashing |
+| `stephania-os-pi5.raucb` | signed verity update bundle (docs/UPDATE.md) |
 | `sbom.spdx.json`, `THIRD_PARTY.md`, `LICENSES.tar.gz` | inventory and licence texts incl. Debian / Raspberry Pi copyright files (docs/LICENSING.md) |
 | `SHA256SUMS`, `SHA256SUMS.sig`, `release-signing.pub` | hashes of everything above, Ed25519-signed |
 
 Signing material exists only as repository secrets
-(`T3BOX_RELEASE_SIGNING_KEY`, `T3BOX_RAUC_CA_CERT`,
-`T3BOX_RAUC_SIGNING_CERT`, `T3BOX_RAUC_SIGNING_KEY`). If any is missing the
+(`STEPHANIA_RELEASE_SIGNING_KEY`, `STEPHANIA_RAUC_CA_CERT`,
+`STEPHANIA_RAUC_SIGNING_CERT`, `STEPHANIA_RAUC_SIGNING_KEY`). If any is missing the
 workflow fails before building; nothing unsigned is ever assembled. The
 image's RAUC keyring is the release CA, so devices accept only bundles
 signed under it. The same Ed25519 key signs the installer manifest (checked
@@ -43,4 +43,4 @@ and `E2FSPROGS_FAKE_TIME`, sorted reproducible cpio and ZIP. Bit-for-bit
 reproducibility of the whole image is **not** verified: the Debian / Raspberry Pi
 packages are fetched at build time (the archive moves) and native gem
 builds are not checked for determinism. Pin a snapshot mirror
-(`T3BOX_IMAGE_MIRROR`) and rebuild twice to evaluate it.
+(`STEPHANIA_IMAGE_MIRROR`) and rebuild twice to evaluate it.

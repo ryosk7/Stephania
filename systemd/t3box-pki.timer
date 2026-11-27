@@ -1,9 +1,0 @@
-[Unit]
-Description=Re-check the T3Box LAN certificate (addresses, renewal)
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=5min
-
-[Install]
-WantedBy=timers.target

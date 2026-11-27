@@ -1,0 +1,15 @@
+[Unit]
+Description=Stephania per-device host name
+DefaultDependencies=no
+RequiresMountsFor=/data
+After=local-fs.target
+Before=network-pre.target avahi-daemon.service stephania-pki.service NetworkManager.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/stephania/stephania-hostname
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

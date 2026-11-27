@@ -116,7 +116,7 @@ impl EngineStatus {
 }
 
 /// The engine operations the IPC layer may invoke. Implemented by the real
-/// stream controller in the `t3box` binary and by fakes in tests.
+/// stream controller in the `stephania` binary and by fakes in tests.
 pub trait EngineControl: Send + Sync {
     fn instance(&self) -> &EngineInstance;
     fn status(&self) -> EngineStatus;
@@ -394,7 +394,7 @@ pub fn serve_connection<S: Read + Write>(engine: &dyn EngineControl, stream: &mu
 
 /// Which local users may use the control socket. Root and the engine's own
 /// user are always allowed; additional uids (the control service user) come
-/// from `T3BOX_IPC_ALLOWED_UIDS` (comma separated). Filesystem permissions
+/// from `STEPHANIA_IPC_ALLOWED_UIDS` (comma separated). Filesystem permissions
 /// still apply first; this is defence in depth against a misconfigured mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerPolicy {
@@ -404,9 +404,9 @@ pub struct PeerPolicy {
 impl PeerPolicy {
     pub fn from_env() -> Result<Self, String> {
         let mut allowed_uids = Vec::new();
-        if let Ok(list) = std::env::var("T3BOX_IPC_ALLOWED_UIDS") {
+        if let Ok(list) = std::env::var("STEPHANIA_IPC_ALLOWED_UIDS") {
             for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-                allowed_uids.push(part.parse::<u32>().map_err(|_| format!("invalid uid in T3BOX_IPC_ALLOWED_UIDS: {part}"))?);
+                allowed_uids.push(part.parse::<u32>().map_err(|_| format!("invalid uid in STEPHANIA_IPC_ALLOWED_UIDS: {part}"))?);
             }
         }
         Ok(Self { allowed_uids })
@@ -515,7 +515,7 @@ pub fn serve(listener: UnixListener, engine: Arc<dyn EngineControl>, policy: Pee
             continue;
         };
         let engine = Arc::clone(&engine);
-        let spawned = std::thread::Builder::new().name("t3box-ipc".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("stephania-ipc".into()).spawn(move || {
             let _slot = slot;
             serve_connection(engine.as_ref(), &mut stream);
         });
@@ -534,7 +534,7 @@ mod tests {
     struct Fake {
         calls: Mutex<Vec<&'static str>>,
         fail_start: bool,
-        /// Models T3BOX_COMPOSITOR=0; the default fake is the default engine.
+        /// Models STEPHANIA_COMPOSITOR=0; the default fake is the default engine.
         compositor_off: bool,
         instance: EngineInstance,
     }
@@ -546,7 +546,7 @@ mod tests {
         }
         fn start(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push("start");
-            if self.fail_start { Err("T3BOX_OUTPUT is not configured".into()) } else { Ok(()) }
+            if self.fail_start { Err("STEPHANIA_OUTPUT is not configured".into()) } else { Ok(()) }
         }
         fn stop(&self) { self.calls.lock().unwrap().push("stop"); }
         fn compositor_enabled(&self) -> bool { !self.compositor_off }
@@ -688,7 +688,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_socket_end_to_end_with_connection_cap_and_stale_socket() {
-        let dir = std::env::temp_dir().join(format!("t3box-ipc-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stephania-ipc-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("engine.sock");
