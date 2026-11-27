@@ -45,6 +45,7 @@ pub struct Settings {
 
 enum Sources {
     Hardware(V4lVideoSource, AlsaAudioSource),
+    Mixed(V4lVideoSource, [AlsaAudioSource; 2], [i32; 2], u32),
     #[cfg(feature = "ci-virtual")]
     Virtual(VirtualCapture),
 }
@@ -58,11 +59,37 @@ impl Sources {
                 fixture: VirtualFixture::open(s)?,
             }));
         }
-        Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, AlsaAudioSource::open(s.capture.clone())?))
+        match env::var("T3BOX_AUDIO_MODE").as_deref() {
+            Ok("mix") => {
+                let mut hdmi = s.capture.clone();
+                let mut mic = s.capture.clone();
+                hdmi.audio_device = env::var("T3BOX_AUDIO_HDMI").map_err(|_| invalid("HDMI audio device required"))?;
+                mic.audio_device = env::var("T3BOX_AUDIO_MIC").map_err(|_| invalid("microphone device required"))?;
+                if hdmi.audio_device.is_empty() || mic.audio_device.is_empty() || hdmi.audio_device == mic.audio_device {
+                    return Err(invalid("distinct audio devices required"));
+                }
+                hdmi.audio_channels = 2;
+                mic.audio_channels = match number("T3BOX_AUDIO_MIC_CHANNELS", 1)? {
+                    1 => 1, 2 => 2, _ => return Err(invalid("invalid microphone channels")),
+                };
+                hdmi.audio_period_frames = 512;
+                mic.audio_period_frames = 512;
+                hdmi.frame_queue = 16;
+                mic.frame_queue = 16;
+                let latency = number("T3BOX_AUDIO_LATENCY_MS", 40)?;
+                if !(20..=100).contains(&latency) { return Err(invalid("invalid mixer latency")); }
+                let gains = [mix_gain("T3BOX_AUDIO_HDMI_GAIN_DB", -12.0)?,
+                    mix_gain("T3BOX_AUDIO_MIC_GAIN_DB", -6.0)?];
+                Ok(Self::Mixed(V4lVideoSource::open(s.capture.clone())?,
+                    [AlsaAudioSource::open(hdmi)?, AlsaAudioSource::open(mic)?], gains, latency))
+            }
+            Ok("single") | Err(_) => Ok(Self::Hardware(V4lVideoSource::open(s.capture.clone())?, AlsaAudioSource::open(s.capture.clone())?)),
+            _ => Err(invalid("invalid audio mode")),
+        }
     }
     fn video(&mut self, max_age: Duration) -> io::Result<Option<crate::media_core::VideoFrame>> {
         match self {
-            Self::Hardware(v, _) => v.try_latest_frame(max_age),
+            Self::Hardware(v, _) | Self::Mixed(v, _, _, _) => v.try_latest_frame(max_age),
             #[cfg(feature = "ci-virtual")]
             Self::Virtual(v) => v.video(),
         }
@@ -70,9 +97,69 @@ impl Sources {
     fn audio(&mut self) -> io::Result<Option<crate::media_core::AudioFrame>> {
         match self {
             Self::Hardware(_, a) => a.try_next_frame(),
+            Self::Mixed(_, inputs, _, _) => {
+                for input in inputs { for _ in 0..16 { if !matches!(input.try_next_frame(), Ok(Some(_))) { break; } } }
+                Ok(None)
+            },
             #[cfg(feature = "ci-virtual")]
             Self::Virtual(v) => Ok(v.audio()),
         }
+    }
+}
+fn mix_gain(key: &str, default: f64) -> io::Result<i32> {
+    let db = match env::var(key) {
+        Ok(v) => v.parse::<f64>().map_err(|_| invalid("invalid audio gain"))?,
+        Err(_) => default,
+    };
+    if !db.is_finite() || !(-60.0..=6.0).contains(&db) { return Err(invalid("audio gain out of range")); }
+    Ok((32768.0 * 10f64.powf(db / 20.0)).round() as i32)
+}
+
+struct AudioPipeline {
+    clock: AudioClock,
+    framer: PcmFramer,
+    mixer: Option<crate::audio_mixer::AudioMixer>,
+}
+impl AudioPipeline {
+    fn new(sources: &Sources) -> io::Result<Self> {
+        let mixer = match sources {
+            Sources::Mixed(_, _, gains, delay) => Some(crate::audio_mixer::AudioMixer::new(*gains, *delay)),
+            _ => None,
+        };
+        Ok(Self { clock: AudioClock::default(), framer: PcmFramer::new(48000, 2)?, mixer })
+    }
+    fn blocks(&mut self, sources: &mut Sources, origin: u64) -> io::Result<Vec<(crate::pcm_framer::PcmBlock, Instant)>> {
+        let mut result = Vec::new();
+        if let (Some(mixer), Sources::Mixed(_, inputs, _, _)) = (&mut self.mixer, &mut *sources) {
+            for (index, input) in inputs.iter().enumerate() {
+                for _ in 0..16 {
+                    match input.try_next_frame() {
+                        Ok(Some(mut frame)) if frame.timestamp_us >= origin => {
+                            frame.timestamp_us = frame.timestamp_us - origin + 100_000;
+                            if mixer.ingest(index, &frame).is_err() { mixer.reset_input(index); }
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => break,
+                        Err(_) => { mixer.reset_input(index); break; }
+                    }
+                }
+            }
+            let now = timestamp_us().saturating_sub(origin);
+            for _ in 0..4 {
+                let Some(block) = mixer.poll(now)? else { break; };
+                let capture_us = block.timestamp_us().saturating_sub(100_000);
+                let captured = Instant::now().checked_sub(Duration::from_micros(now.saturating_sub(capture_us))).unwrap_or_else(Instant::now);
+                result.push((block, captured));
+            }
+        } else if let Some(mut frame) = sources.audio()? {
+            if frame.timestamp_us >= origin {
+                let captured = Instant::now().checked_sub(Duration::from_micros(timestamp_us().saturating_sub(frame.timestamp_us))).unwrap_or_else(Instant::now);
+                frame.timestamp_us = frame.timestamp_us - origin + 100_000;
+                let corrected = self.clock.correct(&frame)?;
+                result.extend(self.framer.push(&corrected)?.into_iter().map(|block| (block, captured)));
+            }
+        }
+        Ok(result)
     }
 }
 #[cfg(feature = "ci-virtual")]
@@ -194,8 +281,7 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     if content_aware { pipeline.enable_content_analysis(); }
     pipeline.configure_audio(&aac.configuration()?)?;
     let origin = timestamp_us();
-    let mut clock = AudioClock::default();
-    let mut framer = PcmFramer::new(48000, 2)?;
+    let mut audio = AudioPipeline::new(sources)?;
     let mut frames = 0u32;
     let mut last_video = Instant::now();
     let mut last_audio = Instant::now();
@@ -232,16 +318,10 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
             }
         }
         let mut progress = false;
-        if let Some(mut frame) = stage(sources.audio(), "audio capture")? {
+        for (block, _captured) in stage(audio.blocks(sources, origin), "audio pipeline")? {
             progress = true;
-            if frame.timestamp_us >= origin {
-                last_audio = Instant::now();
-                frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                let corrected = stage(clock.correct(&frame), "audio clock")?;
-                for block in stage(framer.push(&corrected), "PCM framing")? {
-                    stage(send_audio(&mut pipeline, stage(aac.encode(&block), "AAC encode")?), "audio send")?;
-                }
-            }
+            last_audio = Instant::now();
+            stage(send_audio(&mut pipeline, stage(aac.encode(&block), "AAC encode")?), "audio send")?;
         }
         if let Some(mut frame) = stage(sources.video(video_max_age(s.fps)), "video capture")? {
             progress = true;
@@ -293,8 +373,7 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
     sink.configure_audio(&aac.configuration()?)?;
     let writer = crate::media_worker::MediaWorker::start(sink,socket)?;
     let origin = timestamp_us();
-    let mut clock = AudioClock::default();
-    let mut framer = PcmFramer::new(48000, 2)?;
+    let mut audio = AudioPipeline::new(sources)?;
     let mut frames = 0u32;
     let mut last_video = Instant::now();
     let mut last_audio = Instant::now();
@@ -332,17 +411,10 @@ fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut c
             }
         }
         let mut progress = false;
-        if let Some(mut frame) = stage(sources.audio(), "audio capture")? {
+        for (block, captured) in stage(audio.blocks(sources, origin), "audio pipeline")? {
             progress = true;
-            if frame.timestamp_us >= origin {
-                last_audio = Instant::now();
-                let captured = Instant::now().checked_sub(Duration::from_micros(timestamp_us().saturating_sub(frame.timestamp_us))).unwrap_or_else(Instant::now);
-                frame.timestamp_us = frame.timestamp_us - origin + 100_000;
-                let corrected = stage(clock.correct(&frame), "audio clock")?;
-                for block in stage(framer.push(&corrected), "PCM framing")? {
-                    stage(writer.audio(stage(aac.encode(&block), "AAC encode")?, captured), "audio enqueue")?;
-                }
-            }
+            last_audio = Instant::now();
+            stage(writer.audio(stage(aac.encode(&block), "AAC encode")?, captured), "audio enqueue")?;
         }
         if let Some(mut frame) = stage(sources.video(video_max_age(s.fps)), "video capture")? {
             progress = true;
