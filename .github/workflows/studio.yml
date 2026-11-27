@@ -122,6 +122,17 @@ jobs:
         run: |
           bundle exec ruby test/engine_integration_test.rb --verbose | tee integration.log
           if grep -q ' S$\|skipped' integration.log; then echo "integration test skipped" >&2; exit 1; fi
+      - name: Control-plane load within the section 9 cgroup (YJIT off and on)
+        shell: bash
+        run: |
+          ci/control-load.sh ci-bins/t3box "$RUNNER_TEMP/control-load"
+          cat "$RUNNER_TEMP/control-load/control-load.md" >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-load
+          path: ${{ runner.temp }}/control-load
+          retention-days: 14
   studio:
     needs: [changes]
     if: needs.changes.outputs.studio == 'true'

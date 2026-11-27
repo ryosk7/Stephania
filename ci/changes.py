@@ -51,7 +51,7 @@ RULES = [
     ("services/ble/*", ["ble"]), ("tests/ble/*", ["ble"]), ("os/bluez/*", ["ble", "os"]),
     ("packages/*", ["provisioning", "mobile"]), ("apps/mobile/*", ["mobile"]), ("tools/setup-page/*", ["provisioning"]),
     ("src/pki.rs", ["rust", "lan", "os"]), ("src/management_tokens.rs", ["rust", "lan", "provisioning"]), ("src/bin/t3box-pki.rs", ["rust", "lan", "os"]),
-    ("ci/lan*", ["lan"]),
+    ("ci/lan*", ["lan"]), ("ci/control*load*", ["control"]),
     # Control plane and Studio
     ("services/control/*", ["control", "studio", "lan", "phone", "os"]), ("apps/studio/*", ["studio", "os"]),
     ("contracts/openapi.yaml", ["control", "studio"]), ("contracts/ipc.schema.json", ["rust", "control"]),
