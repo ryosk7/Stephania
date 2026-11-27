@@ -34,7 +34,7 @@ export function RenameSheet({deviceId, name, host, visible, onClose, onRenamed}:
 }
 
 const st = StyleSheet.create({
-  scrim: {...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)'},
+  scrim: {position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)'},
   wrap: {flex: 1, justifyContent: 'flex-end'},
   sheet: {backgroundColor: color.surface, borderTopLeftRadius: radius.card + 4, borderTopRightRadius: radius.card + 4, padding: space.l, paddingBottom: space.xxl, gap: space.l},
   grabber: {alignSelf: 'center', width: 36, height: 5, borderRadius: 3, backgroundColor: '#48484A'},
