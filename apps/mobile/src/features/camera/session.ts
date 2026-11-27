@@ -10,8 +10,8 @@
 //   starting → busy       another phone holds the session (HTTP 409);
 //                         takeOver() replaces it
 //   any  → error          non-retryable (rejected offer, no permission, …)
-import type {CameraMode, Capabilities, NativeCamera, PeerState, ThermalState} from '../../modules/t3box-camera';
-import {DeviceError} from '../net/device';
+import type {CameraMode, Capabilities, NativeCamera, PeerState, ThermalState} from '@modules/t3box-camera';
+import {DeviceError} from '@/shared/device/client';
 import {capturePlan, planFor, rolesFor} from './plan';
 import {checkOffer} from './sdp';
 

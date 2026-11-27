@@ -4,7 +4,7 @@
 // candidates already gathered (the device answers non-trickle). A bad offer
 // is a bug in the native sender; catching it here gives a clear error
 // instead of a silent black source on the device.
-import type {Offer} from '../../modules/t3box-camera';
+import type {Offer} from '@modules/t3box-camera';
 
 export class OfferError extends Error {}
 

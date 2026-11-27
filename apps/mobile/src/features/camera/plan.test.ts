@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import type {Capabilities, ThermalState} from '../../modules/t3box-camera';
+import type {Capabilities, ThermalState} from '@modules/t3box-camera';
 import {bestDual, planFor} from './plan';
 
 const ALL: Capabilities = {roles: ['rear', 'front'], dualProfiles: ['720p30+720p30', '720p30+540p24', '540p24+540p24'], hardwareH264: true};

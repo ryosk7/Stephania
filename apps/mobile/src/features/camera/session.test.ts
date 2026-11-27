@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {beforeEach, describe, expect, it} from 'vitest';
-import type {CameraEvents, CameraMode, Capabilities, NativeCamera, Offer, ThermalState, TrackPlan} from '../../modules/t3box-camera';
-import {DeviceError} from '../net/device';
+import type {CameraEvents, CameraMode, Capabilities, NativeCamera, Offer, ThermalState, TrackPlan} from '@modules/t3box-camera';
+import {DeviceError} from '@/shared/device/client';
 import {BACKOFF_MS, CameraSession, DISCONNECT_GRACE_MS, type CameraClient, type Timers} from './session';
 
 const SDP = readFileSync(new URL('./fixtures/offer-dual.sdp', import.meta.url), 'utf8');

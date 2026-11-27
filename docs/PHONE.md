@@ -58,11 +58,11 @@ duplicates), decoder round-trip with the engine's own x264 encoder,
 ingest protocol and keyframe requests.
 
 ## Phone app sender (iOS)
-`apps/mobile/modules/t3box-camera` (native) + `apps/mobile/src/camera`
+`apps/mobile/modules/t3box-camera` (native) + `apps/mobile/src/features/camera`
 (shared TypeScript). The split is the cross-platform contract
 (`modules/t3box-camera/src/T3BoxCamera.types.ts`): native code captures,
 encodes and transports; TypeScript decides. An Android implementation
-provides the same interface and reuses everything in `src/camera`.
+provides the same interface and reuses everything in `src/features/camera`.
 
 - **Capture** (`ios/CameraCapture.swift`): built-in wide cameras,
   `AVCaptureMultiCamSession` for rear+front. Output is always landscape
@@ -84,7 +84,7 @@ provides the same interface and reuses everything in `src/camera`.
   offer is sent after ICE gathering completes (non-trickle). Plans change
   `maxBitrate`, `maxFramerate`, `scaleResolutionDownBy` and `active` on
   the running senders, without renegotiation.
-- **Policy** (`src/camera/session.ts`, `plan.ts`, `sdp.ts`): idle →
+- **Policy** (`src/features/camera/session.ts`, `plan.ts`, `sdp.ts`): idle →
   starting → connecting → live; `reconnecting` with backoff 0.5–8 s
   (6 attempts) after `failed`, or after `disconnected` lasting 3 s;
   reconnects replace the phone's own session (`replace: true`). HTTP 409
@@ -96,12 +96,12 @@ provides the same interface and reuses everything in `src/camera`.
   profile per level and switches the front (audience) camera off at
   `critical`, keeping the presenter. The offer is checked against what
   t3box-phone accepts before it is sent.
-- **Screen** (`src/app/camera.tsx`): native Metal previews of what is fed
+- **Screen** (`src/features/camera/camera-screen.tsx`): native Metal previews of what is fed
   to the encoder, rear/front/both selector (both only when a dual profile
   is available), status, thermal notice, take-over prompt; the screen
   stays awake while open.
 
-Verified in CI: `src/camera/*.test.ts` (state machine with a fake native
+Verified in CI: `src/features/camera/*.test.ts` (state machine with a fake native
 sender and clock, plans, offer checks); `mobile-ios-camera` (macOS,
 `swift test`): SDP restriction, and a real libwebrtc loopback — two
 tracks with different synthetic content arrive decoded as H.264 at the
