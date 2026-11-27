@@ -29,7 +29,11 @@ BlueOak-1.0.0, Ruby, Python-2.0, MPL-2.0 (file-level copyleft; unmodified
 use only). Anything else needs a review and a policy change in both
 `deny.toml` and `ci/sbom.py`.
 
-Current state (when this was written): no Rust or Ruby advisories; npm
+Current state (when this was written): no Rust advisories; the first run
+of `bundle-audit` found ten advisories in Puma 6.6.1 (PROXY protocol
+parser memory exhaustion, SSL connection memory exhaustion, among others),
+fixed by moving to Puma 7.2.4 (config/puma.rb uses no hooks or option
+reads affected by the 7.0 changes); npm
 production trees have no high/critical findings. `apps/mobile` has three
 moderate findings in Expo's build-time fingerprint tooling (`minimatch`
 ReDoS); they do not ship in the app bundle and `npm audit` suggests no
