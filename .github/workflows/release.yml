@@ -8,6 +8,14 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Called by tag-release.yml: a tag pushed with GITHUB_TOKEN does not start
+  # other workflows, so the tagging workflow calls this one directly.
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing tag to release (v<version>)
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       version:
@@ -22,6 +30,10 @@ defaults:
     # `| tee` or `| tail` fails the step.
     shell: bash
 
+env:
+  # The tag being released; empty for a dispatched dry run.
+  TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
+
 jobs:
   release:
     runs-on: ubuntu-24.04-arm
@@ -29,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || '' }}
           fetch-depth: 0
       - name: Signing material
         env:
@@ -49,7 +62,7 @@ jobs:
           openssl pkey -in "$k/release-signing.pem" -pubout -out "$k/release-signing.pub"
       - id: v
         run: |
-          v="${{ github.event.inputs.version || github.ref_name }}"; v="${v#v}"
+          v="${{ inputs.tag || github.event.inputs.version || github.ref_name }}"; v="${v#v}"
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
       - name: Authenticate read-only GHCR access
@@ -90,14 +103,14 @@ jobs:
           os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/keys/release-signing.pub" "$RUNNER_TEMP/keys/rauc-ca.pem"
           rm -rf "$RUNNER_TEMP/keys"
       - name: Draft GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "Stephania ${{ steps.v.outputs.version }}" \
+          gh release create "$TAG" --draft --verify-tag --title "Stephania ${{ steps.v.outputs.version }}" \
             --notes "Verify: os/release/verify.sh with the published release-signing.pub." \
             "$RUNNER_TEMP"/dist/*
-      - if: "!startsWith(github.ref, 'refs/tags/v')"
+      - if: env.TAG == ''
         uses: actions/upload-artifact@v4
         with:
           name: release-dry-run
@@ -120,12 +133,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || '' }}
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked -p stephctl --target ${{ matrix.target }}
       - name: Package
         id: pkg
         run: |
-          v="${{ github.event.inputs.version || github.ref_name }}"; v="${v#v}"
+          v="${{ inputs.tag || github.event.inputs.version || github.ref_name }}"; v="${v#v}"
           name="stephctl-$v-${{ matrix.target }}"
           mkdir "$name" && cp LICENSE "$name/"
           if [ "${{ runner.os }}" = Windows ]; then
@@ -137,11 +152,11 @@ jobs:
           fi
           echo "file=$file" >> "$GITHUB_OUTPUT"
       - name: Add to the draft release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.ref_name }}" "${{ steps.pkg.outputs.file }}" --clobber
-      - if: "!startsWith(github.ref, 'refs/tags/v')"
+        run: gh release upload "$TAG" "${{ steps.pkg.outputs.file }}" --clobber
+      - if: env.TAG == ''
         uses: actions/upload-artifact@v4
         with:
           name: stephctl-${{ matrix.target }}
