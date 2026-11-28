@@ -19,6 +19,9 @@ Environment=STEPHANIA_NETWORK_BACKEND=nm
 Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
 Environment=STEPHANIA_MANAGEMENT_TOKENS=/var/lib/stephania/tokens/tokens.json
 ReadWritePaths=/var/lib/stephania/tokens
+# Each enrollment also rotates the maintenance code secret held by
+# stephania-maint (otp.rotate only) and delivers it sealed to Connect.
+Environment=STEPHANIA_MAINT_SOCKET=/run/stephania-maint/maint.sock
 # Only the BLE adapter (stephania-ble, uid 854 in stephania.sysusers.conf) may use
 # the socket besides root.
 Environment=STEPHANIA_IPC_ALLOWED_UIDS=854

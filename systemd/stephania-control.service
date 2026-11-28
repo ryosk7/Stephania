@@ -17,6 +17,8 @@ EnvironmentFile=/etc/stephania/control.env
 Environment=RACK_ENV=production
 Environment=STEPHANIA_ENGINE_SOCKET=/run/stephania/engine.sock
 Environment=STEPHANIA_PHONE_SOCKET=/run/stephania-phone/phone.sock
+# Maintenance windows (docs/MAINTENANCE.md); control is in group stephania-maint.
+Environment=STEPHANIA_MAINT_SOCKET=/run/stephania-maint/maint.sock
 Environment=STEPHANIA_STUDIO_DIST=/opt/stephania/studio
 Environment=STEPHANIA_CONTROL_DB=/var/lib/stephania/control/control.db
 # Trusted LAN: TLS on 9443 with the device-CA certificate (stephania-pki);

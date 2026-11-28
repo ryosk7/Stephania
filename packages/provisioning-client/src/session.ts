@@ -31,7 +31,12 @@ export type WifiConfig = {ssid: string; security: 'open'} | {ssid: string; secur
 export type ScanNetwork = {ssid: string; rssi: number; security: string};
 /** LAN management access delivered sealed by the device. Keep `token` in
  * secure storage; connect only to servers whose chain ends in `caSha256`. */
-export type ManagementEnrollment = {token: string; tokenId: string; urls: string[]; caSha256: string};
+/**
+ * `otpSecret` (base64, 20 bytes) is the maintenance code secret
+ * (docs/MAINTENANCE.md): absent when the device has no maintenance service.
+ * Each enrollment rotates it, so only the latest phone's codes work.
+ */
+export type ManagementEnrollment = {token: string; tokenId: string; urls: string[]; caSha256: string; otpSecret?: string};
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -154,6 +159,11 @@ export class ProvisioningSession {
         typeof v.ca_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(v.ca_sha256) || urls.length === 0) {
       throw new ProvisioningError('invalid_response');
     }
-    return {token: v.token, tokenId: v.token_id, urls, caSha256: v.ca_sha256};
+    const enrollment: ManagementEnrollment = {token: v.token, tokenId: v.token_id, urls, caSha256: v.ca_sha256};
+    if (v.otp_secret !== undefined) {
+      if (typeof v.otp_secret !== 'string' || !/^[A-Za-z0-9+/]{26}[AEIMQUYcgkosw048]=$/.test(v.otp_secret)) throw new ProvisioningError('invalid_response');
+      enrollment.otpSecret = v.otp_secret;
+    }
+    return enrollment;
   }
 }

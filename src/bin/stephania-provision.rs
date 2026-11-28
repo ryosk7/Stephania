@@ -34,7 +34,7 @@ mod unix {
     use stephania::nm::{NetworkManagerBackend, Nmcli};
     use stephania::provisioning::{hex, OwnershipManager};
     use stephania::management_tokens::TokenStore;
-    use stephania::provisioning_gatt::{FileOwnershipStore, Management, NetworkBackend, OwnershipStore, RpcService, ScanResult};
+    use stephania::provisioning_gatt::{FileOwnershipStore, Management, NetworkBackend, OtpSource, OwnershipStore, RpcService, ScanResult};
 
     fn env_path(key: &str, default: &str) -> PathBuf {
         std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| default.into())
@@ -71,6 +71,9 @@ mod unix {
         let management = Management {
             pki_dir: env_path("STEPHANIA_PKI_DIR", "/data/stephania/pki"),
             tokens: TokenStore { path: env_path("STEPHANIA_MANAGEMENT_TOKENS", "/data/stephania/tokens/tokens.json") },
+            // Maintenance code secret for Connect (docs/MAINTENANCE.md), unset
+            // where the image has no stephania-maint.
+            otp: std::env::var_os("STEPHANIA_MAINT_SOCKET").filter(|v| !v.is_empty()).map(|v| OtpSource::Socket(v.into())),
         };
         let backend = std::env::var("STEPHANIA_NETWORK_BACKEND").unwrap_or_else(|_| "nm".into());
         match backend.as_str() {

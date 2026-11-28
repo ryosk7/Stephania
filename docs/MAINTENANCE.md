@@ -1,11 +1,14 @@
 # Maintenance shell access (design)
 
-Status: step 1 of the [plan](#plan) is implemented: `stephania-maint`
-(`src/maint.rs`, `src/sshcert.rs`, `src/totp.rs`), `stephania-sshd`, the
-polkit rule and the nftables table are in the image, tested by
-`ci/maint-ssh-e2e.sh` (real OpenSSH) and the QEMU smoke test. The control
-endpoints, Connect, `stephctl` and `steph` are not built yet, so nothing
-outside the device can open a window.
+Status: steps 1 and 2 of the [plan](#plan) are implemented.
+`stephania-maint` (`src/maint.rs`, `src/sshcert.rs`, `src/totp.rs`),
+`stephania-sshd`, the polkit rule and the nftables table are in the image,
+tested by `ci/maint-ssh-e2e.sh` (real OpenSSH) and the QEMU smoke test.
+Control serves `/api/v1/maintenance` (tested against the real
+`stephania-maint`), and `management.enroll` delivers the code secret to
+Connect (tested from the TypeScript client through the real
+`stephania-provision` and `stephania-maint`). Connect does not show codes
+yet, and `stephctl` and `steph` are not built.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as
@@ -87,8 +90,15 @@ Socket operations:
 |---|---|---|
 | `window.open` | `{actor, client_addr, code, root}` | `{window_id, expires_at, root}`; starts sshd |
 | `cert.sign` | `{window_id, public_key, client_addr, root}` | `{certificate, valid_before, host_ca, principal, port}` |
-| `window.close` | `{window_id}` | `{}`; stops sshd and ends its sessions |
-| `status` | `{}` | `{open, expires_at, sessions}` |
+| `window.close` | `{window_id?, actor}` | `{closed}`; stops sshd and ends its sessions |
+| `status` | `{}` | `{open, window, code_locked_until}` |
+| `otp.rotate` | `{}` | `{otp_secret}` (hex); closes any open window |
+
+Peers are told apart by uid: the control plane (`STEPHANIA_IPC_ALLOWED_UIDS`)
+may call the first four, the provisioning core
+(`STEPHANIA_MAINT_ENROLL_UIDS`, `stephania-provision` in group
+`stephania-maint`) only `otp.rotate`, which `management.enroll` calls to
+give each new Connect enrollment a fresh secret.
 
 Rules enforced here, not in control:
 
@@ -184,18 +194,22 @@ a Studio session (cookie + CSRF) or an enrolled owner token.
 
 | Method and path | Body | Result |
 |---|---|---|
-| `GET /maintenance` | | `{open, expires_at, sessions}` |
-| `POST /maintenance/window` | `{code, root?}` | `201 {window_id, expires_at, root}` · `401 invalid_code` · `429 code_throttled` |
-| `POST /maintenance/certificate` | `{window_id, public_key}` | `{certificate, valid_before, host_ca, host, port, user}` (`user` is `maint` or `root`) · `409 window_closed` |
+| `GET /maintenance` | | `{open, window, code_locked_until}` |
+| `POST /maintenance/window` | `{code, root?}` | `201 {window_id, expires_at, sessions_end_at, root, user}` · `401 invalid_code` · `409 window_open` · `429 code_throttled` (`Retry-After`) |
+| `POST /maintenance/certificate` | `{window_id, public_key}` | `{certificate, valid_before, serial, host_ca, principal, user, host, port}` (`user` is `maint` or `root`) · `409 window_closed` |
 | `DELETE /maintenance/window` | | `204` |
 
-Control passes the account name as `actor` and the TLS peer address as
-`client_addr`; it never sees the OTP secret or any CA key. Non-browser
+`503 maintenance_unavailable` when `stephania-maint` does not answer,
+`503 maintenance_failed` when sshd could not be started. Opening and
+closing are also published on `/api/v1/events`.
+
+Control passes the account name (`owner` for an owner token) as `actor`
+and the TCP peer address (never `X-Forwarded-For`) as `client_addr`; it never sees the OTP secret or any CA key. Non-browser
 clients send no `Origin` header, which the existing check already allows.
 
-Also needed: the TLS server must send the device CA certificate in its
-chain (or expose `GET /api/v1/pki/ca`, unauthenticated, CA only) so that
-`stephctl login` can show its fingerprint before trusting it.
+`stephctl login` gets the device CA from the existing unauthenticated
+`GET /ca.pem` (the TLS server also sends it in its chain) and shows its
+fingerprint before trusting it.
 
 ### Stephania Connect (changes)
 

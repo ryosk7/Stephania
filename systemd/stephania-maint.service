@@ -10,11 +10,13 @@ ExecStart=/usr/local/bin/stephania-maint
 Environment=STEPHANIA_MAINT_DIR=/var/lib/stephania/maint
 Environment=STEPHANIA_MAINT_SOCKET=/run/stephania-maint/maint.sock
 Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
-# Only the control plane (stephania-control, uid 852) besides root.
+# The control plane (stephania-control, uid 852) for windows and certificates;
+# the provisioning core (stephania-provision, uid 853) for otp.rotate only.
 Environment=STEPHANIA_IPC_ALLOWED_UIDS=852
+Environment=STEPHANIA_MAINT_ENROLL_UIDS=853
 ReadWritePaths=/var/lib/stephania/maint
 RuntimeDirectory=stephania-maint
-# 0750 + group stephania-maint (control is a member) reaches the 0660 socket.
+# 0750 + group stephania-maint (control and provision are members) reaches the 0660 socket.
 RuntimeDirectoryMode=0750
 Restart=on-failure
 RestartSec=3

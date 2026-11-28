@@ -29,10 +29,13 @@ class EngineClient
 
   # A well-formed engine error response.
   class RemoteError < StandardError
-    attr_reader :code
+    # The whole error object, for services that add fields (stephania-maint:
+    # retry_after).
+    attr_reader :code, :error
 
-    def initialize(code, message)
+    def initialize(code, message, error = {})
       @code = code
+      @error = error
       super(message)
     end
   end
@@ -81,7 +84,7 @@ class EngineClient
     end
     error = response["error"]
     if response["ok"] == false && error.is_a?(Hash) && error["code"].is_a?(String)
-      raise RemoteError.new(error["code"], error["message"].to_s)
+      raise RemoteError.new(error["code"], error["message"].to_s, error)
     end
     raise Unavailable, "engine response did not match the request"
   end
