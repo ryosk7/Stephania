@@ -9,3 +9,4 @@ export * from './controls';
 export * from './appearance';
 export {restoreAppearance, setAppearance, useAppearance, useColor, type ColorToken} from './theme';
 export {useAppFonts} from './fonts';
+export {markSplashGone, useSplashGone} from './splash';
