@@ -167,8 +167,13 @@ fn known(target: Option<&str>) -> Result<Device> {
     }
 }
 
+/// A server certificate that does not chain to the pinned CA. rustls'
+/// alert can surface as a TLS error or wrapped in an I/O error.
 fn is_tls_error(e: &ureq::Error) -> bool {
-    matches!(e, ureq::Error::Rustls(_) | ureq::Error::Tls(_))
+    matches!(e, ureq::Error::Rustls(_) | ureq::Error::Tls(_)) || {
+        let text = format!("{e:?}");
+        text.contains("InvalidCertificate") || text.contains("UnknownIssuer") || text.contains("BadSignature")
+    }
 }
 
 /// A client for the first address that answers with the pinned CA. When
@@ -516,6 +521,7 @@ impl Scratch {
         let mut random = [0u8; 8];
         ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut random).map_err(|_| Fail::general("random source failed"))?;
         let dir = std::env::temp_dir().join(format!("stephctl-{}", random.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+        #[allow(unused_mut)]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
