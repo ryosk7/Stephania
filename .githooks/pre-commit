@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Compress staged PNG/JPEG files before they are committed.
+# Refuse non-English code comments and docs, then compress staged PNG/JPEG
+# files before they are committed.
 # Enable once per clone: git config core.hooksPath .githooks
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
+python3 "$root/ci/check-english.py" --staged
 mapfile -d '' files < <(git diff --cached --name-only --diff-filter=AM -z -- '*.png' '*.PNG' '*.jpg' '*.JPG' '*.jpeg' '*.JPEG')
 [ "${#files[@]}" -eq 0 ] && exit 0
 cd "$root"

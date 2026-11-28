@@ -76,5 +76,5 @@ addresses) and never falls back to weaker trust.
 
 A PC has no such pin. `GET /ca.pem` (no credentials; on the LAN only over
 TLS to a certified name) serves the device CA certificate; the phone app's
-"PCのブラウザで開く" screen shows the URL and the CA fingerprint so the user
+"Open on PC" screen shows the URL and the CA fingerprint so the user
 can compare before installing it as a trusted root.

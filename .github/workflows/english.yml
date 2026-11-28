@@ -1,0 +1,42 @@
+name: English
+# Commit messages, pull request titles and descriptions, code comments and
+# docs must be in English (ci/check-english.py). The same check runs locally
+# in .githooks/commit-msg and .githooks/pre-commit and, for Claude Code, in
+# .claude/hooks/english-only.py.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: english-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  english:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: python3 ci/check-english.py --self-test
+      - name: Pull request title and description
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 ci/check-english.py --text-env PR_TITLE PR_BODY
+      - name: Commit messages
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 ci/check-english.py --commits "$BASE..$HEAD"
+      - name: Comments and docs in the whole tree
+        run: python3 ci/check-english.py --all
