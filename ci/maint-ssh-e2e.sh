@@ -147,5 +147,21 @@ principal maint-root
 [ "$(login "$win" 127.0.0.1)" = maint-ok ] && ok "root window certificate logs in where maint-root is allowed" || fail "root login: $(cat "$w/ssh.err")"
 rpc window.close "{\"actor\":\"alice\"}" >/dev/null
 
+# A new Connect enrollment rotates the code secret (otp.rotate, called by
+# stephania-provision): old codes stop working, new ones work at once, and
+# an open window is closed.
+secret() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["otp_secret"])' "$w/maint/state.json"; }
+old=$(secret)
+r=$(rpc otp.rotate '{}')
+new=$(field "$r" otp_secret)
+[ -n "$new" ] && [ "$new" != "$old" ] && [ "$new" = "$(secret)" ] && ok "otp.rotate returns a new secret and stores it" || fail "rotate: $r"
+r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"::ffff:127.0.0.1\",\"code\":\"$(code)\"}")
+win=$(field "$r" window_id)
+[ -n "$win" ] && ok "a code from the new secret opens a window (IPv4-mapped client address)" || fail "open after rotate: $r"
+for _ in $(seq 50); do [ -f "$w/sshd.pid" ] && break; sleep 0.1; done
+rpc otp.rotate '{}' >/dev/null
+sleep 0.5
+[ "$(field "$(rpc status '{}')" open)" = False ] && [ ! -f "$w/sshd.pid" ] && ok "rotating the secret closes the open window and stops sshd" || fail "window survived rotation"
+
 grep -q '"event":"maintenance.root_certificate_issued"' "$w/maint.log" && ok "audit events in the journal" || fail "audit: $(cat "$w/maint.log")"
 echo "maint-ssh-e2e: $pass checks passed"

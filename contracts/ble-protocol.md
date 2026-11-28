@@ -60,7 +60,7 @@ A request is a UTF-8 JSON object with `op`; unknown keys are rejected. A failed 
 | `wifi.configure` | `sealed, proof` (payload = `sealed`) | `{state:"CONNECTED"\|"FAILED"}` | yes |
 | `network.status` | — | `{state, wired, last_error?}`; `wired` is true while Ethernet is connected | no |
 | `management.endpoint` | — | `{available}`: whether LAN TLS is set up (unauthenticated hint; carries no URL or pin) | no |
-| `management.enroll` | `proof` (payload `""`) | `{sealed}`; plaintext `{token, token_id, urls, ca_sha256}`; `management_unavailable` until the device PKI has published an endpoint | yes |
+| `management.enroll` | `proof` (payload `""`) | `{sealed}`; plaintext `{token, token_id, urls, ca_sha256, otp_secret?}`; `management_unavailable` until the device PKI has published an endpoint | yes |
 
 **Replay:** for operations marked "yes", the device caches the response for 60 s (8 entries), keyed by SHA-256 of `message_id ‖ request bytes`. An identical retry, even from a new BLE address after reconnecting, returns the original response without re-running the operation. Clients **must** retry with the same message id and identical bytes after a transport failure. A new id is a new request.
 
@@ -76,6 +76,8 @@ A request is a UTF-8 JSON object with `op`; unknown keys are rejected. A failed 
 | sealed | `ChaCha20-Poly1305(key = MAC(owner_key, "stephania-seal-v1"), nonce = op_nonce[0..12], aad = operation).encrypt(plaintext)` |
 
 `management.enroll` seals its *response* the same way (operation `"management.enroll"`, the request carries no sealed payload, so the nonce is still used once). The phone keeps `token` in secure storage and accepts a LAN server only if its certificate chain ends in the CA whose DER SHA-256 is `ca_sha256`. The device keeps only SHA-256(token); a factory reset clears every token.
+
+`otp_secret` (base64 of 20 bytes) is the maintenance code secret (docs/MAINTENANCE.md): the phone keeps it with the token and shows RFC 6238 codes (SHA-1, 6 digits, 30 s) from it. Every enrollment rotates it in `stephania-maint`, so codes from an earlier enrollment stop working and an open maintenance window is closed; an identical retry replays the same secret. It is absent when the image has no maintenance service or the service did not answer; LAN access is enrolled either way.
 
 The Wi-Fi plaintext is `{"ssid", "security":"open"|"wpa-psk", "psk"?}`, with SSID 1–32 bytes and PSK 8–63 printable characters or 64 hex. The operation nonce is single-use, so every seal uses a unique nonce. `owner_id` is 1–64 characters of `[A-Za-z0-9._-]`. After 5 failed proofs or bad keys the device locks out for 300 s. If storing the new owner fails, the claim is rolled back and the device stays unclaimed.
 

@@ -174,6 +174,42 @@ pub struct RpcService<N: NetworkBackend, S: OwnershipStore> {
 pub struct Management {
     pub pki_dir: std::path::PathBuf,
     pub tokens: TokenStore,
+    /// Maintenance code secret, rotated on every enrollment
+    /// (docs/MAINTENANCE.md). `None`: enrollments carry no `otp_secret`.
+    pub otp: Option<OtpSource>,
+}
+
+/// Where `management.enroll` gets a fresh maintenance code secret.
+#[derive(Debug, Clone)]
+pub enum OtpSource {
+    /// stephania-maint's socket (`otp.rotate`), which owns the secret.
+    Socket(std::path::PathBuf),
+    /// Tests: a fixed secret.
+    Fixed(Vec<u8>),
+}
+
+impl OtpSource {
+    pub fn rotate(&self) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Fixed(secret) => Ok(secret.clone()),
+            #[cfg(unix)]
+            Self::Socket(path) => {
+                let mut stream = std::os::unix::net::UnixStream::connect(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                let req = json!({"version": 1, "request_id": "enroll", "method": "otp.rotate", "params": {}});
+                crate::ipc::write_frame(&mut stream, req.to_string().as_bytes()).map_err(|e| e.to_string())?;
+                let frame = crate::ipc::read_frame(&mut stream).map_err(|e| e.message.clone())?.ok_or("stephania-maint closed the connection")?;
+                let r: Value = serde_json::from_slice(&frame).map_err(|e| e.to_string())?;
+                if r.get("ok") != Some(&json!(true)) { return Err(format!("otp.rotate failed: {}", r["error"])); }
+                let hex = r["result"]["otp_secret"].as_str().ok_or("otp.rotate returned no secret")?;
+                let secret: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect();
+                secret.filter(|s| s.len() >= 16).ok_or_else(|| "otp.rotate returned a malformed secret".into())
+            }
+            #[cfg(not(unix))]
+            Self::Socket(_) => Err("stephania-maint needs a Unix platform".into()),
+        }
+    }
 }
 
 fn exact(req: &Map<String, Value>, keys: &[&str]) -> Result<(), RpcError> {
@@ -352,8 +388,16 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
                 let endpoint = self.endpoint().ok_or(RpcError("management_unavailable"))?;
                 let tokens = &self.management.as_ref().ok_or(RpcError("management_unavailable"))?.tokens;
                 let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let otp = self.management.as_ref().and_then(|m| m.otp.clone());
                 let issued = tokens.issue(now_unix).map_err(|_| RpcError("storage_failed"))?;
-                let plain = json!({"token": issued.token, "token_id": issued.id, "urls": endpoint.urls(), "ca_sha256": endpoint.ca_sha256});
+                let mut plain = json!({"token": issued.token, "token_id": issued.id, "urls": endpoint.urls(), "ca_sha256": endpoint.ca_sha256});
+                // LAN access must not depend on maintenance: without
+                // stephania-maint the enrollment simply carries no code secret.
+                match otp.map(|o| o.rotate()) {
+                    Some(Ok(secret)) => { plain["otp_secret"] = json!(crate::sshcert::base64_encode(&secret)); }
+                    Some(Err(e)) => eprintln!("stephania-provision: no maintenance code secret for this enrollment: {e}"),
+                    None => {}
+                }
                 Ok((json!({"sealed": hex(&seal(&key, &nonce, "management.enroll", plain.to_string().as_bytes()))}), true))
             }
             _ => Err(RpcError("unknown_op")),
@@ -667,7 +711,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let tokens = TokenStore { path: dir.join("tokens.json") };
-        let mut s = svc(FakeNetwork::default()).with_management(Management { pki_dir: dir.join("pki"), tokens: tokens.clone() });
+        let mut s = svc(FakeNetwork::default()).with_management(Management { pki_dir: dir.join("pki"), tokens: tokens.clone(), otp: Some(OtpSource::Fixed(vec![9; 20])) });
         let mut phone = Phone::new("aa:bb");
         let now = Instant::now();
         let key = phone.claim(&mut s, now);
@@ -697,6 +741,7 @@ mod tests {
         assert_eq!(plain["urls"], json!(endpoint.urls()));
         let token = plain["token"].as_str().unwrap();
         assert!(token.starts_with("t3b_"));
+        assert_eq!(plain["otp_secret"], json!(crate::sshcert::base64_encode(&[9; 20])));
         assert!(!String::from_utf8_lossy(&sealed).contains(&token[4..]));
         // Identical retry after a lost indication: same token, issued once.
         assert_eq!(phone.send_with_id(&mut s, 77, &req, now), r);

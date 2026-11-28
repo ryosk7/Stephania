@@ -6,10 +6,13 @@
 //! decision is written to the journal (stderr) as one JSON line per event.
 //!
 //! Socket `STEPHANIA_MAINT_SOCKET` (default `/run/stephania-maint/maint.sock`,
-//! docs/IPC.md framing), for the control plane only:
+//! docs/IPC.md framing). The control plane (`STEPHANIA_IPC_ALLOWED_UIDS`) may call
 //! `window.open {actor, client_addr, code, root?}` → window;
 //! `cert.sign {window_id, public_key, client_addr}` → `{certificate, …}`;
 //! `window.close {window_id?, actor}`; `status {}`.
+//! The provisioning core (`STEPHANIA_MAINT_ENROLL_UIDS`) may call only
+//! `otp.rotate {}` → `{otp_secret}` (hex), for `management.enroll`.
+//! Root and the service's own uid may call everything.
 #[cfg(unix)]
 fn main() {
     if let Err(e) = unix::run() {
@@ -28,6 +31,7 @@ fn main() {
 mod unix {
     use serde_json::{json, Map, Value};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use stephania::ipc::{self, PeerPolicy};
@@ -39,6 +43,20 @@ mod unix {
         pki_dir: PathBuf,
         systemctl: String,
         sshd_unit: String,
+        enroll_uids: Vec<u32>,
+    }
+
+    /// What a peer may call.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Role { Full, Control, Enroll }
+
+    const CONTROL_METHODS: [&str; 4] = ["status", "window.open", "cert.sign", "window.close"];
+    const ENROLL_METHODS: [&str; 1] = ["otp.rotate"];
+    const MAX_CONNECTIONS: usize = 4;
+
+    fn uid_list(key: &str) -> Result<Vec<u32>, String> {
+        std::env::var(key).unwrap_or_default().split(',').map(str::trim).filter(|p| !p.is_empty())
+            .map(|p| p.parse::<u32>().map_err(|_| format!("invalid uid in {key}: {p}"))).collect()
     }
 
     fn env_or(key: &str, default: &str) -> String {
@@ -54,6 +72,7 @@ mod unix {
             pki_dir: PathBuf::from(env_or("STEPHANIA_PKI_DIR", "/var/lib/stephania/pki")),
             systemctl: env_or("STEPHANIA_MAINT_SYSTEMCTL", "systemctl"),
             sshd_unit: env_or("STEPHANIA_MAINT_SSHD_UNIT", "stephania-sshd.service"),
+            enroll_uids: uid_list("STEPHANIA_MAINT_ENROLL_UIDS")?,
         };
         let policy = PeerPolicy::from_env()?;
         let maint = Maintenance::open(&dir)?;
@@ -105,6 +124,11 @@ mod unix {
     fn dispatch(config: &Config, m: &mut Maintenance, method: &str, params: Option<&Map<String, Value>>) -> Result<Value, MaintError> {
         let t = now();
         match method {
+            "otp.rotate" => {
+                let (secret, closed) = m.rotate_otp_secret().map_err(MaintError::Internal)?;
+                if closed.is_some() { sshd(config, "stop"); }
+                Ok(json!({"otp_secret": secret.iter().map(|b| format!("{b:02x}")).collect::<String>()}))
+            }
             "status" => Ok(m.status(t)),
             "window.open" => {
                 let root = params.and_then(|p| p.get("root")).and_then(Value::as_bool).unwrap_or(false);
@@ -130,7 +154,7 @@ mod unix {
         }
     }
 
-    fn handle(config: &Config, state: &Mutex<Maintenance>, frame: &[u8]) -> Value {
+    fn handle(config: &Config, state: &Mutex<Maintenance>, role: Role, frame: &[u8]) -> Value {
         let err = |id: Option<&str>, code: &str, msg: &str, extra: Value| {
             let mut e = json!({"code": code, "message": msg});
             if let (Value::Object(o), Value::Object(x)) = (&mut e, extra) { o.extend(x); }
@@ -142,6 +166,12 @@ mod unix {
         };
         if req.get("version") != Some(&json!(1)) { return err(Some(id), "unsupported_version", "version must be 1", json!({})); }
         let Some(method) = req.get("method").and_then(Value::as_str) else { return err(Some(id), "invalid_request", "method required", json!({})) };
+        let permitted = match role {
+            Role::Full => true,
+            Role::Control => CONTROL_METHODS.contains(&method),
+            Role::Enroll => ENROLL_METHODS.contains(&method),
+        };
+        if !permitted { return err(Some(id), "forbidden", "method not permitted for this peer", json!({})) }
         let mut m = state.lock().unwrap_or_else(|p| p.into_inner());
         let result = dispatch(config, &mut m, method, req.get("params").and_then(Value::as_object));
         flush_audit(&mut m);
@@ -154,25 +184,46 @@ mod unix {
         }
     }
 
-    /// One connection at a time: requests are rare and the state is single-owner.
-    fn serve(config: &Config, policy: &PeerPolicy, state: &Mutex<Maintenance>) -> Result<(), String> {
+    /// A thread per connection (at most MAX_CONNECTIONS): the control plane
+    /// keeps pooled connections open, which must not shut out the
+    /// provisioning core. Requests are serialized by the state lock.
+    fn serve(config: &Arc<Config>, policy: &PeerPolicy, state: &Arc<Mutex<Maintenance>>) -> Result<(), String> {
         let listener = ipc::bind(&config.socket).map_err(|e| format!("bind {}: {e}", config.socket.display()))?;
         log("maintenance.listening", json!({"socket": config.socket.display().to_string()}));
         // SAFETY: getuid has no preconditions and cannot fail.
         let own = unsafe { libc::getuid() };
+        let active = Arc::new(AtomicUsize::new(0));
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else { continue };
             let _ = stream.set_read_timeout(Some(ipc::IO_TIMEOUT));
             let _ = stream.set_write_timeout(Some(ipc::IO_TIMEOUT));
-            let permitted = match ipc::peer_uid(&stream) { Some(uid) => policy.allows(uid, own), None => !cfg!(target_os = "linux") };
-            if !permitted {
+            // Fail closed on Linux if credentials cannot be read; elsewhere
+            // (development) the socket's file mode is the only guard.
+            let role = match ipc::peer_uid(&stream) {
+                Some(uid) if uid == 0 || uid == own => Some(Role::Full),
+                Some(uid) if config.enroll_uids.contains(&uid) => Some(Role::Enroll),
+                Some(uid) if policy.allows(uid, own) => Some(Role::Control),
+                Some(_) => None,
+                None if cfg!(target_os = "linux") => None,
+                None => Some(Role::Full),
+            };
+            let Some(role) = role else {
                 let _ = ipc::write_frame(&mut stream, br#"{"version":1,"request_id":null,"ok":false,"error":{"code":"forbidden","message":"peer not permitted"}}"#);
                 continue;
+            };
+            if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                active.fetch_sub(1, Ordering::SeqCst);
+                let _ = ipc::write_frame(&mut stream, br#"{"version":1,"request_id":null,"ok":false,"error":{"code":"busy","message":"too many connections"}}"#);
+                continue;
             }
-            while let Ok(Some(frame)) = ipc::read_frame(&mut stream) {
-                let body = serde_json::to_vec(&handle(config, state, &frame)).unwrap_or_default();
-                if ipc::write_frame(&mut stream, &body).is_err() { break; }
-            }
+            let (config, state, active) = (Arc::clone(config), Arc::clone(state), Arc::clone(&active));
+            std::thread::spawn(move || {
+                while let Ok(Some(frame)) = ipc::read_frame(&mut stream) {
+                    let body = serde_json::to_vec(&handle(&config, &state, role, &frame)).unwrap_or_default();
+                    if ipc::write_frame(&mut stream, &body).is_err() { break; }
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
         }
         Ok(())
     }

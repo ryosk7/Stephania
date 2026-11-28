@@ -192,7 +192,10 @@ paths:
         program.changed ({scene_id, revision}), audio.levels (~4 Hz while
         streaming: {inputs:[{id,state,levels,muted,gain_db}], master}),
         audio.configured ({inputs}), scene.updated
-        ({id, revision}), scene.deleted ({id}). Comment lines are
+        ({id, revision}), scene.deleted ({id}),
+        maintenance.window_opened / maintenance.root_window_opened
+        ({actor, window_id, expires_at, root}), maintenance.window_closed
+        ({actor}, when closed through the API). Comment lines are
         keepalives (every 15 s). Slow consumers are disconnected. Unknown
         event names must be ignored.
       responses:
@@ -444,6 +447,105 @@ paths:
       responses:
         "204": {description: Revoked}
         default: {$ref: "#/components/responses/Error"}
+  /maintenance:
+    get:
+      summary: Maintenance window state (admin only)
+      description: |
+        Maintenance SSH (docs/MAINTENANCE.md). Every /maintenance route is
+        admin only (operators get 403 forbidden_role) and relayed to
+        stephania-maint, which checks codes and holds the SSH CAs.
+      responses:
+        "200":
+          description: State
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [open, window, code_locked_until]
+                properties:
+                  open: {type: boolean}
+                  window:
+                    oneOf:
+                      - {$ref: "#/components/schemas/MaintenanceWindow"}
+                      - {type: "null"}
+                  code_locked_until: {type: [integer, "null"], description: Unix time until which code entry is locked}
+        default: {$ref: "#/components/responses/Error"}
+  /maintenance/window:
+    post:
+      summary: Open a maintenance window with the code shown in Stephania Connect
+      description: |
+        The 6-digit code (RFC 6238, 30 s) works once. One window at a time;
+        a window accepts certificate requests for 10 minutes (root: 5) and
+        its sessions end after 60 minutes (root: 30). Opening it starts sshd
+        on port 22, reachable from private and link-local addresses only.
+        Five wrong codes lock code entry (429 with Retry-After).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: {type: string, pattern: "^[0-9]{6}$"}
+                root: {type: boolean, default: false, description: Log in as root instead of maint}
+      responses:
+        "201":
+          description: Opened
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [window_id, expires_at, sessions_end_at, root, user]
+                properties:
+                  window_id: {type: string, pattern: "^[0-9a-f]{16}$"}
+                  expires_at: {type: integer, description: Unix time; no certificates after it}
+                  sessions_end_at: {type: integer, description: Unix time; sessions are ended then}
+                  root: {type: boolean}
+                  user: {type: string, enum: [maint, root]}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Close the maintenance window (stops sshd, ending its sessions)
+      responses:
+        "204": {description: Closed (also when none was open)}
+        default: {$ref: "#/components/responses/Error"}
+  /maintenance/certificate:
+    post:
+      summary: Sign a 5-minute SSH user certificate for a fresh Ed25519 key
+      description: |
+        The certificate is bound to the requesting address
+        (source-address), allows only a PTY, and names the account in its
+        key ID. Trust the device with `@cert-authority <host> <host_ca>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [window_id, public_key]
+              properties:
+                window_id: {type: string, pattern: "^[0-9a-f]{16}$"}
+                public_key: {type: string, maxLength: 512, description: "OpenSSH public key line, ssh-ed25519 only"}
+      responses:
+        "200":
+          description: Signed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [certificate, valid_before, serial, host_ca, principal, user, host, port]
+                properties:
+                  certificate: {type: string, description: OpenSSH certificate line (ssh-ed25519-cert-v01@openssh.com)}
+                  valid_before: {type: integer}
+                  serial: {type: integer}
+                  host_ca: {type: string, description: Host CA public key line}
+                  principal: {type: string, enum: [maint, maint-root]}
+                  user: {type: string, enum: [maint, root]}
+                  host: {type: string, description: The host name this request used}
+                  port: {type: integer}
+        default: {$ref: "#/components/responses/Error"}
   /audio:
     get:
       summary: Program audio inputs (stored configuration and live engine status)
@@ -682,6 +784,18 @@ components:
         id: {$ref: "#/components/schemas/Id"}
         revision: {type: integer, minimum: 1}
         document: {$ref: "scene.schema.json"}
+    MaintenanceWindow:
+      type: object
+      required: [window_id, root, actor, user, opened_at, expires_at, sessions_end_at, accepting]
+      properties:
+        window_id: {type: string}
+        root: {type: boolean}
+        actor: {type: string, description: Account name, or "owner" for an enrolled owner token}
+        user: {type: string, enum: [maint, root]}
+        opened_at: {type: integer}
+        expires_at: {type: integer}
+        sessions_end_at: {type: integer}
+        accepting: {type: boolean, description: Certificates can still be issued}
     Error:
       type: object
       additionalProperties: false
@@ -703,6 +817,8 @@ components:
                 too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
                 weak_password(422) user_exists(409) last_admin(409)
                 unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
+                invalid_code(401, maintenance) code_throttled(429) window_open(409) window_closed(409)
+                maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}

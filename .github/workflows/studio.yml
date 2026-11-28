@@ -91,6 +91,7 @@ jobs:
           bundle exec ruby test/accounts_test.rb
           bundle exec ruby test/assets_test.rb
           bundle exec ruby test/engine_client_test.rb
+          bundle exec ruby test/maintenance_test.rb
       - name: Server-Sent Events through real Puma
         working-directory: services/control
         env:
@@ -130,6 +131,14 @@ jobs:
         run: |
           bundle exec ruby test/engine_integration_test.rb --verbose | tee integration.log
           if grep -q ' S$\|skipped' integration.log; then echo "integration test skipped" >&2; exit 1; fi
+      - name: Maintenance through the real stephania-maint (must not be skipped)
+        working-directory: services/control
+        env:
+          STEPHANIA_MAINT_BIN: ${{ github.workspace }}/ci-bins/stephania-maint
+        shell: bash
+        run: |
+          bundle exec ruby test/maint_integration_test.rb --verbose | tee maint-integration.log
+          if grep -q ' S$\|skipped' maint-integration.log; then echo "maintenance integration test skipped" >&2; exit 1; fi
       - name: Control-plane load within the section 9 cgroup (YJIT off and on)
         shell: bash
         run: |
@@ -289,6 +298,9 @@ jobs:
         shell: bash
         env:
           STEPHANIA_PROVISION_BIN: ${{ github.workspace }}/ci-bins/stephania-provision
+          # Enrollment also rotates the maintenance code secret held by the
+          # real stephania-maint (docs/MAINTENANCE.md).
+          STEPHANIA_MAINT_BIN: ${{ github.workspace }}/ci-bins/stephania-maint
         run: |
           npx vitest run --reporter=verbose | tee vitest.log
           grep -q 'interop with Rust stephania-provision' vitest.log

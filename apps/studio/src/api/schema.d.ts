@@ -406,7 +406,10 @@ export interface paths {
          *     program.changed ({scene_id, revision}), audio.levels (~4 Hz while
          *     streaming: {inputs:[{id,state,levels,muted,gain_db}], master}),
          *     audio.configured ({inputs}), scene.updated
-         *     ({id, revision}), scene.deleted ({id}). Comment lines are
+         *     ({id, revision}), scene.deleted ({id}),
+         *     maintenance.window_opened / maintenance.root_window_opened
+         *     ({actor, window_id, expires_at, root}), maintenance.window_closed
+         *     ({actor}, when closed through the API). Comment lines are
          *     keepalives (every 15 s). Slow consumers are disconnected. Unknown
          *     event names must be ignored.
          */
@@ -1127,6 +1130,200 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Maintenance window state (admin only)
+         * @description Maintenance SSH (docs/MAINTENANCE.md). Every /maintenance route is
+         *     admin only (operators get 403 forbidden_role) and relayed to
+         *     stephania-maint, which checks codes and holds the SSH CAs.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description State */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            open: boolean;
+                            window: components["schemas"]["MaintenanceWindow"] | null;
+                            /** @description Unix time until which code entry is locked */
+                            code_locked_until: number | null;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/maintenance/window": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a maintenance window with the code shown in Stephania Connect
+         * @description The 6-digit code (RFC 6238, 30 s) works once. One window at a time;
+         *     a window accepts certificate requests for 10 minutes (root: 5) and
+         *     its sessions end after 60 minutes (root: 30). Opening it starts sshd
+         *     on port 22, reachable from private and link-local addresses only.
+         *     Five wrong codes lock code entry (429 with Retry-After).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        code: string;
+                        /**
+                         * @description Log in as root instead of maint
+                         * @default false
+                         */
+                        root?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Opened */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            window_id: string;
+                            /** @description Unix time; no certificates after it */
+                            expires_at: number;
+                            /** @description Unix time; sessions are ended then */
+                            sessions_end_at: number;
+                            root: boolean;
+                            /** @enum {string} */
+                            user: "maint" | "root";
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        /** Close the maintenance window (stops sshd, ending its sessions) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Closed (also when none was open) */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/maintenance/certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sign a 5-minute SSH user certificate for a fresh Ed25519 key
+         * @description The certificate is bound to the requesting address
+         *     (source-address), allows only a PTY, and names the account in its
+         *     key ID. Trust the device with `@cert-authority <host> <host_ca>`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        window_id: string;
+                        /** @description OpenSSH public key line, ssh-ed25519 only */
+                        public_key: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Signed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @description OpenSSH certificate line (ssh-ed25519-cert-v01@openssh.com) */
+                            certificate: string;
+                            valid_before: number;
+                            serial: number;
+                            /** @description Host CA public key line */
+                            host_ca: string;
+                            /** @enum {string} */
+                            principal: "maint" | "maint-root";
+                            /** @enum {string} */
+                            user: "maint" | "root";
+                            /** @description The host name this request used */
+                            host: string;
+                            port: number;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audio": {
         parameters: {
             query?: never;
@@ -1582,6 +1779,19 @@ export interface components {
             revision: number;
             document: components["schemas"]["scene.schema"];
         };
+        MaintenanceWindow: {
+            window_id: string;
+            root: boolean;
+            /** @description Account name */
+            actor: string;
+            /** @enum {string} */
+            user: "maint" | "root";
+            opened_at: number;
+            expires_at: number;
+            sessions_end_at: number;
+            /** @description Certificates can still be issued */
+            accepting: boolean;
+        };
         Error: {
             error: {
                 /**
@@ -1593,6 +1803,8 @@ export interface components {
                  *     too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
                  *     weak_password(422) user_exists(409) last_admin(409)
                  *     unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
+                 *     invalid_code(401, maintenance) code_throttled(429) window_open(409) window_closed(409)
+                 *     maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */

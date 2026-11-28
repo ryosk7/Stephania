@@ -36,7 +36,7 @@ class Control < Sinatra::Base
   # Reads are allowed except accounts and credentials.
   OPERATOR_WRITES = [%w[POST /api/v1/stream/start], %w[POST /api/v1/stream/stop], %w[POST /api/v1/program/transition],
     %w[PUT /api/v1/audio], %w[DELETE /api/v1/auth/session], %w[PUT /api/v1/auth/password]].freeze
-  ADMIN_ONLY_READS = %r{\A/api/v1/(users|credentials)(/|\z)}
+  ADMIN_ONLY_READS = %r{\A/api/v1/(users|credentials|maintenance)(/|\z)}
 
   # Engine IPC error code -> HTTP status. Unknown codes are a contract
   # violation by the engine and surface as 502.
@@ -62,7 +62,7 @@ class Control < Sinatra::Base
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
-    attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone, :assets_dir
+    attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone, :maint, :assets_dir
     attr_writer :throttle
 
     def throttle = (@throttle ||= Accounts::Throttle.new)
@@ -98,6 +98,9 @@ class Control < Sinatra::Base
       # stephania-phone speaks the same framing (docs/PHONE.md); answers wait for
       # ICE gathering, hence the longer timeout.
       self.phone = EngineClient.new(socket_path: env.fetch("STEPHANIA_PHONE_SOCKET", "/run/stephania-phone/phone.sock"), timeout: 8.0)
+      # stephania-maint (docs/MAINTENANCE.md), same framing. Starting sshd
+      # happens inside window.open, hence the longer timeout.
+      self.maint = EngineClient.new(socket_path: env.fetch("STEPHANIA_MAINT_SOCKET", "/run/stephania-maint/maint.sock"), timeout: 15.0, max_connections: 2)
       self.assets_dir = env.fetch("STEPHANIA_ASSETS_DIR") { File.join(Dir.tmpdir, "stephania-assets-#{Process.pid}") }
       configure_storage(env.fetch("STEPHANIA_CONTROL_DB", ":memory:"))
       configure_events(interval: Float(env.fetch("STEPHANIA_CONTROL_POLL_SECONDS", "1.0")))
@@ -182,6 +185,30 @@ class Control < Sinatra::Base
     rescue EngineClient::Unavailable
       fail_with 503, "phone_unavailable", "phone media service is not reachable"
     end
+
+    # stephania-maint error code -> HTTP status. "internal" (e.g. sshd did
+    # not start) is the device's fault, not the request's.
+    MAINT_STATUS = {"invalid_code" => 401, "code_throttled" => 429, "window_open" => 409, "window_closed" => 409,
+                    "invalid_params" => 422, "internal" => 503}.freeze
+
+    def maint_call(method, params)
+      settings.maint.call(method, params, request_id: request_id)
+    rescue EngineClient::RemoteError => e
+      retry_after = e.error["retry_after"]
+      headers "Retry-After" => retry_after.to_s if e.code == "code_throttled" && retry_after.is_a?(Integer)
+      code = e.code == "internal" ? "maintenance_failed" : e.code
+      fail_with MAINT_STATUS.fetch(e.code, 502), code, e.message
+    rescue EngineClient::Unavailable
+      fail_with 503, "maintenance_unavailable", "maintenance service is not reachable"
+    end
+
+    # Who asked, for the device's audit log: the account name, or "owner"
+    # for an enrolled owner token (and the loopback bootstrap token).
+    def maint_actor = @principal[:username] || "owner"
+
+    # The TCP peer itself, never X-Forwarded-For: certificates are bound to
+    # this address (source-address), and there is no proxy in front.
+    def client_addr = request.env["REMOTE_ADDR"].to_s
 
     def scene_row(id)
       fail_with 400, "invalid_id", "scene id must match #{ID.source}" unless id.match?(ID)
@@ -818,6 +845,42 @@ class Control < Sinatra::Base
     AudioSettings.save(db, merged)
     settings.events.publish("audio.configured", {inputs: merged.values})
     json_reply({stored: merged.values, engine: applied, applied: !applied.nil?})
+  end
+
+  # Maintenance SSH (docs/MAINTENANCE.md). Admins only; control relays to
+  # stephania-maint, which checks the code and holds the CAs.
+  get "/api/v1/maintenance" do
+    json_reply(maint_call("status", {}))
+  end
+
+  post "/api/v1/maintenance/window" do
+    input = read_json
+    unless input.is_a?(Hash) && (input.keys - %w[code root]).empty? && input["code"].is_a?(String) &&
+        input["code"].match?(/\A[0-9]{6}\z/) && [nil, true, false].include?(input["root"])
+      fail_with 422, "invalid_request", "body must be {code: 6 digits, root?: boolean}"
+    end
+    window = maint_call("window.open", {actor: maint_actor, client_addr: client_addr, code: input["code"], root: input["root"] == true})
+    settings.events.publish(window["root"] ? "maintenance.root_window_opened" : "maintenance.window_opened",
+      {actor: window["actor"], window_id: window["window_id"], expires_at: window["expires_at"], root: window["root"]})
+    json_reply(window.slice("window_id", "expires_at", "sessions_end_at", "root", "user"), 201)
+  end
+
+  post "/api/v1/maintenance/certificate" do
+    input = read_json
+    unless input.is_a?(Hash) && input.keys.sort == %w[public_key window_id] && input["window_id"].is_a?(String) &&
+        input["window_id"].match?(/\A[0-9a-f]{16}\z/) && input["public_key"].is_a?(String) && input["public_key"].bytesize <= 512
+      fail_with 422, "invalid_request", "body must be {window_id, public_key (ssh-ed25519 …)}"
+    end
+    cert = maint_call("cert.sign", {window_id: input["window_id"], public_key: input["public_key"], client_addr: client_addr})
+    json_reply(cert.slice("certificate", "valid_before", "serial", "host_ca", "principal", "user")
+      .merge("host" => request.host, "port" => 22))
+  end
+
+  delete "/api/v1/maintenance/window" do
+    closed = maint_call("window.close", {actor: maint_actor})
+    settings.events.publish("maintenance.window_closed", {actor: maint_actor}) if closed["closed"]
+    status 204
+    ""
   end
 
   # Device CA certificate (public, no credentials). Browsers on a PC need it

@@ -10,6 +10,9 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {fragment, fromHex, ProvisioningError, ProvisioningSession, toHex, type BleTransport} from './index';
 
 const bin = process.env.STEPHANIA_PROVISION_BIN;
+// Optional: the real maintenance service, so enrollment rotates and delivers
+// its code secret (docs/MAINTENANCE.md).
+const maintBin = process.env.STEPHANIA_MAINT_BIN;
 
 /** Plays the BLE adapter: forwards 20-byte fragments over the device socket. */
 class SocketTransport implements BleTransport {
@@ -54,16 +57,22 @@ class SocketTransport implements BleTransport {
 }
 
 describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () => {
-  let dir: string, child: ChildProcess, sock: Socket;
+  let dir: string, child: ChildProcess, maint: ChildProcess | undefined, sock: Socket;
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'stephania-ts-'));
+    const maintSocket = maintBin ? join(dir, 'm.sock') : '';
+    if (maintBin) {
+      maint = spawn(maintBin, [], {env: {...process.env, STEPHANIA_MAINT_DIR: join(dir, 'maint'), STEPHANIA_MAINT_SOCKET: maintSocket,
+        STEPHANIA_PKI_DIR: join(dir, 'pki'), STEPHANIA_MAINT_SYSTEMCTL: 'true'}, stdio: 'ignore'});
+      for (let i = 0; i < 100 && !existsSync(maintSocket); i++) await new Promise(r => setTimeout(r, 30));
+    }
     child = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(dir, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: dir,
       STEPHANIA_NETWORK_BACKEND: 'virtual', STEPHANIA_PKI_DIR: join(dir, 'pki'),
-      STEPHANIA_MANAGEMENT_TOKENS: join(dir, 'tokens.json')}, stdio: 'ignore'});
+      STEPHANIA_MANAGEMENT_TOKENS: join(dir, 'tokens.json'), STEPHANIA_MAINT_SOCKET: maintSocket}, stdio: 'ignore'});
     for (let i = 0; i < 100 && !existsSync(join(dir, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
     sock = await new Promise<Socket>((resolve, reject) => { const s = connect(join(dir, 'p.sock'), () => resolve(s)); s.on('error', reject); });
   });
-  afterAll(() => { sock?.destroy(); child?.kill(); rmSync(dir, {recursive: true, force: true}); });
+  afterAll(() => { sock?.destroy(); child?.kill(); maint?.kill(); rmSync(dir, {recursive: true, force: true}); });
 
   it('claims, scans and joins with sealed credentials; lost responses are replayed', async () => {
     const t = new SocketTransport(sock, 'AA:00:00:00:00:01');
@@ -117,6 +126,13 @@ describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () 
     const stored = JSON.parse(readFileSync(join(dir, 'tokens.json'), 'utf8')).tokens;
     expect(stored).toHaveLength(1);
     expect(JSON.stringify(stored)).not.toContain(e.token.slice(4));
+    if (maintBin) {
+      // The secret stephania-maint now verifies codes with, delivered sealed.
+      const secret = JSON.parse(readFileSync(join(dir, 'maint', 'state.json'), 'utf8')).otp_secret as string;
+      expect(e.otpSecret).toBe(Buffer.from(secret, 'hex').toString('base64'));
+    } else {
+      expect(e.otpSecret).toBeUndefined();
+    }
     await expect(other.enrollManagement()).rejects.toMatchObject({code: 'bad_proof'});
   });
 

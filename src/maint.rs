@@ -177,6 +177,25 @@ impl Maintenance {
 
     pub fn host_ca_line(&self) -> String { self.secrets.host_ca.public_line("stephania-host-ca") }
     pub fn otp_secret(&self) -> &[u8] { &self.secrets.otp_secret }
+
+    /// Replaces the code secret (a new Connect enrollment, delivered sealed
+    /// over BLE by stephania-provision). Codes from the old secret stop
+    /// working at once; an open window is closed, since it was opened with
+    /// a code the owner may no longer be able to vouch for.
+    pub fn rotate_otp_secret(&mut self) -> Result<(Vec<u8>, Option<Window>), String> {
+        let mut secret = vec![0u8; 20];
+        SystemRandom::new().fill(&mut secret).map_err(|_| "random source failed".to_string())?;
+        let previous = std::mem::replace(&mut self.secrets.otp_secret, secret.clone());
+        let previous_step = self.secrets.last_code_step.take();
+        if let Err(e) = self.save() {
+            self.secrets.otp_secret = previous;
+            self.secrets.last_code_step = previous_step;
+            return Err(e);
+        }
+        self.audit("maintenance.code_secret_rotated", json!({}));
+        let closed = self.close(None, "stephania-maint", "code_secret_rotated").ok().flatten();
+        Ok((secret, closed))
+    }
     pub fn window(&self) -> Option<&Window> { self.window.as_ref() }
 
     pub fn status(&self, now: u64) -> Value {
@@ -289,6 +308,8 @@ fn valid_actor(a: &str) -> bool {
 /// Only private and link-local clients may get certificates.
 fn lan_addr(s: &str) -> Result<IpAddr, MaintError> {
     let ip: IpAddr = s.parse().map_err(|_| MaintError::InvalidParams("invalid client_addr".into()))?;
+    // A dual-stack listener reports IPv4 clients as ::ffff:a.b.c.d.
+    let ip = match ip { IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4), v4 => v4 };
     let lan = match ip {
         IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
@@ -382,6 +403,34 @@ mod tests {
         assert!(m.audit.iter().any(|e| e.kind == "maintenance.root_window_opened"));
         assert!(m.audit.iter().any(|e| e.kind == "maintenance.root_certificate_issued"));
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn rotating_the_code_secret_retires_old_codes_and_closes_the_window() {
+        let d = dir();
+        let mut m = Maintenance::open(&d).unwrap();
+        let old = m.otp_secret().to_vec();
+        let w = m.open_window("alice", "10.0.0.4", &code(&m, T), false, T).unwrap();
+        let (secret, closed) = m.rotate_otp_secret().unwrap();
+        assert_eq!(closed.map(|c| c.id), Some(w.id));
+        assert_ne!(secret, old);
+        assert_eq!(secret.len(), 20);
+        let stale = format!("{:06}", totp::code(&old, T + 30));
+        assert_eq!(m.open_window("alice", "10.0.0.4", &stale, false, T + 30), Err(MaintError::InvalidCode));
+        // The new secret persists, and its codes work (no step is marked used).
+        let mut restarted = Maintenance::open(&d).unwrap();
+        assert_eq!(restarted.otp_secret(), &secret[..]);
+        assert!(restarted.open_window("alice", "10.0.0.4", &code(&restarted, T + 30), false, T + 30).is_ok());
+        assert!(m.audit.iter().any(|e| e.kind == "maintenance.code_secret_rotated"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn ipv4_mapped_clients_are_treated_as_ipv4() {
+        assert_eq!(lan_addr("::ffff:192.168.1.20").unwrap(), "192.168.1.20".parse::<IpAddr>().unwrap());
+        assert!(lan_addr("::ffff:8.8.8.8").is_err());
+        assert!(lan_addr("2001:db8::1").is_err());
+        assert!(lan_addr("fe80::1").is_ok());
     }
 
     #[test]
