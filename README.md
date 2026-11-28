@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/stephania-lockup-dark.png">
+    <img src="brand/stephania-lockup-light.png" alt="Stephania" width="360">
+  </picture>
+</p>
+
 # Stephania
 
 **The open-source operating system for live broadcasting.**

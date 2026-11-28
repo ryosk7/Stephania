@@ -29,7 +29,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--fill); padd
 .nav { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--stage) 82%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid var(--stage-border); color: var(--stage-text); }
 .nav-row { display: flex; align-items: center; justify-content: space-between; height: 60px; }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 19px; letter-spacing: -.3px; text-decoration: none; }
-.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 4px color-mix(in srgb, var(--live) 22%, transparent); }
+.mark { display: block; flex: none; }
 .nav nav { display: flex; align-items: center; gap: 28px; font-size: 15px; }
 .nav nav a { text-decoration: none; color: var(--stage-sec); }
 .nav nav a:hover { color: var(--stage-text); }
