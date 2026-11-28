@@ -218,3 +218,35 @@ metrics, and a unique expected profile manifest. Transport additionally
 checks audio packet coverage and maximum video timestamp gap. Reports remain
 provisional; neither hardware acceptance nor full production equivalence
 is claimed. Real-device smoke is separate, manual and not a YouTube test.
+
+## Workflow security
+
+- **Pinned actions.** Every `uses:` of an action outside this repository
+  names a full commit SHA with its release as a comment
+  (`owner/action@<sha> # vX.Y.Z`); `.github/dependabot.yml` proposes
+  updates weekly, after a 7-day cooldown. `ci/test-ci-contracts.py` fails on
+  an unpinned reference. The Rust toolchain in `cargo-deny` comes from the
+  runner's rustup instead of a third-party action.
+- **Release and TestFlight builds trust no shared cache.** The cached-build
+  action takes `cache: none` (no restore, no save) and `local-image: 'true'`
+  (the toolchain image is built from its committed Dockerfile instead of
+  pulling the mutable GHCR tag); release.yml uses both. setup-node runs
+  without `cache:` there. Signing happens in a separate job with no
+  dependency code (docs/RELEASE.md).
+- **Checkouts drop the token** (`persist-credentials: false`) except where a
+  job pushes (tag-release.yml).
+- **Self-hosted runners.** `stephania-pi5` and `stephania-lab` are
+  persistent hosts with sudo on the maintainer's network. The jobs in this
+  repository that use them run only on `workflow_dispatch` in
+  `ryosk7/Stephania` (checked by `ci/test-ci-contracts.py`). That does not
+  stop a pull request from a fork from adding its own workflow with
+  `runs-on: [self-hosted, stephania-pi5]`, because pull requests run the
+  workflow files of their head. Repository settings have to close that:
+  - Settings > Actions > General > "Approval for running fork pull request
+    workflows from contributors": **Require approval for all external
+    contributors** (the default covers only first-time contributors).
+  - Keep the runners in a runner group that does not allow public
+    repositories, or register them only while a dispatched run needs them;
+    prefer ephemeral (just-in-time) runners that are reimaged per job.
+  - Never approve a fork pull request that touches `.github/` without
+    reading it.

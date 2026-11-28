@@ -1,5 +1,6 @@
 """Cheap negative tests: incomplete, wrong profile, failed metrics must fail."""
 import json
+import re
 import pathlib
 import subprocess
 import tempfile
@@ -66,6 +67,93 @@ class Contracts(unittest.TestCase):
     def test_shell_syntax(self):
         for p in list(CI.glob("*.sh"))+list((CI.parent/"tests").glob("*.sh")):
             subprocess.run(["bash","-n",str(p)],check=True)
+
+def jobs(path):
+    """Top-level jobs of a workflow as {name: text}, without a YAML parser."""
+    lines = path.read_text().splitlines()
+    start = lines.index("jobs:") + 1
+    out, name = {}, None
+    for line in lines[start:]:
+        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if m:
+            name = m.group(1); out[name] = []
+        elif name:
+            out[name].append(line)
+    return {k: "\n".join(v) for k, v in out.items()}
+
+
+def steps(job):
+    """Steps of a job's text, each starting at its `- ` line."""
+    parts = re.split(r"\n(?=      - )", job)
+    return [p for p in parts if p.lstrip().startswith("- ")]
+
+
+class WorkflowPolicy(unittest.TestCase):
+    WF = CI.parent / ".github/workflows"
+
+    def test_actions_pinned_to_commit(self):
+        files = list(self.WF.glob("*.yml")) + list((CI.parent / ".github/actions").glob("*/action.yml"))
+        for p in files:
+            for line in p.read_text().splitlines():
+                m = re.match(r"^\s*(?:- )?uses:\s*(\S+)(.*)$", line)
+                if not m or m.group(1).startswith("./"):
+                    continue
+                self.assertRegex(m.group(1), r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$", f"{p.name}: {line.strip()}")
+                self.assertRegex(m.group(2), r"^ # v\d+\.\d+\.\d+\b", f"{p.name}: {line.strip()} needs a # vX.Y.Z comment")
+
+    def test_self_hosted_jobs_only_on_dispatch(self):
+        for p in self.WF.glob("*.yml"):
+            for name, job in jobs(p).items():
+                if "self-hosted" not in job:
+                    continue
+                cond = re.search(r"^    if: (.*)$", job, re.M)
+                self.assertIsNotNone(cond, f"{p.name}:{name} runs on a self-hosted runner without an if:")
+                self.assertIn("github.event_name == 'workflow_dispatch'", cond.group(1), f"{p.name}:{name}")
+                self.assertIn("github.repository == 'ryosk7/Stephania'", cond.group(1), f"{p.name}:{name}")
+
+    def test_release_signing_isolated(self):
+        j = jobs(self.WF / "release.yml")
+        self.assertEqual(set(j), {"prepare", "image", "stephctl", "sign", "publish"})
+        for name, job in j.items():
+            if name != "sign":
+                self.assertNotIn("secrets.STEPHANIA_", job, f"{name} must not see signing secrets")
+            if name != "publish":
+                self.assertNotRegex(job, r"contents: write", f"{name} must not get a write token")
+            self.assertNotIn("--clobber", job)
+            self.assertNotIn("uses: actions/cache", job, f"{name} must not restore shared caches")
+            self.assertNotIn("cache: shared", job)
+        sign = j["sign"]
+        self.assertIn("environment: ${{ needs.prepare.outputs.signing == 'production' && 'release' || 'release-dry-run' }}", sign)
+        for tool in ("npm ", "npx ", "cargo ", "bundle ", "gem ", "pip ", "docker ", "cached-build", "setup-node"):
+            self.assertNotIn(tool, sign, f"sign job runs {tool.strip()}")
+        self.assertIn("/dev/shm", sign)
+        self.assertIn("STEPHANIA_STAGE_DIGEST", sign)
+        self.assertIn("cache: none", j["image"])
+        self.assertIn("local-image: 'true'", j["image"])
+        self.assertIn("merge-base --is-ancestor", j["prepare"])
+        # Template expansion of inputs inside run: scripts.
+        text = (self.WF / "release.yml").read_text()
+        for m in re.finditer(r"\$\{\{\s*(github\.event\.inputs|inputs)\.", text):
+            line = text[:m.start()].rsplit("\n", 1)[-1]
+            self.assertRegex(line.strip(), r"^(ref|[A-Z_]+):", f"input expanded outside env/with: {line.strip()}")
+
+    def test_testflight_key_scoped(self):
+        p = self.WF / "testflight.yml"
+        (job,) = jobs(p).values()
+        self.assertIn("environment: testflight", job)
+        self.assertIn("github.ref == 'refs/heads/main'", job)
+        head = job.split("    steps:")[0]
+        self.assertNotIn("secrets.", head, "no job-level secrets")
+        names = []
+        for st in steps(job):
+            if "secrets.ASC_KEY_P8 }}" in st:
+                names.append(re.search(r"name: (.*)", st).group(1))
+            if re.search(r"\bnpm ci\b|\bnpx\b", st):
+                self.assertNotIn("secrets.", st)
+        self.assertEqual(names, ["API key"])
+        text = p.read_text()
+        self.assertLess(text.index("npx expo prebuild"), text.index("name: API key"), "dependency code runs before the key exists")
+
 
 if __name__ == "__main__":
     unittest.main()

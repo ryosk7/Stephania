@@ -40,12 +40,14 @@ jobs:
       media: ${{ steps.changes.outputs.media }}
       selection: ${{ steps.changes.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Test CI measurement and selection contracts
         run: |
           python3 ci/test-ci-contracts.py
+          python3 ci/test_sbom.py
           python3 ci/plan.py --self-test
           python3 ci/changes.py --self-test
           python3 -m compileall -q ci
@@ -54,7 +56,7 @@ jobs:
           python3 ci/check-qualification.py --self-test
           python3 ci/check-qualification.py
           bash -n tools/qualification/collect.sh
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/go/pkg/mod
@@ -80,7 +82,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,7 +107,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -112,7 +118,7 @@ jobs:
         with:
           profile: arm64-release
           command: cargo build --release --locked --all-features --bin stephania --bin stephania-native-av --bin stephania-ci-encode
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-native-binaries
           path: |
@@ -128,7 +134,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -148,7 +156,7 @@ jobs:
           grep -q "accelerated_ci::accelerated_three_hour_rtmp_roundtrip ... ok" fast-results/simulation.txt
           grep -q "accelerated_ci::accelerated_three_hour_rate_recovery ... ok" fast-results/simulation.txt
           cat fast-results/timing.txt >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: logical-results
@@ -165,9 +173,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg iproute2 openssl stress-ng
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ci-native-binaries
           path: target/release
@@ -183,7 +193,7 @@ jobs:
           for report in transport-results/*/summary.md e2e-results/summary.md; do
             if [[ -f "$report" ]]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: transport-${{ matrix.scenario }}
@@ -198,16 +208,18 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg openssl
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ci-native-binaries
           path: target/release
       - run: chmod +x target/release/stephania
       - name: Composed broadcast with scene changes (60s)
         run: timeout --kill-after=5s 60 bash ci/composition-e2e.sh target/release/stephania composition-results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: composition
@@ -222,16 +234,18 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg openssl
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ci-native-binaries
           path: target/release
       - run: chmod +x target/release/stephania
       - name: Program audio mix with live reconfiguration (30s)
         run: timeout --kill-after=5s 60 bash ci/audio-e2e.sh target/release/stephania audio-results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: audio
@@ -248,13 +262,15 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2t64 libx264-164 libavcodec60 libavutil58 ffmpeg fonts-dejavu-core tesseract-ocr tesseract-ocr-eng
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ci-native-binaries
           path: target/release
@@ -273,7 +289,7 @@ jobs:
         if: always()
         run: |
           if [[ -f ci-results/summary.md ]]; then cat ci-results/summary.md >> "$GITHUB_STEP_SUMMARY"; else echo "Quality measurements incomplete; inspect artifacts and logs." >> "$GITHUB_STEP_SUMMARY"; fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: quality-${{ matrix.preset }}
@@ -342,20 +358,23 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 220
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust toolchain (stable)
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Dependencies
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg libx264-dev libavcodec-dev libavutil-dev pkg-config
       - run: cargo build --release --locked --features native-aac,native-x264 --bin stephania-ci-encode
       - run: bash ci/soak.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: arm64-three-hour-soak

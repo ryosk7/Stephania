@@ -17,18 +17,25 @@ defaults:
 
 jobs:
   pi5-hardware:
+    # Self-hosted, persistent lab host: never for pull requests or forks,
+    # only a maintainer's dispatch in this repository (ci/README.md).
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ryosk7/Stephania'
     runs-on: [self-hosted, Linux, ARM64, stephania-pi5]
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: |
           grep -qi 'Raspberry Pi 5' /proc/device-tree/model
           uname -m | grep -Eq 'aarch64|arm64'
           ls -l /dev/video*
           arecord -l
       - run: cargo build --release --locked --all-features --bin stephania
-      - run: LAB_INPUT=physical LAB_SECONDS=${{ inputs.seconds }} bash tests/virtual-lab/run.sh
-      - uses: actions/upload-artifact@v4
+      - env:
+          LAB_SECONDS: ${{ inputs.seconds }}
+        run: LAB_INPUT=physical bash tests/virtual-lab/run.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: physical-native-evidence
