@@ -14,8 +14,8 @@
 //! `otp.rotate {}` → `{otp_secret}` (hex), for `management.enroll`.
 //! Root and the service's own uid may call everything.
 //!
-//! A second socket, `STEPHANIA_MAINT_OPS_SOCKET` (default
-//! `/run/stephania-maint/ops.sock`, group `STEPHANIA_MAINT_OPS_GID`), is the
+//! A second socket, `STEPHANIA_MAINT_OPS_SOCKET` (default `ops.sock` next
+//! to the main socket, group `STEPHANIA_MAINT_OPS_GID`), is the
 //! broker for `steph`: the maintenance login (`STEPHANIA_MAINT_OPS_UIDS`)
 //! and root may call `ops.status {}`, `ops.restart {unit, actor, force}`
 //! (short names, allowlist), `ops.reboot {actor, force}`,
@@ -102,8 +102,12 @@ mod unix {
             systemctl: env_or("STEPHANIA_MAINT_SYSTEMCTL", "systemctl"),
             sshd_unit: env_or("STEPHANIA_MAINT_SSHD_UNIT", "stephania-sshd.service"),
             enroll_uids: uid_list("STEPHANIA_MAINT_ENROLL_UIDS")?,
-            ops_socket: Some(PathBuf::from(env_or("STEPHANIA_MAINT_OPS_SOCKET", "/run/stephania-maint/ops.sock")))
-                .filter(|p| p.as_os_str() != "none"),
+            // Next to maint.sock unless set; "none" turns the broker off.
+            ops_socket: match std::env::var("STEPHANIA_MAINT_OPS_SOCKET").ok().filter(|v| !v.is_empty()) {
+                Some(v) if v == "none" => None,
+                Some(v) => Some(PathBuf::from(v)),
+                None => Some(PathBuf::from(env_or("STEPHANIA_MAINT_SOCKET", "/run/stephania-maint/maint.sock")).with_file_name("ops.sock")),
+            },
             ops_gid: std::env::var("STEPHANIA_MAINT_OPS_GID").ok().filter(|v| !v.is_empty())
                 .map(|v| v.parse::<u32>().map_err(|_| format!("invalid STEPHANIA_MAINT_OPS_GID: {v}"))).transpose()?,
             ops_uids: uid_list("STEPHANIA_MAINT_OPS_UIDS")?,
