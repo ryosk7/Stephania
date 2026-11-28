@@ -50,27 +50,45 @@ check "maintenance CAs created on data" test -s /var/lib/stephania/maint/user_ca
 check "no maintenance sshd without a window" sh -c '! systemctl is-active -q stephania-sshd && ! ss -Hltn "sport = :22" | grep -q .'
 check "Debian ssh units masked" sh -c '[ "$(systemctl is-enabled ssh.service 2>&1)" = masked ]'
 check "nftables limits SSH to LAN sources" sh -c 'nft list table inet stephania | grep -q "tcp dport 22 drop"'
+check "nftables gives SSH no loopback allowance" sh -c '! nft list table inet stephania | grep -qE "127\.0\.0\.0/8|[ {,]::1[ ,}]"'
+check "maintenance sshd runs without PAM (sessions stay in its cgroup)" grep -qx "UsePAM no" /etc/stephania/sshd_config
+# stephania-maint refuses loopback and the device's own addresses as
+# clients: the test client is a second address on lo (which the device
+# PKI does not list), connecting to the device's LAN address.
+mcli=10.213.0.2
+ip addr add "$mcli/32" dev lo
+dip=$(ruby -rjson -e 'puts JSON.parse(File.read("/var/lib/stephania/pki/endpoint.json"))["ips"].find { |i| i.match?(/\A\d+\.\d+\.\d+\.\d+\z/) }.to_s')
+info "maintenance test client $mcli -> device $dip"
 maint_rpc() {
   ruby -rjson -rsocket -e 's = UNIXSocket.new("/run/stephania-maint/maint.sock"); b = {version: 1, request_id: "smoke", method: ARGV[0], params: JSON.parse(ARGV[1])}.to_json
     s.write([b.bytesize].pack("N") + b); n = s.read(4).unpack1("N"); r = JSON.parse(s.read(n)); puts(r["ok"] ? r["result"].to_json : {error: r["error"]["code"]}.to_json)' "$1" "$2"
 }
-maint_code=$(ruby -rjson -ropenssl -e 'k = [JSON.parse(File.read("/var/lib/stephania/maint/state.json"))["otp_secret"]].pack("H*")
-  m = OpenSSL::HMAC.digest("SHA1", k, [Time.now.to_i / 30].pack("Q>")); o = m.bytes[19] & 15
-  printf("%06d", (m[o, 4].unpack1("N") & 0x7fffffff) % 1_000_000)')
-win=$(maint_rpc window.open "{\"actor\":\"smoke\",\"client_addr\":\"127.0.0.1\",\"code\":\"$maint_code\"}" | ruby -rjson -e 'puts JSON.parse($stdin.read)["window_id"].to_s')
+# maint_code [<steps ahead>]
+maint_code() { ruby -rjson -ropenssl -e 'k = [JSON.parse(File.read("/var/lib/stephania/maint/state.json"))["otp_secret"]].pack("H*")
+  m = OpenSSL::HMAC.digest("SHA1", k, [Time.now.to_i / 30 + ARGV[0].to_i].pack("Q>")); o = m.bytes[19] & 15
+  printf("%06d", (m[o, 4].unpack1("N") & 0x7fffffff) % 1_000_000)' "${1:-0}"; }
+if maint_rpc window.open "{\"actor\":\"smoke\",\"client_addr\":\"127.0.0.1\",\"code\":\"$(maint_code)\",\"root\":true}" | grep -q invalid_params; then ok "a loopback client gets no window"; else bad "loopback client"; fi
+win=$(maint_rpc window.open "{\"actor\":\"smoke\",\"client_addr\":\"$mcli\",\"code\":\"$(maint_code)\"}" | ruby -rjson -e 'puts JSON.parse($stdin.read)["window_id"].to_s')
 if [ -n "$win" ]; then ok "maintenance window opened with a code"; else bad "maintenance window: $(journalctl -b -u stephania-maint -n 5 --no-pager | tr '\n' ' ')"; fi
 for i in $(seq 20); do systemctl is-active -q stephania-sshd && break; sleep 1; done
 check "maintenance sshd started for the window (polkit rule)" systemctl is-active stephania-sshd
 mk=$(mktemp -d)
-ssh-keygen -q -t ed25519 -N '' -f "$mk/id"
-maint_rpc cert.sign "{\"window_id\":\"$win\",\"public_key\":\"$(cat "$mk/id.pub")\",\"client_addr\":\"127.0.0.1\"}" >"$mk/sign.json"
-ruby -rjson -e 'r = JSON.parse(File.read(ARGV[0])); File.write(ARGV[1], r["certificate"].to_s + "\n"); File.write(ARGV[2], "@cert-authority " + ARGV[3] + " " + r["host_ca"].to_s + "\n")' \
-  "$mk/sign.json" "$mk/id-cert.pub" "$mk/known_hosts" "$host.local"
+# maint_cert <window_id>: a fresh key and its certificate in $mk.
+maint_cert() {
+  rm -f "$mk/id" "$mk/id.pub" "$mk/id-cert.pub"
+  ssh-keygen -q -t ed25519 -N '' -f "$mk/id"
+  maint_rpc cert.sign "{\"window_id\":\"$1\",\"actor\":\"smoke\",\"public_key\":\"$(cat "$mk/id.pub")\",\"client_addr\":\"$mcli\"}" >"$mk/sign.json"
+  ruby -rjson -e 'r = JSON.parse(File.read(ARGV[0])); File.write(ARGV[1], r["certificate"].to_s + "\n"); File.write(ARGV[2], "@cert-authority " + ARGV[3] + " " + r["host_ca"].to_s + "\n")' \
+    "$mk/sign.json" "$mk/id-cert.pub" "$mk/known_hosts" "$host.local"
+}
+maint_cert "$win"
 ssh_maint() { ssh -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile="$mk/id" -o CertificateFile="$mk/id-cert.pub" \
-  -o UserKnownHostsFile="$mk/known_hosts" -o StrictHostKeyChecking=yes -o HostKeyAlias="$host.local" -o ConnectTimeout=10 "$1@127.0.0.1" "$2"; }
+  -o UserKnownHostsFile="$mk/known_hosts" -o StrictHostKeyChecking=yes -o HostKeyAlias="$host.local" -o ConnectTimeout=10 \
+  -o BindAddress="$mcli" "$1@$dip" "$2"; }
 login_user=$(ssh_maint maint 'id -un' 2>/dev/null)
 if [ "$login_user" = maint ]; then ok "maint logs in with a 5-minute certificate (host certificate verified)"; else bad "maint login ($login_user)"; fi
 if ssh_maint root true >/dev/null 2>&1; then bad "a maint certificate logged in as root"; else ok "a maint certificate cannot log in as root"; fi
+if ssh_maint maint 'cat /proc/self/cgroup' 2>/dev/null | grep -q 'stephania-sshd\.service'; then ok "maintenance sessions run in stephania-sshd.service's cgroup"; else bad "session cgroup: $(ssh_maint maint 'cat /proc/self/cgroup' 2>&1 | tr '\n' ' ')"; fi
 # steph inside the session: the certificate's account and window, and the device's own state.
 who=$(ssh_maint maint 'steph whoami --json' 2>/dev/null | ruby -rjson -e 'w = JSON.parse($stdin.read); puts [w["account"], w["window_id"], w["level"]].join(" ")' 2>/dev/null)
 if [ "$who" = "smoke $win maint" ]; then ok "steph whoami reads the session certificate (account, window)"; else bad "steph whoami ($who)"; fi
@@ -85,12 +103,24 @@ if ssh_maint maint 'steph restart pki' >/dev/null 2>&1 && [ "$(systemctl show -p
 ssh_maint maint 'steph restart sshd' >/dev/null 2>&1; rc=$?
 if [ "$rc" = 4 ]; then ok "steph refuses units outside its allowlist"; else bad "steph allowlist (exit $rc)"; fi
 journalctl -b -u stephania-maint --no-pager | grep '"maintenance.ops_restart"' | grep -q '"actor":"smoke@' && ok "broker audit names the session" || bad "broker audit"
+# A session left running (also in the background) ends with the window.
+maint_procs() { u=$(id -u maint); for d in /proc/[0-9]*; do [ "$(stat -c %u "$d" 2>/dev/null)" = "$u" ] && echo "${d#/proc/} $(tr '\0' ' ' <"$d/cmdline" 2>/dev/null)"; done; }
+ssh_maint maint 'nohup sleep 600 >/dev/null 2>&1 & sleep 600' >/dev/null 2>&1 &
+for i in $(seq 20); do maint_procs | grep -q sleep && break; sleep 1; done
 ssh_maint maint 'steph window close' >/dev/null 2>&1
 for i in $(seq 20); do systemctl is-active -q stephania-sshd || break; sleep 1; done
 check "steph window close stops the maintenance sshd" sh -c '! systemctl is-active -q stephania-sshd'
+for i in $(seq 10); do [ -z "$(maint_procs)" ] && break; sleep 1; done
+if [ -n "$(maint_procs)" ]; then bad "maint processes survived the window: $(maint_procs | tr '\n' ';')"; else ok "closing the window ends its sessions and their background processes"; fi
+# A root window: the root account must not be locked for sshd without PAM.
+rwin=$(maint_rpc window.open "{\"actor\":\"smoke\",\"client_addr\":\"$mcli\",\"code\":\"$(maint_code 1)\",\"root\":true}" | ruby -rjson -e 'puts JSON.parse($stdin.read)["window_id"].to_s')
+for i in $(seq 20); do systemctl is-active -q stephania-sshd && break; sleep 1; done
+maint_cert "$rwin"
+if [ -n "$rwin" ] && [ "$(ssh_maint root 'id -u' 2>/dev/null)" = 0 ]; then ok "a root window certificate logs in as root"; else bad "root login ($rwin): $(journalctl -b -u stephania-sshd -n 3 --no-pager | tr '\n' ' ')"; fi
 maint_rpc window.close '{"actor":"smoke"}' >/dev/null
 for i in $(seq 20); do systemctl is-active -q stephania-sshd || break; sleep 1; done
 check "maintenance sshd stopped with the window" sh -c '! systemctl is-active -q stephania-sshd'
+ip addr del "$mcli/32" dev lo
 rm -rf "$mk"
 # DNS-SD: the management service is browsable with its port.
 for i in $(seq 30); do avahi-browse -rpt _stephania._tcp 2>/dev/null | grep -q '^=.*;9443;' && break; sleep 1; done

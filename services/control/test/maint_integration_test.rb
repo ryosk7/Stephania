@@ -36,6 +36,9 @@ class MaintIntegrationTest < Minitest::Test
     header "Host", "localhost"
     header "Content-Type", "application/json"
     header "Authorization", "Bearer #{TOKEN}"
+    # A LAN client: stephania-maint refuses loopback and the device's own
+    # addresses (192.168.1.9 in endpoint.json).
+    env "REMOTE_ADDR", "192.168.1.20"
   end
 
   def teardown
@@ -88,5 +91,20 @@ class MaintIntegrationTest < Minitest::Test
     log = File.read(@log)
     assert_includes log, '"event":"maintenance.certificate_issued"'
     assert_includes log, '"actor":"owner"'
+  end
+
+  def test_loopback_and_the_device_itself_are_refused
+    ["127.0.0.1", "::1", "192.168.1.9"].each do |addr|
+      post "/api/v1/maintenance/window", JSON.generate(code: code), {"REMOTE_ADDR" => addr}
+      assert_equal [422, "invalid_params"], [last_response.status, body.dig("error", "code")], addr
+    end
+    post "/api/v1/maintenance/window", JSON.generate(code: code)
+    assert_equal 201, last_response.status, last_response.body
+    window = body
+    post "/api/v1/maintenance/certificate", JSON.generate(window_id: window["window_id"], public_key: ssh_public_key), {"REMOTE_ADDR" => "192.168.1.30"}
+    assert_equal [403, "not_window_opener"], [last_response.status, body.dig("error", "code")]
+    post "/api/v1/maintenance/certificate", JSON.generate(window_id: window["window_id"], public_key: ssh_public_key), {"REMOTE_ADDR" => "127.0.0.1"}
+    assert_equal [422, "invalid_params"], [last_response.status, body.dig("error", "code")]
+    assert File.file?(File.join(@dir, "maint", "revoked.krl"))
   end
 end

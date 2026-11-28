@@ -73,6 +73,18 @@ pub fn session_certificate(auth_info: &str) -> Option<crate::sshcert::Certificat
     })
 }
 
+/// Creates `<parent>/<prefix>-<random>` with mode 0700. Fails rather than
+/// reuse anything that already exists there.
+pub fn private_dir(parent: &std::path::Path, prefix: &str) -> std::io::Result<std::path::PathBuf> {
+    use ring::rand::SecureRandom;
+    use std::os::unix::fs::DirBuilderExt;
+    let mut random = [0u8; 12];
+    ring::rand::SystemRandom::new().fill(&mut random).map_err(|_| std::io::Error::other("random source failed"))?;
+    let dir = parent.join(format!("{prefix}-{}", random.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    Ok(dir)
+}
+
 /// `<account>@<window_id>`.
 pub fn split_key_id(key_id: &str) -> (String, String) {
     match key_id.rsplit_once('@') {
@@ -325,6 +337,19 @@ mod tests {
         assert_eq!(units_for("engine"), Some(&["stephania.service"][..]));
         assert!(units_for("sshd").is_none());
         assert!(all_units().contains(&"stephania-update-deadline.timer"));
+    }
+
+    #[test]
+    fn private_dirs_are_fresh_and_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = std::env::temp_dir();
+        let a = private_dir(&parent, "steph-test").unwrap();
+        let b = private_dir(&parent, "steph-test").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(!std::fs::symlink_metadata(&a).unwrap().file_type().is_symlink());
+        std::fs::remove_dir(&a).ok();
+        std::fs::remove_dir(&b).ok();
     }
 
     #[test]

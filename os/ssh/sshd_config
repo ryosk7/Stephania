@@ -5,6 +5,9 @@ Port 22
 HostKey /var/lib/stephania/maint/ssh_host_ed25519_key
 HostCertificate /var/lib/stephania/maint/ssh_host_ed25519_key-cert.pub
 TrustedUserCAKeys /var/lib/stephania/maint/user_ca.pub
+# Certificates issued before the current window (stephania-maint rewrites
+# it for every window and on close; read on every authentication).
+RevokedKeys /var/lib/stephania/maint/revoked.krl
 # maint accepts the "maint" principal, root only "maint-root".
 AuthorizedPrincipalsFile /etc/stephania/ssh_principals/%u
 AuthorizedKeysFile none
@@ -21,10 +24,21 @@ PermitUserEnvironment no
 MaxAuthTries 2
 MaxSessions 4
 LoginGraceTime 20
+# Pre-authentication connections: a few per client address, so one LAN
+# host holding connections open cannot shut the owner out of a window.
+MaxStartups 10:30:60
+PerSourceMaxStartups 3
+PerSourceNetBlockSize 32:64
 ClientAliveInterval 30
 ClientAliveCountMax 4
 # steph reads the session's certificate (key ID) for its audit lines.
 ExposeAuthInfo yes
-UsePAM yes
+# No PAM: with it, pam_systemd moves every login into a logind session
+# scope outside stephania-sshd.service, and stopping the unit when the
+# window closes or reaches its limit would leave those sessions running.
+# Without it they stay in the unit's cgroup (KillMode=control-group).
+# The maint and root accounts must not be locked ("!" in /etc/shadow):
+# os/image/customize.sh sets their password field to "*".
+UsePAM no
 PrintMotd no
 LogLevel VERBOSE

@@ -195,7 +195,7 @@ class Control < Sinatra::Base
     # stephania-maint error code -> HTTP status. "internal" (e.g. sshd did
     # not start) is the device's fault, not the request's.
     MAINT_STATUS = {"invalid_code" => 401, "code_throttled" => 429, "window_open" => 409, "window_closed" => 409,
-                    "invalid_params" => 422, "internal" => 503}.freeze
+                    "not_window_opener" => 403, "invalid_params" => 422, "internal" => 503}.freeze
 
     def maint_call(method, params)
       settings.maint.call(method, params, request_id: request_id)
@@ -209,8 +209,29 @@ class Control < Sinatra::Base
     end
 
     # Who asked, for the device's audit log: the account name, or "owner"
-    # for an enrolled owner token (and the loopback bootstrap token).
-    def maint_actor = @principal[:username] || "owner"
+    # for an enrolled owner token (and the loopback bootstrap token). An
+    # account with a reserved name (created before names were reserved)
+    # would be indistinguishable from those, so it gets no maintenance.
+    def maint_actor
+      name = @principal[:username]
+      return "owner" unless name
+      if Accounts.reserved_username?(name)
+        fail_with 409, "reserved_username", "account name #{name} is reserved; use another account for maintenance"
+      end
+      name
+    end
+
+    # An account was disabled, deleted or changed: end the maintenance
+    # window it opened (stopping sshd ends its sessions). Best effort, so
+    # account management works while stephania-maint is down.
+    def end_maintenance_for(user)
+      closed = settings.maint.call("window.close", {actor: maint_actor_or_owner, opener: user[:username]}, request_id: request_id)
+      settings.events.publish("maintenance.window_closed", {actor: maint_actor_or_owner}) if closed["closed"]
+    rescue EngineClient::RemoteError, EngineClient::Unavailable
+      nil
+    end
+
+    def maint_actor_or_owner = @principal[:username] || "owner"
 
     # The TCP peer itself, never X-Forwarded-For: certificates are bound to
     # this address (source-address), and there is no proxy in front.
@@ -433,6 +454,7 @@ class Control < Sinatra::Base
       fail_with 422, "weak_password", problem
     end
     db = settings.db
+    fail_with 422, "reserved_username", "username #{input["username"]} is reserved" if Accounts.reserved_username?(input["username"])
     fail_with 409, "user_exists", "username is taken" if db[:users].where(username: input["username"]).count.positive?
     id = db[:users].insert(username: input["username"], password_hash: Accounts.hash_password(input["password"]),
       role: input["role"], disabled: false, created_at_unix: Time.now.to_i)
@@ -465,6 +487,7 @@ class Control < Sinatra::Base
       db[:sessions].where(user_id: user[:id]).delete
     end
     settings.events.close_where { |sub| sub.user_id == user[:id] }
+    end_maintenance_for(user)
     json_reply(Accounts.user_json(db[:users].where(id: user[:id]).first))
   end
 
@@ -478,6 +501,7 @@ class Control < Sinatra::Base
     end
     db[:users].where(id: user[:id]).delete
     settings.events.close_where { |sub| sub.user_id == user[:id] }
+    end_maintenance_for(user)
     status 204
     ""
   end
@@ -896,8 +920,15 @@ class Control < Sinatra::Base
 
   # Maintenance SSH (docs/MAINTENANCE.md). Admins only; control relays to
   # stephania-maint, which checks the code and holds the CAs.
+  # Only the window's opener sees its id: certificates are issued to the
+  # opener alone, and other admins have no use for it.
   get "/api/v1/maintenance" do
-    json_reply(maint_call("status", {}))
+    status_reply = maint_call("status", {})
+    window = status_reply["window"]
+    if window.is_a?(Hash) && window["actor"] != maint_actor_or_owner
+      status_reply = status_reply.merge("window" => window.except("window_id"))
+    end
+    json_reply(status_reply)
   end
 
   post "/api/v1/maintenance/window" do
@@ -908,7 +939,7 @@ class Control < Sinatra::Base
     end
     window = maint_call("window.open", {actor: maint_actor, client_addr: client_addr, code: input["code"], root: input["root"] == true})
     settings.events.publish(window["root"] ? "maintenance.root_window_opened" : "maintenance.window_opened",
-      {actor: window["actor"], window_id: window["window_id"], expires_at: window["expires_at"], root: window["root"]})
+      {actor: window["actor"], expires_at: window["expires_at"], root: window["root"]})
     json_reply(window.slice("window_id", "expires_at", "sessions_end_at", "root", "user"), 201)
   end
 
@@ -918,7 +949,9 @@ class Control < Sinatra::Base
         input["window_id"].match?(/\A[0-9a-f]{16}\z/) && input["public_key"].is_a?(String) && input["public_key"].bytesize <= 512
       fail_with 422, "invalid_request", "body must be {window_id, public_key (ssh-ed25519 …)}"
     end
-    cert = maint_call("cert.sign", {window_id: input["window_id"], public_key: input["public_key"], client_addr: client_addr})
+    cert = maint_call("cert.sign", {window_id: input["window_id"], public_key: input["public_key"], actor: maint_actor, client_addr: client_addr})
+    settings.events.publish(cert["user"] == "root" ? "maintenance.root_certificate_issued" : "maintenance.certificate_issued",
+      {actor: maint_actor, serial: cert["serial"], valid_before: cert["valid_before"], client_addr: client_addr})
     json_reply(cert.slice("certificate", "valid_before", "serial", "host_ca", "principal", "user")
       .merge("host" => request.host, "port" => 22))
   end

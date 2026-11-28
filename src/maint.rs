@@ -8,7 +8,10 @@
 //! - `user_ca.pub`, `host_ca.pub`: the CAs' public keys (sshd's
 //!   `TrustedUserCAKeys`; what clients pin for host certificates);
 //! - `ssh_host_ed25519_key` (0600), `.pub` and `-cert.pub`: sshd's host key
-//!   and its certificate, reissued for the current names on every window.
+//!   and its certificate, reissued for the current names on every window;
+//! - `revoked.krl` (sshd's `RevokedKeys`): every user certificate issued
+//!   before the current window, so a certificate never works in a later
+//!   window, and all of them once the window has closed.
 //!
 //! Time is passed in (`now`, Unix seconds) so the rules are testable.
 use crate::sshcert::{self, CertSpec, Key, HOST_CERT, USER_CERT};
@@ -43,6 +46,8 @@ pub enum MaintError {
     Throttled { retry_after: u64 },
     WindowOpen,
     WindowClosed,
+    /// cert.sign from another account or address than the window's opener.
+    NotOpener,
     InvalidParams(String),
     Internal(String),
     /// steph asked for a unit outside its allowlist.
@@ -60,6 +65,7 @@ impl MaintError {
             Self::Throttled { .. } => "code_throttled",
             Self::WindowOpen => "window_open",
             Self::WindowClosed => "window_closed",
+            Self::NotOpener => "not_window_opener",
             Self::InvalidParams(_) => "invalid_params",
             Self::Internal(_) => "internal",
             Self::NotAllowed(_) => "not_allowed",
@@ -73,6 +79,7 @@ impl MaintError {
             Self::Throttled { retry_after } => format!("too many wrong codes, retry in {retry_after} s"),
             Self::WindowOpen => "a maintenance window is already open".into(),
             Self::WindowClosed => "no open maintenance window with that id".into(),
+            Self::NotOpener => "only the account that opened the window, from the same address, gets certificates for it".into(),
             Self::InvalidParams(m) | Self::Internal(m) | Self::Failed(m) => m.clone(),
             Self::NotAllowed(u) => format!("steph cannot restart {u}"),
             Self::OnAir => "on air: this would interrupt the stream".into(),
@@ -85,6 +92,9 @@ pub struct Window {
     pub id: String,
     pub root: bool,
     pub actor: String,
+    /// The address the window was opened from; certificates are only
+    /// issued to the same account from the same address.
+    pub client: IpAddr,
     pub opened_at: u64,
     /// No certificates after this.
     pub expires_at: u64,
@@ -97,7 +107,7 @@ impl Window {
     pub fn user(&self) -> &'static str { if self.root { "root" } else { PRINCIPAL } }
     pub fn to_json(&self, now: u64) -> Value {
         json!({
-            "window_id": self.id, "root": self.root, "actor": self.actor, "user": self.user(),
+            "window_id": self.id, "root": self.root, "actor": self.actor, "client_addr": self.client.to_string(), "user": self.user(),
             "opened_at": self.opened_at, "expires_at": self.expires_at, "sessions_end_at": self.sessions_end_at,
             "accepting": now < self.expires_at,
         })
@@ -111,14 +121,15 @@ struct Secrets {
     host_key: Key,
     otp_secret: Vec<u8>,
     serial: u64,
-    last_code_step: Option<u64>,
+    /// Code steps already used, oldest first (`totp::verify`).
+    used_code_steps: Vec<u64>,
 }
 
 impl Secrets {
     fn generate() -> Result<Self, String> {
         let mut otp_secret = vec![0u8; 20];
         SystemRandom::new().fill(&mut otp_secret).map_err(|_| "random source failed".to_string())?;
-        Ok(Self { user_ca: Key::generate()?, host_ca: Key::generate()?, host_key: Key::generate()?, otp_secret, serial: 0, last_code_step: None })
+        Ok(Self { user_ca: Key::generate()?, host_ca: Key::generate()?, host_key: Key::generate()?, otp_secret, serial: 0, used_code_steps: Vec::new() })
     }
 
     fn to_json(&self) -> Value {
@@ -126,7 +137,9 @@ impl Secrets {
             "version": 1,
             "user_ca_seed": hex(self.user_ca.seed()), "host_ca_seed": hex(self.host_ca.seed()),
             "host_key_seed": hex(self.host_key.seed()), "otp_secret": hex(&self.otp_secret),
-            "serial": self.serial, "last_code_step": self.last_code_step,
+            "serial": self.serial, "used_code_steps": self.used_code_steps,
+            // Read by earlier versions.
+            "last_code_step": self.used_code_steps.last(),
         })
     }
 
@@ -138,7 +151,10 @@ impl Secrets {
             host_key: seed("host_key_seed")?,
             otp_secret: unhex(v.get("otp_secret")?.as_str()?).filter(|s| s.len() >= 16)?,
             serial: v.get("serial")?.as_u64()?,
-            last_code_step: v.get("last_code_step").and_then(Value::as_u64),
+            used_code_steps: match v.get("used_code_steps").and_then(Value::as_array) {
+                Some(steps) => steps.iter().map(Value::as_u64).collect::<Option<Vec<_>>>()?,
+                None => v.get("last_code_step").and_then(Value::as_u64).into_iter().collect(),
+            },
         })
     }
 }
@@ -154,6 +170,10 @@ pub struct Maintenance {
     dir: PathBuf,
     secrets: Secrets,
     window: Option<Window>,
+    /// The device's own addresses, which are never clients.
+    device_addrs: Vec<IpAddr>,
+    /// Serials up to this were issued before the current window.
+    revoked_through: u64,
     failures: u32,
     locked_until: u64,
     lock_seconds: u64,
@@ -173,8 +193,11 @@ impl Maintenance {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Secrets::generate()?,
             Err(e) => return Err(format!("{}: {e}", state.display())),
         };
-        let m = Self { dir: dir.to_path_buf(), secrets, window: None, failures: 0, locked_until: 0, lock_seconds: LOCK_FIRST, audit: Vec::new() };
+        let revoked_through = secrets.serial;
+        let m = Self { dir: dir.to_path_buf(), secrets, window: None, device_addrs: Vec::new(), revoked_through, failures: 0, locked_until: 0, lock_seconds: LOCK_FIRST, audit: Vec::new() };
         m.save()?;
+        // No window survives a restart, so no certificate issued so far may.
+        m.write_revocations()?;
         write_file(&dir.join("user_ca.pub"), (m.secrets.user_ca.public_line("stephania-user-ca") + "\n").as_bytes(), 0o644)?;
         write_file(&dir.join("host_ca.pub"), (m.secrets.host_ca.public_line("stephania-host-ca") + "\n").as_bytes(), 0o644)?;
         write_file(&dir.join("ssh_host_ed25519_key"), m.secrets.host_key.private_pem("stephania-host")?.as_bytes(), 0o600)?;
@@ -185,6 +208,24 @@ impl Maintenance {
     fn save(&self) -> Result<(), String> {
         write_file(&self.dir.join("state.json"), self.secrets.to_json().to_string().as_bytes(), 0o600)
     }
+
+    /// Writes `revoked.krl` for every certificate up to `revoked_through`.
+    /// sshd reads it on every authentication.
+    fn write_revocations(&self) -> Result<(), String> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let krl = sshcert::revocation_list(&self.secrets.user_ca, Some((1, self.revoked_through)), self.revoked_through, now);
+        write_file(&self.dir.join("revoked.krl"), &krl, 0o644)
+    }
+
+    /// Revokes everything issued so far (window opened or closed).
+    fn revoke_all(&mut self) -> Result<(), String> {
+        self.revoked_through = self.secrets.serial;
+        self.write_revocations()
+    }
+
+    /// The device's own addresses (the PKI endpoint's), refused as clients:
+    /// a request that claims one comes from the device itself.
+    pub fn set_device_addrs(&mut self, addrs: &[IpAddr]) { self.device_addrs = addrs.iter().map(|ip| unmap(*ip)).collect(); }
 
     pub fn host_ca_line(&self) -> String { self.secrets.host_ca.public_line("stephania-host-ca") }
     pub fn otp_secret(&self) -> &[u8] { &self.secrets.otp_secret }
@@ -197,10 +238,10 @@ impl Maintenance {
         let mut secret = vec![0u8; 20];
         SystemRandom::new().fill(&mut secret).map_err(|_| "random source failed".to_string())?;
         let previous = std::mem::replace(&mut self.secrets.otp_secret, secret.clone());
-        let previous_step = self.secrets.last_code_step.take();
+        let previous_steps = std::mem::take(&mut self.secrets.used_code_steps);
         if let Err(e) = self.save() {
             self.secrets.otp_secret = previous;
-            self.secrets.last_code_step = previous_step;
+            self.secrets.used_code_steps = previous_steps;
             return Err(e);
         }
         self.audit("maintenance.code_secret_rotated", json!({}));
@@ -221,10 +262,10 @@ impl Maintenance {
     /// writing the host certificate (`write_host_certificate`).
     pub fn open_window(&mut self, actor: &str, client_addr: &str, code: &str, root: bool, now: u64) -> Result<Window, MaintError> {
         if !valid_actor(actor) { return Err(MaintError::InvalidParams("invalid actor".into())); }
-        let client = lan_addr(client_addr)?;
+        let client = self.client_addr(client_addr)?;
         if self.window.is_some() { return Err(MaintError::WindowOpen); }
         if now < self.locked_until { return Err(MaintError::Throttled { retry_after: self.locked_until - now }); }
-        let Some(step) = totp::verify(&self.secrets.otp_secret, code, now, self.secrets.last_code_step) else {
+        let Some(step) = totp::verify(&self.secrets.otp_secret, code, now, &self.secrets.used_code_steps) else {
             self.failures += 1;
             self.audit("maintenance.code_rejected", json!({"actor": actor, "client_addr": client.to_string(), "root": root, "failures": self.failures}));
             if self.failures >= CODE_ATTEMPTS {
@@ -235,25 +276,32 @@ impl Maintenance {
             }
             return Err(MaintError::InvalidCode);
         };
-        self.secrets.last_code_step = Some(step);
+        totp::record_used(&mut self.secrets.used_code_steps, step);
         self.save().map_err(MaintError::Internal)?;
+        self.revoke_all().map_err(MaintError::Internal)?;
         self.failures = 0;
         self.lock_seconds = LOCK_FIRST;
         let (accept, sessions) = if root { (ROOT_WINDOW_SECONDS, ROOT_SESSION_SECONDS) } else { (WINDOW_SECONDS, SESSION_SECONDS) };
-        let window = Window { id: random_id().map_err(MaintError::Internal)?, root, actor: actor.into(), opened_at: now, expires_at: now + accept, sessions_end_at: now + sessions };
+        let window = Window { id: random_id().map_err(MaintError::Internal)?, root, actor: actor.into(), client, opened_at: now, expires_at: now + accept, sessions_end_at: now + sessions };
         self.audit(if root { "maintenance.root_window_opened" } else { "maintenance.window_opened" },
             json!({"actor": actor, "client_addr": client.to_string(), "window_id": window.id, "expires_at": window.expires_at, "sessions_end_at": window.sessions_end_at}));
         self.window = Some(window.clone());
         Ok(window)
     }
 
-    /// Signs a 5-minute user certificate for `public_key` in an open window.
-    pub fn sign(&mut self, window_id: &str, public_key: &str, client_addr: &str, now: u64) -> Result<Value, MaintError> {
-        let client = lan_addr(client_addr)?;
+    /// Signs a 5-minute user certificate for `public_key` in an open window,
+    /// for the account that opened it and the address it was opened from.
+    pub fn sign(&mut self, window_id: &str, public_key: &str, actor: &str, client_addr: &str, now: u64) -> Result<Value, MaintError> {
+        let client = self.client_addr(client_addr)?;
         let window = match &self.window {
             Some(w) if w.id == window_id && now < w.expires_at => w.clone(),
             _ => return Err(MaintError::WindowClosed),
         };
+        if window.actor != actor || window.client != client {
+            self.audit("maintenance.certificate_refused", json!({"actor": actor, "client_addr": client.to_string(), "window_id": window.id,
+                "window_actor": window.actor, "reason": "not_window_opener"}));
+            return Err(MaintError::NotOpener);
+        }
         let public = sshcert::parse_public_line(public_key).map_err(MaintError::InvalidParams)?;
         self.secrets.serial += 1;
         self.save().map_err(MaintError::Internal)?;
@@ -296,9 +344,16 @@ impl Maintenance {
             (Some(_), _) => {
                 let w = self.window.take().expect("checked above");
                 self.audit("maintenance.window_closed", json!({"actor": actor, "window_id": w.id, "root": w.root, "reason": reason}));
+                if let Err(e) = self.revoke_all() { self.audit("maintenance.revocation_failed", json!({"error": e})); }
                 Ok(Some(w))
             }
         }
+    }
+
+    /// Closes the window if `opener` opened it (an account was disabled,
+    /// deleted or changed). Returns it if it was closed.
+    pub fn close_opened_by(&mut self, opener: &str, actor: &str, reason: &str) -> Option<Window> {
+        if self.window.as_ref().is_some_and(|w| w.actor == opener) { self.close(None, actor, reason).ok().flatten() } else { None }
     }
 
     /// Ends a window whose sessions have reached their limit.
@@ -310,22 +365,43 @@ impl Maintenance {
     }
 
     fn audit(&mut self, kind: &'static str, fields: Value) { self.audit.push(AuditEvent { kind, fields }); }
+
+    fn client_addr(&self, s: &str) -> Result<IpAddr, MaintError> {
+        let ip = lan_addr(s)?;
+        if self.device_addrs.contains(&ip) { return Err(MaintError::InvalidParams("client is the device itself".into())); }
+        Ok(ip)
+    }
 }
 
 fn valid_actor(a: &str) -> bool {
     (1..=64).contains(&a.len()) && a.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// Only private and link-local clients may get certificates.
+/// Only clients on the LAN may get certificates: private IPv4 and IPv6
+/// (ULA) addresses and IPv4 link-local. Never loopback, which only the
+/// device itself can use. IPv6 link-local is refused with a reason:
+/// sshd compares the interface scope of such a peer, and a certificate's
+/// source-address cannot name one, so the certificate would never match.
 fn lan_addr(s: &str) -> Result<IpAddr, MaintError> {
-    let ip: IpAddr = s.parse().map_err(|_| MaintError::InvalidParams("invalid client_addr".into()))?;
-    // A dual-stack listener reports IPv4 clients as ::ffff:a.b.c.d.
-    let ip = match ip { IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4), v4 => v4 };
+    let (addr, zone) = s.split_once('%').map_or((s, false), |(a, _)| (a, true));
+    let ip: IpAddr = addr.parse().map_err(|_| MaintError::InvalidParams("invalid client_addr".into()))?;
+    let ip = unmap(ip);
+    if zone && ip.is_ipv4() { return Err(MaintError::InvalidParams("invalid client_addr".into())); }
+    if let IpAddr::V6(v6) = ip {
+        if zone || (v6.segments()[0] & 0xffc0) == 0xfe80 {
+            return Err(MaintError::InvalidParams("IPv6 link-local clients cannot use maintenance SSH; connect to the device's IPv4 or IPv6 LAN address".into()));
+        }
+    }
     let lan = match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
-        IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
     };
     if lan { Ok(ip) } else { Err(MaintError::InvalidParams("client is not on the LAN".into())) }
+}
+
+/// A dual-stack listener reports IPv4 clients as ::ffff:a.b.c.d.
+fn unmap(ip: IpAddr) -> IpAddr {
+    match ip { IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4), v4 => v4 }
 }
 
 fn random_id() -> Result<String, String> {
@@ -390,7 +466,7 @@ mod tests {
         let mut m = Maintenance::open(&d).unwrap();
         let w = m.open_window("alice", "192.168.1.20", &code(&m, T), false, T).unwrap();
         assert_eq!((w.expires_at, w.sessions_end_at, w.user()), (T + WINDOW_SECONDS, T + SESSION_SECONDS, "maint"));
-        let r = m.sign(&w.id, &ssh_key(), "192.168.1.20", T + 5).unwrap();
+        let r = m.sign(&w.id, &ssh_key(), "alice", "192.168.1.20", T + 5).unwrap();
         let cert = sshcert::parse_certificate(r["certificate"].as_str().unwrap()).unwrap();
         assert_eq!(cert.principals, vec!["maint".to_string()]);
         assert_eq!((cert.valid_after, cert.valid_before), (T + 5 - CERT_BACKDATE, T + 5 + CERT_SECONDS));
@@ -409,7 +485,7 @@ mod tests {
         let mut m = Maintenance::open(&d).unwrap();
         let w = m.open_window("alice", "10.0.0.4", &code(&m, T), true, T).unwrap();
         assert_eq!((w.expires_at, w.sessions_end_at, w.user()), (T + ROOT_WINDOW_SECONDS, T + ROOT_SESSION_SECONDS, "root"));
-        let r = m.sign(&w.id, &ssh_key(), "10.0.0.4", T).unwrap();
+        let r = m.sign(&w.id, &ssh_key(), "alice", "10.0.0.4", T).unwrap();
         assert_eq!(sshcert::parse_certificate(r["certificate"].as_str().unwrap()).unwrap().principals, vec!["maint-root".to_string()]);
         assert!(m.audit.iter().any(|e| e.kind == "maintenance.root_window_opened"));
         assert!(m.audit.iter().any(|e| e.kind == "maintenance.root_certificate_issued"));
@@ -441,7 +517,120 @@ mod tests {
         assert_eq!(lan_addr("::ffff:192.168.1.20").unwrap(), "192.168.1.20".parse::<IpAddr>().unwrap());
         assert!(lan_addr("::ffff:8.8.8.8").is_err());
         assert!(lan_addr("2001:db8::1").is_err());
-        assert!(lan_addr("fe80::1").is_ok());
+        assert!(lan_addr("fd12:3456::7").is_ok());
+        assert!(lan_addr("169.254.10.20").is_ok());
+    }
+
+    #[test]
+    fn loopback_link_local_ipv6_and_the_device_itself_are_not_clients() {
+        for bad in ["127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1", "0.0.0.0", "fe80::1", "fe80::1%wlan0", "fd00::1%eth0", "10.0.0.4%eth0"] {
+            assert!(matches!(lan_addr(bad), Err(MaintError::InvalidParams(_))), "{bad}");
+        }
+        assert!(lan_addr("fe80::1%wlan0").unwrap_err().message().contains("link-local"));
+        let d = dir();
+        let mut m = Maintenance::open(&d).unwrap();
+        m.set_device_addrs(&["192.168.1.9".parse().unwrap(), "fd00::9".parse().unwrap()]);
+        for own in ["192.168.1.9", "::ffff:192.168.1.9", "fd00::9"] {
+            assert!(matches!(m.open_window("alice", own, &code(&m, T), true, T), Err(MaintError::InvalidParams(_))), "{own}");
+        }
+        assert!(matches!(m.open_window("alice", "127.0.0.1", &code(&m, T), true, T), Err(MaintError::InvalidParams(_))));
+        let w = m.open_window("alice", "192.168.1.20", &code(&m, T), true, T).unwrap();
+        assert!(matches!(m.sign(&w.id, &ssh_key(), "alice", "127.0.0.1", T), Err(MaintError::InvalidParams(_))));
+        assert!(matches!(m.sign(&w.id, &ssh_key(), "alice", "192.168.1.9", T), Err(MaintError::InvalidParams(_))));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn only_the_opener_from_the_same_address_gets_certificates() {
+        let d = dir();
+        let mut m = Maintenance::open(&d).unwrap();
+        let w = m.open_window("alice", "192.168.1.20", &code(&m, T), true, T).unwrap();
+        assert_eq!(m.sign(&w.id, &ssh_key(), "bob", "192.168.1.30", T), Err(MaintError::NotOpener));
+        assert_eq!(m.sign(&w.id, &ssh_key(), "bob", "192.168.1.20", T), Err(MaintError::NotOpener));
+        assert_eq!(m.sign(&w.id, &ssh_key(), "alice", "192.168.1.30", T), Err(MaintError::NotOpener));
+        assert!(m.audit.iter().any(|e| e.kind == "maintenance.certificate_refused" && e.fields["actor"] == "bob"));
+        assert!(!m.audit.iter().any(|e| e.kind == "maintenance.root_certificate_issued"));
+        assert!(m.sign(&w.id, &ssh_key(), "alice", "::ffff:192.168.1.20", T).is_ok());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn closing_for_an_account_only_closes_its_own_window() {
+        let d = dir();
+        let mut m = Maintenance::open(&d).unwrap();
+        let w = m.open_window("alice", "192.168.1.20", &code(&m, T), false, T).unwrap();
+        assert_eq!(m.close_opened_by("bob", "owner", "account_changed"), None);
+        assert!(m.window().is_some());
+        assert_eq!(m.close_opened_by("alice", "owner", "account_changed").map(|c| c.id), Some(w.id));
+        assert!(m.window().is_none());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn certificates_from_earlier_windows_are_revoked() {
+        let d = dir();
+        let mut m = Maintenance::open(&d).unwrap();
+        let krl = || std::fs::read(d.join("revoked.krl")).unwrap();
+        let revoked_range = |list: &[u8]| -> Option<(u64, u64)> {
+            // Header is 8 + 4 + 8 + 8 + 8 bytes, then two strings.
+            let mut at = 36;
+            for _ in 0..2 { at += 4 + u32::from_be_bytes(list[at..at + 4].try_into().unwrap()) as usize; }
+            if at == list.len() { return None; }
+            let tail = &list[list.len() - 16..];
+            Some((u64::from_be_bytes(tail[..8].try_into().unwrap()), u64::from_be_bytes(tail[8..].try_into().unwrap())))
+        };
+        assert!(krl().starts_with(b"SSHKRL\n\0"));
+        assert_eq!(revoked_range(&krl()), None, "nothing issued yet");
+        let w = m.open_window("alice", "192.168.1.20", &code(&m, T), false, T).unwrap();
+        let serial = m.sign(&w.id, &ssh_key(), "alice", "192.168.1.20", T).unwrap()["serial"].as_u64().unwrap();
+        let in_window = revoked_range(&krl()).map_or(0, |(_, max)| max);
+        assert!(serial > in_window, "the window's own certificates are not revoked");
+        m.close(Some(&w.id), "alice", "done").unwrap();
+        assert_eq!(revoked_range(&krl()), Some((1, serial)), "closing revokes the window's certificates");
+        let w2 = m.open_window("alice", "192.168.1.20", &code(&m, T + 30), false, T + 30).unwrap();
+        assert!(revoked_range(&krl()).unwrap().1 >= serial);
+        m.close(Some(&w2.id), "alice", "done").unwrap();
+        // A restart revokes everything issued before it, too.
+        let serial_now = m.secrets.serial;
+        drop(m);
+        Maintenance::open(&d).unwrap();
+        assert_eq!(revoked_range(&krl()), Some((1, serial_now)));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_clock_that_went_back_does_not_lock_out_the_owner() {
+        let d = dir();
+        let mut m = Maintenance::open(&d).unwrap();
+        let w = m.open_window("alice", "10.0.0.4", &code(&m, T), false, T).unwrap();
+        m.close(Some(&w.id), "alice", "done").unwrap();
+        // Cold boot without RTC or network time: the clock is months behind.
+        let behind = T - 90 * 86_400;
+        let mut m = Maintenance::open(&d).unwrap();
+        let c = code(&m, behind);
+        let w = m.open_window("alice", "10.0.0.4", &c, false, behind).expect("a current code opens a window");
+        m.close(Some(&w.id), "alice", "done").unwrap();
+        assert_eq!(m.open_window("alice", "10.0.0.4", &c, false, behind + 1), Err(MaintError::InvalidCode), "codes still work once");
+        // And the code used at the real time stays used once the clock is right again.
+        let mut m = Maintenance::open(&d).unwrap();
+        assert_eq!(m.open_window("alice", "10.0.0.4", &code(&m, T), false, T), Err(MaintError::InvalidCode));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn state_from_earlier_versions_keeps_its_last_code_step() {
+        let d = dir();
+        let m = Maintenance::open(&d).unwrap();
+        let c = code(&m, T);
+        let mut v: Value = serde_json::from_slice(&std::fs::read(d.join("state.json")).unwrap()).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("used_code_steps");
+        o.insert("last_code_step".into(), json!(totp::step(T)));
+        std::fs::write(d.join("state.json"), v.to_string()).unwrap();
+        let mut m = Maintenance::open(&d).unwrap();
+        assert_eq!(m.open_window("alice", "10.0.0.4", &c, false, T), Err(MaintError::InvalidCode));
+        assert!(m.open_window("alice", "10.0.0.4", &code(&m, T + 30), false, T + 30).is_ok());
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
@@ -474,12 +663,12 @@ mod tests {
     fn closed_expired_or_foreign_windows_sign_nothing() {
         let d = dir();
         let mut m = Maintenance::open(&d).unwrap();
-        assert_eq!(m.sign("nope", &ssh_key(), "10.0.0.4", T).unwrap_err(), MaintError::WindowClosed);
+        assert_eq!(m.sign("nope", &ssh_key(), "alice", "10.0.0.4", T).unwrap_err(), MaintError::WindowClosed);
         let w = m.open_window("alice", "10.0.0.4", &code(&m, T), false, T).unwrap();
         assert_eq!(m.open_window("bob", "10.0.0.5", &code(&m, T + 30), false, T + 30), Err(MaintError::WindowOpen));
-        assert_eq!(m.sign(&w.id, &ssh_key(), "10.0.0.4", T + WINDOW_SECONDS).unwrap_err(), MaintError::WindowClosed);
-        assert!(matches!(m.sign(&w.id, &ssh_key(), "8.8.8.8", T), Err(MaintError::InvalidParams(_))));
-        assert!(matches!(m.sign(&w.id, "ssh-rsa AAAA x", "10.0.0.4", T), Err(MaintError::InvalidParams(_))));
+        assert_eq!(m.sign(&w.id, &ssh_key(), "alice", "10.0.0.4", T + WINDOW_SECONDS).unwrap_err(), MaintError::WindowClosed);
+        assert!(matches!(m.sign(&w.id, &ssh_key(), "alice", "8.8.8.8", T), Err(MaintError::InvalidParams(_))));
+        assert!(matches!(m.sign(&w.id, "ssh-rsa AAAA x", "alice", "10.0.0.4", T), Err(MaintError::InvalidParams(_))));
         assert_eq!(m.expire(T + SESSION_SECONDS - 1), None);
         assert_eq!(m.expire(T + SESSION_SECONDS).map(|x| x.id), Some(w.id.clone()));
         assert!(m.window().is_none());

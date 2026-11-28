@@ -21,7 +21,7 @@ class MaintenanceTest < Minitest::Test
     @maint = FakeEngine.new do |req|
       p = req["params"] || {}
       case req["method"]
-      when "status" then FakeEngine.ok(req, {"open" => false, "window" => nil, "code_locked_until" => nil})
+      when "status" then FakeEngine.ok(req, @status || {"open" => false, "window" => nil, "code_locked_until" => nil})
       when "window.open"
         case p["code"]
         when "000000" then FakeEngine.error(req, "invalid_code", "code not accepted")
@@ -33,9 +33,11 @@ class MaintenanceTest < Minitest::Test
         if p["window_id"] == WINDOW["window_id"]
           FakeEngine.ok(req, {"certificate" => "ssh-ed25519-cert-v01@openssh.com AAAA", "valid_before" => 400, "serial" => 3,
                               "host_ca" => "ssh-ed25519 BBBB stephania-host-ca", "principal" => "maint", "user" => "maint"})
+        elsif p["window_id"] == "1111111111111111"
+          FakeEngine.error(req, "not_window_opener", "only the account that opened the window gets certificates for it")
         else FakeEngine.error(req, "window_closed", "no open maintenance window with that id")
         end
-      when "window.close" then FakeEngine.ok(req, {"closed" => true})
+      when "window.close" then FakeEngine.ok(req, {"closed" => p["opener"].nil? || p["opener"] == @opener})
       else FakeEngine.error(req, "invalid_params", "unknown method")
       end
     end
@@ -124,7 +126,8 @@ class MaintenanceTest < Minitest::Test
       {"REMOTE_ADDR" => "192.168.1.20"}
     assert_equal 200, last_response.status, last_response.body
     assert_equal({"host" => "localhost", "port" => 22, "user" => "maint", "principal" => "maint", "serial" => 3}, body.slice("host", "port", "user", "principal", "serial"))
-    assert_equal({"window_id" => WINDOW["window_id"], "public_key" => "ssh-ed25519 AAAA laptop", "client_addr" => "192.168.1.20"}, requests.last["params"])
+    assert_equal({"window_id" => WINDOW["window_id"], "public_key" => "ssh-ed25519 AAAA laptop", "actor" => "owner", "client_addr" => "192.168.1.20"},
+      requests.last["params"])
     post "/api/v1/maintenance/certificate", JSON.generate(window_id: "ffffffffffffffff", public_key: "ssh-ed25519 AAAA")
     assert_equal [409, "window_closed"], [last_response.status, body.dig("error", "code")]
   end
@@ -140,5 +143,86 @@ class MaintenanceTest < Minitest::Test
     Control.maint = EngineClient.new(socket_path: File.join(Dir.tmpdir, "stephania-no-maint-#{Process.pid}.sock"))
     get "/api/v1/maintenance"
     assert_equal [503, "maintenance_unavailable"], [last_response.status, body.dig("error", "code")]
+  end
+
+  def test_certificates_are_requested_for_the_signed_in_account
+    login_as("alice", "admin")
+    post "/api/v1/maintenance/certificate", JSON.generate(window_id: WINDOW["window_id"], public_key: "ssh-ed25519 AAAA laptop"),
+      {"REMOTE_ADDR" => "192.168.1.20"}
+    assert_equal 200, last_response.status, last_response.body
+    assert_equal "alice", requests.last.dig("params", "actor")
+    post "/api/v1/maintenance/certificate", JSON.generate(window_id: "1111111111111111", public_key: "ssh-ed25519 AAAA laptop")
+    assert_equal [403, "not_window_opener"], [last_response.status, body.dig("error", "code")]
+  end
+
+  def test_only_the_opener_sees_the_window_id
+    @status = {"open" => true, "window" => WINDOW.merge("actor" => "alice"), "code_locked_until" => nil}
+    get "/api/v1/maintenance"
+    assert_equal 200, last_response.status
+    assert_equal "alice", body.dig("window", "actor")
+    refute body["window"].key?("window_id"), "another principal must not learn the window id"
+    login_as("alice", "admin")
+    get "/api/v1/maintenance"
+    assert_equal WINDOW["window_id"], body.dig("window", "window_id")
+  end
+
+  def test_window_opened_event_has_no_window_id
+    published = []
+    hub = Control.events
+    hub.define_singleton_method(:publish) { |event, data| published << [event, data] }
+    open_window
+    assert_equal 201, last_response.status
+    assert_equal "maintenance.window_opened", published.last[0]
+    refute published.last[1].key?(:window_id)
+    post "/api/v1/maintenance/certificate", JSON.generate(window_id: WINDOW["window_id"], public_key: "ssh-ed25519 AAAA laptop"),
+      {"REMOTE_ADDR" => "192.168.1.20"}
+    assert_equal ["maintenance.certificate_issued", {actor: "owner", serial: 3, valid_before: 400, client_addr: "192.168.1.20"}], published.last
+  ensure
+    hub.singleton_class.send(:remove_method, :publish) if hub&.singleton_class&.method_defined?(:publish, false)
+  end
+
+  def test_reserved_names_cannot_be_created
+    %w[owner root maint maint-root stephania-maint].each do |name|
+      post "/api/v1/users", JSON.generate(username: name, password: PASSWORD, role: "admin")
+      assert_equal [422, "reserved_username"], [last_response.status, body.dig("error", "code")], name
+    end
+  end
+
+  def test_accounts_with_reserved_names_get_no_maintenance
+    Control.db[:users].insert(username: "owner", password_hash: Accounts.hash_password(PASSWORD), role: "admin", disabled: false,
+      created_at_unix: Time.now.to_i)
+    header "Authorization", nil
+    post "/api/v1/auth/session", JSON.generate(username: "owner", password: PASSWORD)
+    assert_equal 201, last_response.status, last_response.body
+    header "X-CSRF-Token", body["csrf_token"]
+    open_window
+    assert_equal [409, "reserved_username"], [last_response.status, body.dig("error", "code")]
+    assert_empty requests.select { |r| r["method"] == "window.open" }
+  end
+
+  def test_disabling_or_deleting_an_account_ends_its_window
+    login_as("bob", "admin")
+    as_owner
+    post "/api/v1/users", JSON.generate(username: "zed", password: PASSWORD, role: "admin")
+    header "X-CSRF-Token", nil
+    id = Control.db[:users].where(username: "bob").get(:id)
+    @opener = "bob"
+    patch "/api/v1/users/#{id}", JSON.generate(disabled: true)
+    assert_equal 200, last_response.status, last_response.body
+    close = requests.find { |r| r["method"] == "window.close" }
+    assert_equal({"actor" => "owner", "opener" => "bob"}, close["params"])
+    delete "/api/v1/users/#{id}"
+    assert_equal 204, last_response.status
+    assert_equal "bob", requests.find { |r| r["method"] == "window.close" }.dig("params", "opener")
+  end
+
+  def test_account_changes_work_while_maintenance_is_down
+    login_as("carol", "admin")
+    as_owner
+    post "/api/v1/users", JSON.generate(username: "zed", password: PASSWORD, role: "admin")
+    Control.maint = EngineClient.new(socket_path: File.join(Dir.tmpdir, "stephania-no-maint-#{Process.pid}.sock"))
+    id = Control.db[:users].where(username: "carol").get(:id)
+    patch "/api/v1/users/#{id}", JSON.generate(disabled: true)
+    assert_equal 200, last_response.status, last_response.body
   end
 end
