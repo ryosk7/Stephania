@@ -20,7 +20,10 @@ void t3dec_close(T3Dec *s) {
     free(s);
 }
 
-T3Dec *t3dec_open(int threads) {
+/* max_pixels bounds every picture libavcodec will allocate: an SPS that
+ * declares a larger size fails at activation, before any frame buffer or
+ * reference picture is allocated (the size check after decoding is too late). */
+T3Dec *t3dec_open(int threads, int64_t max_pixels) {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) return NULL;
     T3Dec *s = calloc(1, sizeof(*s));
@@ -33,6 +36,8 @@ T3Dec *t3dec_open(int threads) {
     /* Slice threads only: frame threading adds a frame of latency per thread. */
     s->ctx->thread_type = FF_THREAD_SLICE;
     s->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    if (max_pixels <= 0) goto fail;
+    s->ctx->max_pixels = max_pixels;
     if (avcodec_open2(s->ctx, codec, NULL) < 0) goto fail;
     return s;
 fail:

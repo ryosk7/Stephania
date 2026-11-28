@@ -5,7 +5,8 @@
 //! the file's SHA-256. The engine loads them only while preparing a Program
 //! (never on the media thread), re-checks the hash so a swapped file is never
 //! composed, enforces size limits and decodes to straight RGBA8. Decoded
-//! images are cached (bounded) because the same logo appears in many scenes.
+//! images are cached because the same logo appears in many scenes; the cache
+//! is bounded by decoded bytes (a 4096x4096 image is 64 MiB of RGBA).
 
 use crate::compositor::Rgba;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,8 @@ pub const DEFAULT_DIR: &str = "/var/lib/stephania/assets";
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 4096;
 const CACHE_ENTRIES: usize = 32;
+/// Decoded bytes the cache may hold (oldest entries are evicted first).
+pub const CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 pub fn valid_id(id: &str) -> bool {
     id.len() == 16 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -54,10 +57,7 @@ impl AssetStore {
         }
         let image = Arc::new(decode_png(&bytes)?);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() >= CACHE_ENTRIES {
-            cache.remove(0);
-        }
-        cache.push((id.to_owned(), Arc::clone(&image)));
+        insert_bounded(&mut cache, id, &image);
         Ok(image)
     }
 }
@@ -75,9 +75,15 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
     let mut buf = vec![0; size];
     let frame = reader.next_frame(&mut buf).map_err(|e| format!("png: {e}"))?;
     let (w, h) = (frame.width as usize, frame.height as usize);
+    if frame.color_type == png::ColorType::Rgba {
+        // Reuse the decode buffer: no second full-size copy.
+        buf.truncate(frame.buffer_size());
+        if buf.len() != w * h * 4 { return Err("png: unexpected pixel buffer size".into()); }
+        return Ok(Rgba { width: w, height: h, pixels: buf });
+    }
     let data = &buf[..frame.buffer_size()];
-    let pixels = match frame.color_type {
-        png::ColorType::Rgba => data.to_vec(),
+    let pixels: Vec<u8> = match frame.color_type {
+        png::ColorType::Rgba => return Err("png: unexpected colour type".into()),
         png::ColorType::GrayscaleAlpha => data.as_chunks::<2>().0.iter().flat_map(|&[g, a]| [g, g, g, a]).collect(),
         png::ColorType::Rgb => data.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
         png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
@@ -87,6 +93,18 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
         return Err("png: unexpected pixel buffer size".into());
     }
     Ok(Rgba { width: w, height: h, pixels })
+}
+
+/// Cache `image`, evicting the oldest entries until the entry count and the
+/// decoded-byte budget hold. An image larger than the budget is not cached.
+fn insert_bounded(cache: &mut Vec<(String, Arc<Rgba>)>, id: &str, image: &Arc<Rgba>) {
+    let size = image.pixels.len();
+    if size > CACHE_BYTES { return; }
+    let mut total: usize = cache.iter().map(|(_, i)| i.pixels.len()).sum();
+    while !cache.is_empty() && (cache.len() >= CACHE_ENTRIES || total + size > CACHE_BYTES) {
+        total -= cache.remove(0).1.pixels.len();
+    }
+    cache.push((id.to_owned(), Arc::clone(image)));
 }
 
 static STORE: OnceLock<AssetStore> = OnceLock::new();
@@ -155,6 +173,20 @@ mod tests {
         assert!(store.load("../etc/passwd").is_err());
         assert!(store.load("ffffffffffffffff").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cache_is_bounded_by_decoded_bytes() {
+        let image = |mib: usize| Arc::new(Rgba { width: 1, height: 1, pixels: vec![0; mib * 1024 * 1024] });
+        let mut cache = Vec::new();
+        for i in 0..4 { insert_bounded(&mut cache, &format!("{i}"), &image(48)); }
+        let total: usize = cache.iter().map(|(_, i)| i.pixels.len()).sum();
+        assert!(total <= CACHE_BYTES, "{total}");
+        assert_eq!(cache.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["2", "3"]);
+        insert_bounded(&mut cache, "huge", &image(CACHE_BYTES / 1024 / 1024 + 1));
+        assert!(cache.iter().all(|(k, _)| k != "huge"));
+        for i in 0..40 { insert_bounded(&mut cache, &format!("s{i}"), &image(0)); }
+        assert_eq!(cache.len(), CACHE_ENTRIES);
     }
 
     #[test]

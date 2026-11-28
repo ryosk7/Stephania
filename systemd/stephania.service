@@ -27,6 +27,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+MemoryMax=1G
 
 [Install]
 WantedBy=multi-user.target

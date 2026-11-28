@@ -8,7 +8,7 @@ use std::io;
 use std::ptr::NonNull;
 
 extern "C" {
-    fn t3dec_open(threads: i32) -> *mut c_void;
+    fn t3dec_open(threads: i32, max_pixels: i64) -> *mut c_void;
     fn t3dec_close(s: *mut c_void);
     fn t3dec_send(s: *mut c_void, data: *const u8, len: i32, pts: i64) -> i32;
     fn t3dec_receive(s: *mut c_void, w: *mut i32, h: *mut i32, pts: *mut i64) -> i32;
@@ -19,6 +19,9 @@ extern "C" {
 pub const MAX_ACCESS_UNIT: usize = 2 * 1024 * 1024;
 pub const MAX_WIDTH: usize = 1920;
 pub const MAX_HEIGHT: usize = 1920;
+/// Passed to libavcodec as `max_pixels`, so an oversized SPS is refused
+/// before it allocates pictures (memory per decoder stays bounded).
+pub const MAX_PIXELS: usize = MAX_WIDTH * MAX_HEIGHT;
 
 pub struct H264Decoder(NonNull<c_void>);
 
@@ -40,7 +43,7 @@ pub enum DecodeError {
 
 impl H264Decoder {
     pub fn new(threads: i32) -> io::Result<Self> {
-        NonNull::new(unsafe { t3dec_open(threads.clamp(1, 4)) })
+        NonNull::new(unsafe { t3dec_open(threads.clamp(1, 4), MAX_PIXELS as i64) })
             .map(Self)
             .ok_or_else(|| io::Error::other("H.264 decoder initialization failed"))
     }
@@ -129,6 +132,22 @@ mod tests {
         assert!((mean(first.u()) - 212.0).abs() < 3.0);
         let last = decoded.last().unwrap();
         assert!((mean(last.y()) - 41.0).abs() < 3.0, "Y {}", mean(last.y()));
+    }
+
+    /// An SPS above MAX_PIXELS never yields a picture: libavcodec refuses it
+    /// at activation instead of allocating frames for it.
+    #[test]
+    fn oversized_sps_is_refused_before_decoding() {
+        let (w, h) = (2560, 1920);
+        let mut enc = X264Backend::new(w, h, 30, 2000, true).unwrap();
+        let (sps, pps) = enc.configuration().unwrap();
+        let mut dec = H264Decoder::new(1).unwrap();
+        let au = enc.encode_i420(&solid(w, h, (16, 128, 128), 0)).unwrap()
+            .or_else(|| enc.finish().unwrap().into_iter().next()).unwrap();
+        let mut nals: Vec<&[u8]> = vec![&sps, &pps];
+        nals.extend(au.nals.iter().map(Vec::as_slice));
+        let r = dec.decode(&annex_b(&nals), 0);
+        assert!(matches!(r, Err(DecodeError::NeedKeyframe)) || matches!(r, Ok(ref f) if f.is_empty()), "{r:?}");
     }
 
     #[test]
