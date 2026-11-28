@@ -98,11 +98,16 @@ impl Reassembler {
             self.partial.remove(&id);
             return Err(FrameError::Inconsistent);
         }
-        if p.parts[index].is_some() {
+        let body = &fragment[FRAGMENT_HEADER_BYTES..];
+        if let Some(stored) = &p.parts[index] {
+            // An identical duplicate (a retransmitted write) is ignored; only
+            // a conflicting one discards the message.
+            if stored.as_slice() == body {
+                return Ok(None);
+            }
             self.partial.remove(&id);
             return Err(FrameError::Duplicate);
         }
-        let body = &fragment[FRAGMENT_HEADER_BYTES..];
         p.bytes += body.len();
         if p.bytes > MAX_MESSAGE_BYTES {
             self.partial.remove(&id);
@@ -127,8 +132,16 @@ pub const NONCE_BYTES: usize = 32;
 /// X25519 public keys and the derived owner key.
 pub const KEY_BYTES: usize = 32;
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
+/// Failed owner proofs one BLE peer may make before it is backed off.
 pub const MAX_FAILED_ATTEMPTS: u32 = 5;
-pub const LOCKOUT: Duration = Duration::from_secs(300);
+/// First backoff; it doubles with every further failure up to [`MAX_LOCKOUT`].
+pub const LOCKOUT: Duration = Duration::from_secs(30);
+pub const MAX_LOCKOUT: Duration = Duration::from_secs(300);
+/// Peers whose failures are remembered (attacker-chosen addresses, so bounded).
+pub const MAX_TRACKED_PEERS: usize = 32;
+/// Outstanding operation nonces: per peer, and in total.
+pub const OPERATION_NONCES_PER_PEER: usize = 2;
+pub const MAX_OPERATION_NONCES: usize = 8;
 pub const MAX_OWNER_ID_BYTES: usize = 64;
 
 const OWNER_KEY_CONTEXT: &[u8] = b"stephania-owner-key-v2";
@@ -217,14 +230,62 @@ pub struct PairingChallenge {
     pub device_key: [u8; KEY_BYTES],
 }
 
+struct OperationNonce {
+    nonce: [u8; NONCE_BYTES],
+    issued: Instant,
+    peer: String,
+}
+
+struct PeerFailures {
+    failures: u32,
+    locked_until: Option<Instant>,
+    last: Instant,
+}
+
+/// Failed owner proofs, counted per BLE peer with exponential backoff.
+/// Nothing here is global, so a radio attacker failing proofs only delays
+/// its own address and never the owner's.
+#[derive(Default)]
+struct Lockout {
+    peers: HashMap<String, PeerFailures>,
+}
+
+impl Lockout {
+    fn check(&self, peer: &str, now: Instant) -> Result<(), ClaimError> {
+        match self.peers.get(peer).and_then(|p| p.locked_until) {
+            Some(until) if now < until => Err(ClaimError::LockedOut),
+            _ => Ok(()),
+        }
+    }
+
+    fn record(&mut self, peer: &str, now: Instant) {
+        if !self.peers.contains_key(peer) && self.peers.len() >= MAX_TRACKED_PEERS {
+            // Forget the peer that failed longest ago.
+            if let Some(oldest) = self.peers.iter().min_by_key(|(_, p)| p.last).map(|(k, _)| k.clone()) {
+                self.peers.remove(&oldest);
+            }
+        }
+        let p = self.peers.entry(peer.to_owned()).or_insert(PeerFailures { failures: 0, locked_until: None, last: now });
+        p.failures += 1;
+        p.last = now;
+        if p.failures >= MAX_FAILED_ATTEMPTS {
+            let doublings = (p.failures - MAX_FAILED_ATTEMPTS).min(16);
+            p.locked_until = Some(now + (LOCKOUT * 2u32.pow(doublings)).min(MAX_LOCKOUT));
+        }
+    }
+
+    fn success(&mut self, peer: &str) {
+        self.peers.remove(peer);
+    }
+}
+
 /// Ownership state machine. Time is injected so lockouts and expiry are
 /// testable without sleeping.
 pub struct OwnershipManager {
     state: Ownership,
     pairing: Option<Pairing>,
-    operation_nonce: Option<([u8; NONCE_BYTES], Instant)>,
-    failures: u32,
-    locked_until: Option<Instant>,
+    operation_nonces: Vec<OperationNonce>,
+    lockout: Lockout,
     rng: SystemRandom,
 }
 
@@ -286,7 +347,7 @@ pub fn operation_proof(owner_key: &[u8], nonce: &[u8], operation: &str, payload:
 
 impl OwnershipManager {
     pub fn new(state: Ownership) -> Self {
-        Self { state, pairing: None, operation_nonce: None, failures: 0, locked_until: None, rng: SystemRandom::new() }
+        Self { state, pairing: None, operation_nonces: Vec::new(), lockout: Lockout::default(), rng: SystemRandom::new() }
     }
 
     pub fn state(&self) -> &Ownership {
@@ -313,27 +374,10 @@ impl OwnershipManager {
         Ok(n)
     }
 
-    fn check_lockout(&mut self, now: Instant) -> Result<(), ClaimError> {
-        match self.locked_until {
-            Some(until) if now < until => Err(ClaimError::LockedOut),
-            Some(_) => { self.locked_until = None; self.failures = 0; Ok(()) }
-            None => Ok(()),
-        }
-    }
-
-    fn record_failure(&mut self, now: Instant) {
-        self.failures += 1;
-        self.pairing = None;
-        if self.failures >= MAX_FAILED_ATTEMPTS {
-            self.locked_until = Some(now + LOCKOUT);
-        }
-    }
-
     /// Start a claim: a fresh nonce and a fresh X25519 key. Only an
     /// unclaimed device can be claimed over BLE; an owned device is reset by
     /// re-flashing its card (or `factory_reset` with physical confirmation).
     pub fn begin_pairing(&mut self, now: Instant) -> Result<PairingChallenge, ClaimError> {
-        self.check_lockout(now)?;
         if self.state != Ownership::Unclaimed {
             return Err(ClaimError::NotClaimable);
         }
@@ -347,9 +391,9 @@ impl OwnershipManager {
 
     /// Complete a claim with the phone's public key: the first valid claim
     /// wins. On success the new state (see `state()`) must be written durably
-    /// before the returned confirmation is sent over BLE.
+    /// before the returned confirmation is sent over BLE. A bad key ends the
+    /// pairing but is not counted toward any lockout: it guesses nothing.
     pub fn complete_pairing(&mut self, owner_id: &str, phone_key: &[u8], now: Instant) -> Result<[u8; 32], ClaimError> {
-        self.check_lockout(now)?;
         if self.state != Ownership::Unclaimed {
             return Err(ClaimError::NotClaimable);
         }
@@ -362,18 +406,16 @@ impl OwnershipManager {
             return Err(ClaimError::InvalidOwnerId);
         }
         if phone_key.len() != KEY_BYTES {
-            self.record_failure(now);
+            self.pairing = None;
             return Err(ClaimError::BadKey);
         }
         let pairing = self.pairing.take().expect("checked above");
         let device_key = pairing.public;
         // ring rejects the all-zero shared secret (low-order points).
         let Ok(shared) = agreement::agree_ephemeral(pairing.private, &UnparsedPublicKey::new(&X25519, phone_key), |s| s.to_vec()) else {
-            self.record_failure(now);
             return Err(ClaimError::BadKey);
         };
         let owner_key = derive_owner_key(&shared, &pairing.nonce, owner_id, &device_key, phone_key);
-        self.failures = 0;
         self.state = Ownership::Claimed { owner_id: owner_id.to_owned(), owner_key };
         Ok(claim_confirmation(&owner_key, &pairing.nonce))
     }
@@ -386,32 +428,49 @@ impl OwnershipManager {
     }
 
     /// Issue a single-use nonce for an owner-authenticated operation.
-    pub fn operation_challenge(&mut self, now: Instant) -> Result<[u8; NONCE_BYTES], ClaimError> {
+    /// Several stay outstanding (a few per peer, a few in total), so a
+    /// challenge from another central does not invalidate the owner's.
+    pub fn operation_challenge(&mut self, peer: &str, now: Instant) -> Result<[u8; NONCE_BYTES], ClaimError> {
         if !matches!(self.state, Ownership::Claimed { .. }) {
             return Err(ClaimError::NotOwner);
         }
         let n = self.nonce()?;
-        self.operation_nonce = Some((n, now));
+        if self.operation_nonces.iter().filter(|o| o.peer == peer).count() >= OPERATION_NONCES_PER_PEER {
+            let oldest = self.operation_nonces.iter().position(|o| o.peer == peer).expect("counted above");
+            self.operation_nonces.remove(oldest);
+        }
+        if self.operation_nonces.len() >= MAX_OPERATION_NONCES {
+            self.operation_nonces.remove(0);
+        }
+        self.operation_nonces.push(OperationNonce { nonce: n, issued: now, peer: peer.to_owned() });
         Ok(n)
     }
 
-    /// Verify an owner-authenticated operation. The nonce is consumed whether
-    /// or not verification succeeds, so proofs cannot be replayed.
-    /// Returns the consumed operation nonce on success (used to unseal).
-    pub fn authorize(&mut self, operation: &str, payload: &[u8], proof: &[u8], now: Instant) -> Result<[u8; NONCE_BYTES], ClaimError> {
-        self.check_lockout(now)?;
+    /// Verify an owner-authenticated operation from `peer` against the
+    /// outstanding nonces (from any peer, so a retry after reconnecting from
+    /// a new address still works). The matching nonce is consumed, so proofs
+    /// cannot be replayed. Returns it on success (used to unseal).
+    ///
+    /// Only a proof that matches no issued nonce counts as a failure: that is
+    /// a guess at the owner key. Failures back off that peer only.
+    pub fn authorize(&mut self, peer: &str, operation: &str, payload: &[u8], proof: &[u8], now: Instant) -> Result<[u8; NONCE_BYTES], ClaimError> {
+        self.lockout.check(peer, now)?;
         let Ownership::Claimed { owner_key, .. } = &self.state else { return Err(ClaimError::NotOwner) };
-        let Some((nonce, issued)) = self.operation_nonce.take() else { return Err(ClaimError::NoPairingInProgress) };
+        if self.operation_nonces.is_empty() {
+            return Err(ClaimError::NoPairingInProgress);
+        }
+        let matched = self.operation_nonces.iter()
+            .position(|o| verify(owner_key, &[OPERATION_CONTEXT, &o.nonce, operation.as_bytes(), payload], proof));
+        let Some(i) = matched else {
+            self.lockout.record(peer, now);
+            return Err(ClaimError::BadProof);
+        };
+        let OperationNonce { nonce, issued, .. } = self.operation_nonces.remove(i);
         if now.duration_since(issued) >= PAIRING_TIMEOUT {
             return Err(ClaimError::PairingExpired);
         }
-        if verify(owner_key, &[OPERATION_CONTEXT, &nonce, operation.as_bytes(), payload], proof) {
-            self.failures = 0;
-            Ok(nonce)
-        } else {
-            self.record_failure(now);
-            Err(ClaimError::BadProof)
-        }
+        self.lockout.success(peer);
+        Ok(nonce)
     }
 
     /// Factory reset of ownership. Requires a physical confirmation (button
@@ -422,9 +481,8 @@ impl OwnershipManager {
         }
         self.state = Ownership::Unclaimed;
         self.pairing = None;
-        self.operation_nonce = None;
-        self.failures = 0;
-        self.locked_until = None;
+        self.operation_nonces.clear();
+        self.lockout = Lockout::default();
         Ok(&self.state)
     }
 }
@@ -565,7 +623,13 @@ mod tests {
         assert_eq!(r.push(&[1, 2, 2, 9], now), Err(FrameError::Malformed));
         assert_eq!(r.push(&[1, 0, 2], now), Err(FrameError::Malformed));
         assert_eq!(r.push(&[1, 0, 2, 9], now), Ok(None));
-        assert_eq!(r.push(&[1, 0, 2, 9], now), Err(FrameError::Duplicate));
+        // Identical duplicate: ignored, the message is still assembled.
+        assert_eq!(r.push(&[1, 0, 2, 9], now), Ok(None));
+        assert_eq!(r.push(&[1, 1, 2, 7], now), Ok(Some(vec![9, 7])));
+        assert_eq!(r.push(&[1, 0, 2, 9], now), Ok(None));
+        assert_eq!(r.push(&[1, 0, 2, 8], now), Err(FrameError::Duplicate), "conflicting duplicate");
+        assert_eq!(r.push(&[1, 1, 2, 7], now), Ok(None), "the message was discarded");
+        r.push(&[1, 0, 2, 7], now).unwrap();
         assert_eq!(r.push(&[2, 0, 2, 9], now), Ok(None));
         assert_eq!(r.push(&[2, 1, 3, 9], now), Err(FrameError::Inconsistent));
         // Byte bound across fragments.
@@ -604,32 +668,72 @@ mod tests {
         // Cannot be re-claimed by someone else.
         assert_eq!(m.begin_pairing(now), Err(ClaimError::NotClaimable));
         let payload = br#"{"ssid":"LT","security":"open"}"#;
-        let nonce = m.operation_challenge(now).unwrap();
+        let nonce = m.operation_challenge("p", now).unwrap();
         let proof = operation_proof(&key, &nonce, "wifi.configure", payload);
-        assert_eq!(m.authorize("wifi.configure", payload, &proof, now), Ok(nonce));
+        assert_eq!(m.authorize("p", "wifi.configure", payload, &proof, now), Ok(nonce));
         // Replay fails: nonce is single-use.
-        assert_eq!(m.authorize("wifi.configure", payload, &proof, now), Err(ClaimError::NoPairingInProgress));
+        assert_eq!(m.authorize("p", "wifi.configure", payload, &proof, now), Err(ClaimError::NoPairingInProgress));
         // Proof is bound to operation and payload.
-        let nonce = m.operation_challenge(now).unwrap();
+        let nonce = m.operation_challenge("p", now).unwrap();
         let proof = operation_proof(&key, &nonce, "wifi.configure", payload);
-        assert_eq!(m.authorize("wifi.configure", b"{}", &proof, now), Err(ClaimError::BadProof));
-        let nonce = m.operation_challenge(now).unwrap();
-        let proof = operation_proof(&key, &nonce, "wifi.configure", payload);
-        assert_eq!(m.authorize("factory.reset", payload, &proof, now), Err(ClaimError::BadProof));
+        assert_eq!(m.authorize("p", "wifi.configure", b"{}", &proof, now), Err(ClaimError::BadProof));
+        assert_eq!(m.authorize("p", "factory.reset", payload, &proof, now), Err(ClaimError::BadProof));
+        // A retry from a new address (reconnect) still finds the nonce.
+        assert_eq!(m.authorize("p-new-address", "wifi.configure", payload, &proof, now), Ok(nonce));
+        let nonce = m.operation_challenge("p", now).unwrap();
+        let proof = operation_proof(&key, &nonce, "wifi.scan", b"");
+        assert_eq!(m.authorize("p", "wifi.scan", b"", &proof, now + PAIRING_TIMEOUT), Err(ClaimError::PairingExpired));
     }
 
     #[test]
-    fn bad_keys_are_refused_and_lock_out() {
+    fn another_centrals_challenges_and_failures_do_not_lock_the_owner_out() {
         let now = Instant::now();
         let mut m = OwnershipManager::new(Ownership::Unclaimed);
+        let key = claimed(&mut m, now);
+        // The owner asks for a nonce; an attacker then asks for many and
+        // fails proofs until it is backed off.
+        let owner_nonce = m.operation_challenge("owner", now).unwrap();
         for _ in 0..MAX_FAILED_ATTEMPTS {
+            m.operation_challenge("attacker", now).unwrap();
+            assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], now), Err(ClaimError::BadProof));
+        }
+        assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], now), Err(ClaimError::LockedOut));
+        // The owner's nonce survived and its correct proof is accepted.
+        let proof = operation_proof(&key, &owner_nonce, "wifi.scan", b"");
+        assert_eq!(m.authorize("owner", "wifi.scan", b"", &proof, now), Ok(owner_nonce));
+        // Exponential backoff with a cap, for the failing peer only.
+        assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], now + LOCKOUT), Err(ClaimError::BadProof));
+        assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], now + LOCKOUT * 2), Err(ClaimError::LockedOut));
+        assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], now + LOCKOUT * 3), Err(ClaimError::BadProof));
+        let mut t = now + LOCKOUT * 3;
+        for _ in 0..10 {
+            t += MAX_LOCKOUT;
+            assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], t), Err(ClaimError::BadProof));
+        }
+        assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], t + MAX_LOCKOUT - Duration::from_secs(1)), Err(ClaimError::LockedOut));
+        assert_eq!(m.authorize("attacker", "wifi.scan", b"", &[0; 32], t + MAX_LOCKOUT), Err(ClaimError::BadProof), "capped");
+        // Challenge floods are bounded per peer and in total.
+        for _ in 0..20 { m.operation_challenge("attacker", t).unwrap(); }
+        assert_eq!(m.operation_nonces.len(), OPERATION_NONCES_PER_PEER);
+        for i in 0..20 { m.operation_challenge(&format!("rotating-{i}"), t).unwrap(); }
+        assert_eq!(m.operation_nonces.len(), MAX_OPERATION_NONCES);
+        // Failures from many addresses stay bounded too.
+        for i in 0..100 { let _ = m.authorize(&format!("rotating-{i}"), "wifi.scan", b"", &[0; 32], t); }
+        assert!(m.lockout.peers.len() <= MAX_TRACKED_PEERS);
+    }
+
+    #[test]
+    fn bad_keys_are_refused_without_locking_anyone_out() {
+        let now = Instant::now();
+        let mut m = OwnershipManager::new(Ownership::Unclaimed);
+        for _ in 0..MAX_FAILED_ATTEMPTS * 2 {
             m.begin_pairing(now).unwrap();
             // All-zero is a low-order point: the shared secret would be zero.
             assert_eq!(m.complete_pairing("attacker", &[0; 32], now), Err(ClaimError::BadKey));
+            assert!(!m.is_pairing(), "a bad key ends that pairing");
         }
-        assert_eq!(m.begin_pairing(now), Err(ClaimError::LockedOut));
         assert_eq!(*m.state(), Ownership::Unclaimed);
-        claimed(&mut m, now + LOCKOUT);
+        claimed(&mut m, now);
         assert_eq!(m.reported_state(), "CLAIMED");
     }
 
@@ -679,7 +783,7 @@ mod tests {
         assert_eq!(m.factory_reset(true).unwrap(), &Ownership::Unclaimed);
         let mut r = OwnershipManager::new(Ownership::RecoveryRequired);
         assert_eq!(r.begin_pairing(now), Err(ClaimError::NotClaimable));
-        assert_eq!(r.operation_challenge(now), Err(ClaimError::NotOwner));
+        assert_eq!(r.operation_challenge("p", now), Err(ClaimError::NotOwner));
     }
 
     #[test]

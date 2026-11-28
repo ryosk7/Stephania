@@ -11,7 +11,11 @@
 //! - Lost responses are recoverable: mutating requests are kept in a small
 //!   replay cache, so a client that reconnects and resends the identical
 //!   request (same message id and bytes) gets the same response without the
-//!   operation running twice.
+//!   operation running twice. Only requests whose bytes already bind a fresh
+//!   value (the phone's claim key, or a proof over a single-use nonce) are
+//!   cached, so a cached response is never served to an unrelated request,
+//!   and unauthenticated requests cannot evict cached ones. Challenges are
+//!   never cached: a retry simply gets a fresh one.
 //! - Per-peer reassembly state, dropped on disconnect, so interleaved or
 //!   abandoned transfers from different centrals cannot corrupt each other.
 //! - Stateless operations (no read cursors): scan results return in one
@@ -155,11 +159,19 @@ struct Replay {
     at: Instant,
 }
 
+/// Per-central state, dropped on disconnect.
+struct Peer {
+    reassembler: Reassembler,
+    last: Instant,
+    /// Completed a claim or an owner-authenticated operation on this link.
+    authenticated: bool,
+}
+
 pub struct RpcService<N: NetworkBackend, S: OwnershipStore> {
     ownership: OwnershipManager,
     network: N,
     store: S,
-    peers: HashMap<String, (Reassembler, Instant)>,
+    peers: HashMap<String, Peer>,
     replay: Vec<Replay>,
     network_state: NetworkState,
     network_error: Option<&'static str>,
@@ -265,28 +277,47 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
         self.peers.remove(peer);
     }
 
+    /// Whether `peer` has completed a claim or an owner-authenticated
+    /// operation since it connected. The BLE adapter uses this to let
+    /// unauthenticated centrals hold the single-central gate only briefly.
+    pub fn authenticated(&self, peer: &str) -> bool {
+        self.peers.get(peer).is_some_and(|p| p.authenticated)
+    }
+
+    fn mark_authenticated(&mut self, peer: &str) {
+        if let Some(p) = self.peers.get_mut(peer) { p.authenticated = true; }
+    }
+
+    /// Owner-authenticated operation from `peer`; see [`OwnershipManager::authorize`].
+    fn authorize(&mut self, peer: &str, operation: &str, payload: &[u8], proof: &[u8], now: Instant) -> Result<[u8; 32], RpcError> {
+        let nonce = self.ownership.authorize(peer, operation, payload, proof, now)?;
+        self.mark_authenticated(peer);
+        Ok(nonce)
+    }
+
     /// Feed one written fragment from `peer`. Returns the response to
     /// indicate once the request is complete (errors included, as
     /// `{"error": code}`), or `None` while more fragments are expected.
     pub fn handle_fragment(&mut self, peer: &str, fragment: &[u8], now: Instant) -> Option<Vec<u8>> {
         if !self.peers.contains_key(peer) && self.peers.len() >= MAX_PEERS {
             // Evict the stalest peer rather than refusing a new central.
-            if let Some(oldest) = self.peers.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone()) {
+            if let Some(oldest) = self.peers.iter().min_by_key(|(_, p)| p.last).map(|(k, _)| k.clone()) {
                 self.peers.remove(&oldest);
             }
         }
-        let entry = self.peers.entry(peer.to_owned()).or_insert_with(|| (Reassembler::default(), now));
-        entry.1 = now;
-        let message = match entry.0.push(fragment, now) {
+        let entry = self.peers.entry(peer.to_owned())
+            .or_insert_with(|| Peer { reassembler: Reassembler::default(), last: now, authenticated: false });
+        entry.last = now;
+        let message = match entry.reassembler.push(fragment, now) {
             Ok(Some(m)) => m,
             Ok(None) => return None,
             Err(e) => return Some(error_bytes(RpcError(frame_error_code(&e)))),
         };
         let message_id = fragment.first().copied().unwrap_or_default();
-        Some(self.handle_message(message_id, &message, now))
+        Some(self.handle_message(peer, message_id, &message, now))
     }
 
-    fn handle_message(&mut self, message_id: u8, message: &[u8], now: Instant) -> Vec<u8> {
+    fn handle_message(&mut self, peer: &str, message_id: u8, message: &[u8], now: Instant) -> Vec<u8> {
         let digest = {
             let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
             ctx.update(&[message_id]);
@@ -299,7 +330,7 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
         if let Some(hit) = self.replay.iter().find(|r| r.digest == digest) {
             return hit.response.clone();
         }
-        let (response, cacheable) = match self.dispatch(message, now) {
+        let (response, cacheable) = match self.dispatch(peer, message, now) {
             Ok((v, cacheable)) => (v.to_string().into_bytes(), cacheable),
             Err(e) => (error_bytes(e), false),
         };
@@ -311,8 +342,9 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
     }
 
     /// Returns the response and whether it must be replayed for an
-    /// identical retry (mutating or non-repeatable operations).
-    fn dispatch(&mut self, message: &[u8], now: Instant) -> Result<(Value, bool), RpcError> {
+    /// identical retry. Only operations whose request bytes bind a fresh
+    /// value are cacheable (see the module docs); challenges are not.
+    fn dispatch(&mut self, peer: &str, message: &[u8], now: Instant) -> Result<(Value, bool), RpcError> {
         let Ok(Value::Object(req)) = serde_json::from_slice::<Value>(message) else { return Err(RpcError("invalid_json")) };
         let op = req.get("op").and_then(Value::as_str).ok_or(RpcError("invalid_request"))?.to_owned();
         match op.as_str() {
@@ -327,7 +359,9 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
                 exact(&req, &["op"])?;
                 if *self.ownership.state() == Ownership::Unclaimed {
                     let c = self.ownership.begin_pairing(now)?;
-                    Ok((json!({"state": "PAIRING", "nonce": hex(&c.nonce), "device_key": hex(&c.device_key)}), true))
+                    // Not cached: a retry gets a fresh challenge, which
+                    // supersedes this one.
+                    Ok((json!({"state": "PAIRING", "nonce": hex(&c.nonce), "device_key": hex(&c.device_key)}), false))
                 } else {
                     Ok((json!({"state": self.ownership.reported_state()}), false))
                 }
@@ -343,24 +377,27 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
                     self.ownership.abandon_claim();
                     return Err(RpcError("storage_failed"));
                 }
+                self.mark_authenticated(peer);
+                // Cached: the request carries the phone's fresh key.
                 Ok((json!({"state": "CLAIMED", "confirm": hex(&confirm)}), true))
             }
             "operation.challenge" => {
                 exact(&req, &["op"])?;
-                let nonce = self.ownership.operation_challenge(now)?;
-                Ok((json!({"nonce": hex(&nonce)}), true))
+                // Not cached: a retry gets another single-use nonce.
+                let nonce = self.ownership.operation_challenge(peer, now)?;
+                Ok((json!({"nonce": hex(&nonce)}), false))
             }
             "wifi.scan" => {
                 exact(&req, &["op", "proof"])?;
                 let proof = hex_field::<32>(&req, "proof")?;
-                self.ownership.authorize("wifi.scan", b"", &proof, now)?;
+                self.authorize(peer, "wifi.scan", b"", &proof, now)?;
                 Ok((self.wifi_scan(), true))
             }
             "wifi.configure" => {
                 exact(&req, &["op", "sealed", "proof"])?;
                 let sealed = hex_bytes(&req, "sealed", 512)?;
                 let proof = hex_field::<32>(&req, "proof")?;
-                let nonce = self.ownership.authorize("wifi.configure", &sealed, &proof, now)?;
+                let nonce = self.authorize(peer, "wifi.configure", &sealed, &proof, now)?;
                 let key = *self.ownership.owner_key().ok_or(RpcError("not_owner"))?;
                 let plain = open(&key, &nonce, "wifi.configure", &sealed).ok_or(RpcError("bad_seal"))?;
                 Ok((self.wifi_configure(&plain)?, true))
@@ -383,7 +420,7 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             "management.enroll" => {
                 exact(&req, &["op", "proof"])?;
                 let proof = hex_field::<32>(&req, "proof")?;
-                let nonce = self.ownership.authorize("management.enroll", b"", &proof, now)?;
+                let nonce = self.authorize(peer, "management.enroll", b"", &proof, now)?;
                 let key = *self.ownership.owner_key().ok_or(RpcError("not_owner"))?;
                 let endpoint = self.endpoint().ok_or(RpcError("management_unavailable"))?;
                 let tokens = &self.management.as_ref().ok_or(RpcError("management_unavailable"))?.tokens;
@@ -576,21 +613,80 @@ mod tests {
         let now = Instant::now();
         let mut s = svc(FakeNetwork::default());
         let p = Phone::new("phone");
+        let lost = p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now);
+        // Challenge retry (indication lost): a fresh challenge supersedes it.
         let c = p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now);
-        // Challenge retry (indication lost) returns the same nonce, not a new one.
-        assert_eq!(p.send_with_id(&mut s, 1, &json!({"op":"pairing.challenge"}), now), c);
+        assert_ne!(c["nonce"], lost["nonce"]);
         let (phone_key, owner_key) = client_claim(&challenge_of(&c), "iphone-1").unwrap();
         let claim = json!({"op":"pairing.claim","owner_id":"iphone-1","phone_key":hex(&phone_key)});
         let claimed = json!({"state":"CLAIMED","confirm":hex(&claim_confirmation(&owner_key, &challenge_of(&c).nonce))});
         assert_eq!(p.send_with_id(&mut s, 2, &claim, now), claimed);
+        assert!(s.authenticated("phone"));
         // Lost indication + reconnect from a new address: same bytes, same id.
         let q = Phone::new("phone-new-rpa");
         assert_eq!(q.send_with_id(&mut s, 2, &claim, now), claimed);
+        assert!(!s.authenticated("phone-new-rpa"), "a replayed response proves nothing about this link");
         assert_eq!(s.store.saved.len(), 1, "claim ran once");
         // Different id = new request (not a replay).
         assert_eq!(q.send_with_id(&mut s, 3, &claim, now), json!({"error":"not_claimable"}));
+        // Unauthenticated requests from anyone cannot evict the cached claim.
+        let attacker = Phone::new("attacker");
+        for id in 0..=255u8 { attacker.send_with_id(&mut s, id, &json!({"op":"operation.challenge"}), now); }
+        assert_eq!(q.send_with_id(&mut s, 2, &claim, now), claimed);
         // Replay expires.
         assert_eq!(q.send_with_id(&mut s, 2, &claim, now + REPLAY_TTL), json!({"error":"not_claimable"}));
+
+        // An authenticated operation retried from a new address after its
+        // response was lost runs once and is replayed.
+        let n = unhex::<32>(q.send_with_id(&mut s, 4, &json!({"op":"operation.challenge"}), now)["nonce"].as_str().unwrap()).unwrap();
+        let config = br#"{"ssid":"LT","security":"open"}"#;
+        let sealed = seal(&owner_key, &n, "wifi.configure", config);
+        let req = json!({"op":"wifi.configure","sealed":hex(&sealed),"proof":hex(&operation_proof(&owner_key, &n, "wifi.configure", &sealed))});
+        assert_eq!(q.send_with_id(&mut s, 5, &req, now), json!({"state":"CONNECTED"}));
+        assert_eq!(p.send_with_id(&mut s, 5, &req, now), json!({"state":"CONNECTED"}));
+        assert_eq!(s.network().joined.len(), 1, "joined once");
+    }
+
+    #[test]
+    fn challenges_are_never_replayed_across_sessions_or_peers() {
+        let now = Instant::now();
+        let mut s = svc(FakeNetwork::default());
+        // An attacker pre-caches pairing challenges under every id the app
+        // could use, then leaves.
+        let attacker = Phone::new("attacker");
+        let seen: Vec<Value> = (1..=8u8).map(|id| attacker.send_with_id(&mut s, id, &json!({"op":"pairing.challenge"}), now)).collect();
+        s.disconnect("attacker");
+        // The owner's challenge under one of those ids is fresh, so its claim
+        // is bound to the live pairing and the confirmation matches.
+        let owner = Phone::new("owner");
+        let c = owner.send_with_id(&mut s, 2, &json!({"op":"pairing.challenge"}), now);
+        assert!(seen.iter().all(|old| old["nonce"] != c["nonce"]));
+        let (phone_key, key) = client_claim(&challenge_of(&c), "iphone-1").unwrap();
+        let r = owner.send_with_id(&mut s, 3, &json!({"op":"pairing.claim","owner_id":"iphone-1","phone_key":hex(&phone_key)}), now);
+        assert_eq!(r, json!({"state":"CLAIMED","confirm":hex(&claim_confirmation(&key, &challenge_of(&c).nonce))}));
+
+        // A later session reusing message ids gets a fresh operation nonce,
+        // never the consumed one of the earlier session.
+        let mut used = Vec::new();
+        for _session in 0..2 {
+            let n = owner.send_with_id(&mut s, 4, &json!({"op":"operation.challenge"}), now);
+            let n = unhex::<32>(n["nonce"].as_str().unwrap()).unwrap();
+            assert!(!used.contains(&n), "nonce served twice");
+            used.push(n);
+            let proof = operation_proof(&key, &n, "wifi.scan", b"");
+            assert!(owner.send_with_id(&mut s, 5, &json!({"op":"wifi.scan","proof":hex(&proof)}), now).get("networks").is_some());
+        }
+        // An attacker's challenges and failed proofs neither displace the
+        // owner's nonce nor lock the owner out.
+        let n = unhex::<32>(owner.send_with_id(&mut s, 6, &json!({"op":"operation.challenge"}), now)["nonce"].as_str().unwrap()).unwrap();
+        for id in 0..20u8 {
+            attacker.send_with_id(&mut s, id, &json!({"op":"operation.challenge"}), now);
+            attacker.send_with_id(&mut s, id.wrapping_add(100), &json!({"op":"wifi.scan","proof":hex(&[id; 32])}), now);
+        }
+        assert_eq!(attacker.send_with_id(&mut s, 99, &json!({"op":"wifi.scan","proof":hex(&[0u8; 32])}), now), json!({"error":"locked_out"}));
+        assert!(!s.authenticated("attacker"));
+        let proof = operation_proof(&key, &n, "wifi.scan", b"");
+        assert!(owner.send_with_id(&mut s, 7, &json!({"op":"wifi.scan","proof":hex(&proof)}), now).get("networks").is_some());
     }
 
     #[test]

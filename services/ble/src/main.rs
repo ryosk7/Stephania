@@ -1,4 +1,4 @@
-//! stephania-ble: BlueZ GATT adapter for Stephania provisioning (protocol v2).
+//! stephania-ble: BlueZ GATT adapter for Stephania provisioning (protocol v3).
 //!
 //! A thin process with no secrets and no protocol decisions: it publishes
 //! one service with two characteristics and forwards request fragments to
@@ -14,8 +14,11 @@
 //! - No BLE pairing or bonding is required (link encryption off by default;
 //!   confidentiality and authentication are at the application layer).
 //! - One active central at a time; other centrals get `InProgress` until the
-//!   active one disconnects or idles out. Partial transfers are dropped on
-//!   disconnect.
+//!   active one disconnects or idles out. A central that has not completed
+//!   a claim or an owner-authenticated operation (as reported by the device
+//!   core) idles out sooner and holds the gate for a bounded time, so a
+//!   stranger in radio range cannot keep the owner out. Partial transfers
+//!   are dropped on disconnect.
 //! - Self-healing: if bluetoothd restarts or the adapter disappears, the
 //!   process exits non-zero so systemd restarts it and re-registers the
 //!   application and advertisement. A powered-off adapter is powered back
@@ -41,8 +44,16 @@ use stephania::ipc::{read_frame, write_frame, IO_TIMEOUT};
 use stephania::provisioning::{fragment, hex, MIN_ATT_PAYLOAD};
 use stephania::provisioning_gatt::{INFO_UUID, INFO_VALUE, RPC_UUID, SERVICE_UUID};
 
-/// An idle central stops blocking others after this long.
+/// An idle authenticated central stops blocking others after this long.
 const PEER_IDLE: Duration = Duration::from_secs(30);
+/// An unauthenticated central (no claim or owner proof on this link yet)
+/// stops blocking others after this long without a completed request...
+const UNAUTHENTICATED_IDLE: Duration = Duration::from_secs(10);
+/// ...and after this long in total, however busy it keeps itself.
+const UNAUTHENTICATED_HOLD: Duration = Duration::from_secs(45);
+/// A write still inside the device core (a Wi-Fi join takes ~30 s) keeps
+/// its central admitted, up to this long.
+const IN_FLIGHT_LIMIT: Duration = Duration::from_secs(90);
 const WATCHDOG_PERIOD: Duration = Duration::from_secs(10);
 /// While no central is connected, re-register the advertisement this often:
 /// BlueZ can report an advertisement as registered while the controller is
@@ -98,28 +109,68 @@ pub fn att_payload(mtu: u16) -> usize {
     (mtu as usize).saturating_sub(3).clamp(MIN_ATT_PAYLOAD, 509)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Active {
+    peer: Address,
+    admitted: Instant,
+    /// Last completed request (or admission).
+    last: Instant,
+    authenticated: bool,
+    /// Writes currently being handled by the device core.
+    in_flight: u32,
+}
+
+impl Active {
+    fn expired(&self, now: Instant) -> bool {
+        if self.in_flight > 0 && now.duration_since(self.last) < IN_FLIGHT_LIMIT {
+            return false;
+        }
+        if self.authenticated {
+            now.duration_since(self.last) >= PEER_IDLE
+        } else {
+            now.duration_since(self.last) >= UNAUTHENTICATED_IDLE || now.duration_since(self.admitted) >= UNAUTHENTICATED_HOLD
+        }
+    }
+}
+
 /// Which central may currently talk to the device.
 #[derive(Debug, Default)]
 pub struct PeerGate {
-    active: Option<(Address, Instant)>,
+    active: Option<Active>,
 }
 
 impl PeerGate {
-    /// Admit `peer` if no other central is active (or the active one idled).
-    /// Returns the displaced peer when another central idled out.
+    /// Admit a write from `peer` if no other central is active (or the
+    /// active one expired). Returns the displaced peer when another central
+    /// expired. Every admitted write must be followed by [`PeerGate::finish`].
     pub fn admit(&mut self, peer: Address, now: Instant) -> Result<Option<Address>, ReqError> {
-        match self.active {
-            Some((current, _)) if current == peer => { self.active = Some((peer, now)); Ok(None) }
-            Some((_, last)) if now.duration_since(last) < PEER_IDLE => Err(ReqError::InProgress),
-            previous => { self.active = Some((peer, now)); Ok(previous.map(|(p, _)| p)) }
+        match &mut self.active {
+            Some(a) if a.peer == peer => { a.in_flight += 1; Ok(None) }
+            Some(a) if !a.expired(now) => Err(ReqError::InProgress),
+            _ => {
+                let previous = self.active.replace(Active { peer, admitted: now, last: now, authenticated: false, in_flight: 1 });
+                Ok(previous.map(|a| a.peer))
+            }
+        }
+    }
+
+    /// A write from `peer` was handled. `completed`: it finished a request
+    /// (a response is due); a fragment that never completes a request does
+    /// not keep the gate. `authenticated`: the device core reports that this
+    /// link completed a claim or an owner-authenticated operation.
+    pub fn finish(&mut self, peer: Address, now: Instant, completed: bool, authenticated: bool) {
+        if let Some(a) = self.active.as_mut().filter(|a| a.peer == peer) {
+            a.in_flight = a.in_flight.saturating_sub(1);
+            a.authenticated |= authenticated;
+            if completed { a.last = now; }
         }
     }
 
     pub fn release(&mut self, peer: Address) -> bool {
-        if matches!(self.active, Some((p, _)) if p == peer) { self.active = None; true } else { false }
+        if matches!(self.active, Some(a) if a.peer == peer) { self.active = None; true } else { false }
     }
 
-    pub fn active(&self) -> Option<Address> { self.active.map(|(p, _)| p) }
+    pub fn active(&self) -> Option<Address> { self.active.map(|a| a.peer) }
 }
 
 struct Shared {
@@ -170,6 +221,13 @@ async fn on_write(shared: Arc<Shared>, value: Vec<u8>, peer: Address, mtu: u16, 
     watch_disconnect(&shared, peer);
     let message_id = value[0];
     let r = provision_call(&shared, "gatt.request", json!({"peer": peer.to_string(), "fragment_hex": hex(&value)})).await;
+    {
+        let (completed, authenticated) = match &r {
+            Ok(v) => (v["response_hex"].is_string(), v["authenticated"] == true),
+            Err(_) => (false, false),
+        };
+        shared.gate.lock().unwrap_or_else(|e| e.into_inner()).finish(peer, Instant::now(), completed, authenticated);
+    }
     let response = match r {
         Ok(v) => match v["response_hex"].as_str() {
             Some(h) => unhex(h).ok_or(ReqError::Failed)?,
@@ -383,15 +441,62 @@ mod tests {
         let a = Address([1, 2, 3, 4, 5, 6]);
         let b = Address([6, 5, 4, 3, 2, 1]);
         let t = Instant::now();
+        let s = Duration::from_secs;
         let mut g = PeerGate::default();
         assert_eq!(g.admit(a, t), Ok(None));
-        assert_eq!(g.admit(a, t + Duration::from_secs(5)), Ok(None));
-        assert_eq!(g.admit(b, t + Duration::from_secs(10)), Err(ReqError::InProgress));
-        // a idles out: b takes over and a's partial state must be dropped.
-        assert_eq!(g.admit(b, t + Duration::from_secs(5) + PEER_IDLE), Ok(Some(a)));
+        g.finish(a, t, true, true);
+        assert_eq!(g.admit(a, t + s(5)), Ok(None));
+        g.finish(a, t + s(5), true, false);
+        assert_eq!(g.admit(b, t + s(10)), Err(ReqError::InProgress));
+        // a (authenticated) idles out: b takes over and a's partial state must be dropped.
+        assert_eq!(g.admit(b, t + s(5) + PEER_IDLE), Ok(Some(a)));
+        g.finish(b, t + s(5) + PEER_IDLE, true, false);
         assert!(!g.release(a));
         assert!(g.release(b));
-        assert_eq!(g.admit(a, t + Duration::from_secs(100)), Ok(None));
+        assert_eq!(g.admit(a, t + s(100)), Ok(None));
+    }
+
+    #[test]
+    fn unauthenticated_central_cannot_hold_the_gate() {
+        let attacker = Address([1, 1, 1, 1, 1, 1]);
+        let owner = Address([2, 2, 2, 2, 2, 2]);
+        let t = Instant::now();
+        let s = Duration::from_secs;
+        let mut g = PeerGate::default();
+        // Fragments that never complete a request do not keep the gate.
+        assert_eq!(g.admit(attacker, t), Ok(None));
+        g.finish(attacker, t, false, false);
+        for i in 1..5 {
+            assert_eq!(g.admit(attacker, t + s(2 * i)), Ok(None));
+            g.finish(attacker, t + s(2 * i), false, false);
+        }
+        assert_eq!(g.admit(owner, t + UNAUTHENTICATED_IDLE - s(1)), Err(ReqError::InProgress));
+        assert_eq!(g.admit(owner, t + UNAUTHENTICATED_IDLE), Ok(Some(attacker)));
+        g.finish(owner, t + UNAUTHENTICATED_IDLE, true, false);
+        assert!(g.release(owner));
+        // Completed but unauthenticated requests hold it for a bounded time.
+        let t = t + s(100);
+        assert_eq!(g.admit(attacker, t), Ok(None));
+        g.finish(attacker, t, true, false);
+        let mut now = t;
+        while now < t + UNAUTHENTICATED_HOLD {
+            assert_eq!(g.admit(owner, now), Err(ReqError::InProgress));
+            now += s(5);
+            assert_eq!(g.admit(attacker, now), Ok(None));
+            g.finish(attacker, now, true, false);
+        }
+        assert_eq!(g.admit(owner, now), Ok(Some(attacker)));
+        g.finish(owner, now, true, false);
+        // A request still inside the device core (a Wi-Fi join) is never cut off.
+        assert_eq!(g.admit(owner, now + s(1)), Ok(None));
+        g.finish(owner, now + s(1), true, false);
+        assert_eq!(g.admit(owner, now + s(2)), Ok(None));
+        assert_eq!(g.admit(attacker, now + s(2) + UNAUTHENTICATED_HOLD), Err(ReqError::InProgress));
+        g.finish(owner, now + s(2) + UNAUTHENTICATED_HOLD, true, true);
+        // Authenticated: no hold limit, the normal idle time.
+        let later = now + s(2) + UNAUTHENTICATED_HOLD;
+        assert_eq!(g.admit(attacker, later + PEER_IDLE - s(1)), Err(ReqError::InProgress));
+        assert_eq!(g.admit(attacker, later + PEER_IDLE), Ok(Some(owner)));
     }
 
     #[test]

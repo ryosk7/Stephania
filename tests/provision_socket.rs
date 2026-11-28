@@ -119,3 +119,37 @@ fn ownership_survives_process_restart() {
     let mut p = Phone::connect(&dir, "peer-1");
     assert_eq!(p.send(json!({"op":"pairing.challenge"})), json!({"state":"CLAIMED"}));
 }
+
+#[test]
+fn retransmitted_fragments_fresh_challenges_and_peer_authentication() {
+    let dir = tempdir("prov-retry");
+    let _guard = start(&dir, true);
+    let mut p = Phone::connect(&dir, "AA:BB:CC:DD:EE:10");
+    // A write retransmitted after a lost ATT response is an identical
+    // duplicate: ignored, and the request still completes.
+    let frags = fragment(9, json!({"op":"device.info"}).to_string().as_bytes(), MIN_ATT_PAYLOAD).unwrap();
+    assert!(frags.len() >= 2);
+    let mut last = Value::Null;
+    for (i, f) in frags.iter().enumerate() {
+        let times = if i == 0 { 2 } else { 1 };
+        for _ in 0..times { last = p.call("gatt.request", json!({"peer": p.peer, "fragment_hex": hex(f)})); }
+    }
+    let h = last["result"]["response_hex"].as_str().expect("completed despite the duplicate");
+    let info: Value = serde_json::from_slice(&stephania::provisioning::unhex_vec(h).unwrap()).unwrap();
+    assert_eq!(info["ownership"], "UNCLAIMED");
+    assert_eq!(last["result"]["authenticated"], false);
+
+    // A challenge retried under the same id is fresh, never a cached one.
+    let a = p.send_with_id(5, &json!({"op":"pairing.challenge"}));
+    let b = p.send_with_id(5, &json!({"op":"pairing.challenge"}));
+    assert_ne!(a["nonce"], b["nonce"]);
+    let key = p.claim("socket-phone");
+    let r = p.call("gatt.request", json!({"peer": p.peer, "fragment_hex": hex(&fragment(1, br#"{"op":"network.status"}"#, MIN_ATT_PAYLOAD).unwrap()[0])}));
+    assert_eq!(r["result"]["authenticated"], true, "the claim authenticated this link");
+    let mut q = Phone::connect(&dir, "AA:BB:CC:DD:EE:11");
+    let n = q.nonce("operation.challenge");
+    assert_ne!(n, q.nonce("operation.challenge"));
+    let proof = operation_proof(&key, &n, "wifi.scan", b"");
+    let r = q.call("gatt.request", json!({"peer": q.peer, "fragment_hex": hex(&fragment(50, json!({"op":"wifi.scan","proof":hex(&proof)}).to_string().as_bytes(), 509).unwrap()[0])}));
+    assert_eq!(r["result"]["authenticated"], true, "an owner proof authenticated this link");
+}

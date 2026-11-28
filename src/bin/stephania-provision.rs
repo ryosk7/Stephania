@@ -6,9 +6,12 @@
 //! adapter is a separate thin process that forwards characteristic reads and
 //! writes here; it is not implemented yet.
 //!
-//! Methods (protocol v2, contracts/ble-protocol.md):
-//! `gatt.request {peer, fragment_hex}` → `{response_hex|null, message_id}`;
+//! Methods (protocol v3, contracts/ble-protocol.md):
+//! `gatt.request {peer, fragment_hex}` → `{response_hex|null, message_id, authenticated}`;
 //! the GATT adapter indicates `response_hex` fragmented under `message_id`.
+//! `authenticated` says whether `peer` has completed a claim or an
+//! owner-authenticated operation on this link; the adapter lets other
+//! centrals hold the single-central gate only briefly.
 //! `gatt.disconnect {peer}` drops that peer's partial transfer. Physical reset is intentionally not
 //! reachable over the socket; it will come from the GPIO handler.
 #[cfg(unix)]
@@ -125,7 +128,7 @@ mod unix {
                 };
                 let message_id = fragment[0];
                 let response = service.handle_fragment(peer, &fragment, Instant::now());
-                json!({"response_hex": response.map(|b| hex(&b)), "message_id": message_id})
+                json!({"response_hex": response.map(|b| hex(&b)), "message_id": message_id, "authenticated": service.authenticated(peer)})
             }
             Some("gatt.disconnect") => { service.disconnect(peer); json!({}) }
             _ => return err(Some(id), "unknown_method", "unknown method"),
