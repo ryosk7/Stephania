@@ -35,16 +35,77 @@ def run(*cmd, cwd=ROOT):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
+SPDX_TOKEN = re.compile(r"\s*(\(|\)|[^\s()]+)")
+
+
 def spdx_ok(expr):
-    """True if some alternative of an SPDX expression is entirely permissive."""
-    if not expr:
+    """True if the SPDX expression can be satisfied with permissive licences only.
+
+    AND binds tighter than OR and parentheses group (SPDX 2.3 annex D), so
+    `(MIT OR GPL-3.0) AND LGPL-2.1` needs LGPL-2.1 and is refused. `A WITH B`
+    is one licence; a legacy `A/B` means `A OR B`. Malformed input is refused.
+    """
+    if not expr or not expr.strip():
         return False
-    expr = expr.replace("/", " OR ")
-    for alt in re.split(r"\s+OR\s+", expr.replace("(", "").replace(")", "")):
-        parts = [p.strip() for p in re.split(r"\s+AND\s+", alt)]
-        if all(p in PERMISSIVE for p in parts):
+    tokens = SPDX_TOKEN.findall(expr.replace("/", " OR "))
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def take():
+        nonlocal pos
+        pos += 1
+        return tokens[pos - 1]
+
+    def op(word):
+        t = peek()
+        return t is not None and t.upper() == word
+
+    def disjunction():
+        ok = conjunction()
+        while op("OR"):
+            take()
+            ok = conjunction() or ok
+        return ok
+
+    def conjunction():
+        ok = term()
+        while op("AND"):
+            take()
+            ok = term() and ok
+        return ok
+
+    def term():
+        t = peek()
+        if t is None or t == ")" or t.upper() in ("AND", "OR", "WITH"):
+            raise ValueError(expr)
+        take()
+        if t == "(":
+            ok = disjunction()
+            if take_if(")"):
+                return ok
+            raise ValueError(expr)
+        if op("WITH"):
+            take()
+            exc = peek()
+            if exc is None or exc in ("(", ")") or exc.upper() in ("AND", "OR", "WITH"):
+                raise ValueError(expr)
+            take()
+            return f"{t} WITH {exc}" in PERMISSIVE
+        return t in PERMISSIVE
+
+    def take_if(t):
+        if peek() == t:
+            take()
             return True
-    return False
+        return False
+
+    try:
+        ok = disjunction()
+    except ValueError:
+        return False
+    return ok and pos == len(tokens)
 
 
 def copy_texts(src_dir, dest):

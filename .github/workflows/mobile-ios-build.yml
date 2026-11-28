@@ -27,18 +27,20 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Expo SDK 58's Swift packages need a current Xcode 26: older 26.x
       # compilers reject expo-modules-jsi (a data-race diagnostic).
       - run: xcodebuild -version
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
       - run: npm ci --no-audit --no-fund
         working-directory: packages/provisioning-client
       - run: npm ci --no-audit --no-fund
         working-directory: apps/mobile
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/Library/Caches/CocoaPods
           key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json') }}
@@ -57,7 +59,7 @@ jobs:
             || { grep -nE "error|Error|failed" "$RUNNER_TEMP/xcodebuild.log" | grep -v "warning" | head -80; tail -60 "$RUNNER_TEMP/xcodebuild.log"; exit 1; }
           tail -5 "$RUNNER_TEMP/xcodebuild.log"
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: xcodebuild-log
           path: ${{ runner.temp }}/xcodebuild.log

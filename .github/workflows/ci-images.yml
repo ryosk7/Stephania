@@ -1,7 +1,7 @@
 name: Publish generic CI images
 on:
   push:
-    branches: [test/virtual-lab, main]
+    branches: [main]
     paths:
       - ci/images/*.Dockerfile
       - .github/workflows/ci-images.yml
@@ -20,6 +20,9 @@ defaults:
 
 jobs:
   publish:
+    # Only main publishes: the tags are mutable, so a branch must not be able
+    # to replace what main's builds pull (release builds never pull them).
+    if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +51,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Publish only generic environment
         env:
           IMAGE: ${{ matrix.image }}

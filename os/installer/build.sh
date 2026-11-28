@@ -7,16 +7,24 @@
 # Environment:
 #   STEPHANIA_INSTALL_SIGNING_KEY  Ed25519 private key (PEM) that signs the
 #                              manifest; its public key is built into the
-#                              installer. Required: nothing is ever unsigned.
+#                              installer.
+#   STEPHANIA_INSTALL_PUBLIC_KEY   instead of the private key: the Ed25519
+#                              public key (PEM) to build in. The card tree is
+#                              left unsigned and no ZIP is written; the release
+#                              signing job signs it (os/installer/sign.sh), so
+#                              the build never holds the private key.
+#                              One of the two is required.
 #   STEPHANIA_IMAGE_VERSION, STEPHANIA_IMAGE_ARCH, STEPHANIA_IMAGE_SUITE, STEPHANIA_IMAGE_MIRROR as for the image.
 #   STEPHANIA_INSTALL_ID           fixed install id (tests); random otherwise.
 # Output: <zip-out-dir>/zip/ (the files to copy onto a FAT32 card) and
-#         <zip-out-dir>/stephania-os.zip.
+#         <zip-out-dir>/stephania-os.zip (signed builds only).
 set -euo pipefail
 img=$(cd "$1" && pwd)
 out=$(mkdir -p "$2" && cd "$2" && pwd)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-key=${STEPHANIA_INSTALL_SIGNING_KEY:?STEPHANIA_INSTALL_SIGNING_KEY (Ed25519 PEM) is required}
+key=${STEPHANIA_INSTALL_SIGNING_KEY:-}
+pub=${STEPHANIA_INSTALL_PUBLIC_KEY:-}
+[ -n "$key" ] || [ -n "$pub" ] || { echo "STEPHANIA_INSTALL_SIGNING_KEY or STEPHANIA_INSTALL_PUBLIC_KEY (Ed25519 PEM) is required" >&2; exit 1; }
 arch=${STEPHANIA_IMAGE_ARCH:-arm64}
 # Same distribution as the image (Debian 13 trixie, os/image/build.sh).
 suite=${STEPHANIA_IMAGE_SUITE:-trixie}
@@ -99,7 +107,11 @@ depmod -b "$ir" "$kver"
 install -m 0755 "$repo/os/installer/stephania-install" "$ir/init"
 cp "$repo/os/layout.env" "$ir/etc/stephania/layout.env"
 echo "$version" >"$ir/etc/stephania/version"
-openssl pkey -in "$key" -pubout -out "$ir/etc/stephania/install.pub"
+if [ -n "$key" ]; then
+  openssl pkey -in "$key" -pubout -out "$ir/etc/stephania/install.pub"
+else
+  openssl pkey -pubin -in "$pub" -out "$ir/etc/stephania/install.pub"
+fi
 (cd "$ir" && find . | LC_ALL=C sort | cpio -o -H newc --quiet --reproducible | gzip -9n) >"$out/installer.cpio.gz"
 
 # Card contents.
@@ -135,9 +147,12 @@ cat >"$z/stephania-install/manifest.json" <<JSON
  "installer.cpio.gz_sha256": "$(sha "$z/installer.cpio.gz")"
 }
 JSON
-openssl pkeyutl -sign -inkey "$key" -rawin -in "$z/stephania-install/manifest.json" -out "$z/stephania-install/manifest.sig"
-openssl pkeyutl -verify -pubin -inkey "$ir/etc/stephania/install.pub" -rawin -in "$z/stephania-install/manifest.json" -sigfile "$z/stephania-install/manifest.sig"
-rm -f "$out/stephania-os.zip"
-(cd "$z" && find . -type f | LC_ALL=C sort | TZ=UTC zip -X -q -0 "$out/stephania-os.zip" -@)
+rm -f "$out/stephania-os.zip" "$z/stephania-install/manifest.sig"
+if [ -z "$key" ]; then
+  rm -rf "$tools"
+  echo "unsigned installer card tree $version (install_id $id): $z; sign it with os/installer/sign.sh"
+  exit 0
+fi
+"$repo/os/installer/sign.sh" "$z" "$key" "$out/stephania-os.zip"
 rm -rf "$tools"
 echo "installer ZIP $version (install_id $id): $out/stephania-os.zip"

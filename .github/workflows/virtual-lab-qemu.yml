@@ -25,12 +25,14 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Authenticate read-only GHCR access
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: boot-cache
         with:
           path: .qemu-lab
@@ -57,7 +59,7 @@ jobs:
             docker rm "$id"
           fi
           (cd .qemu-lab; sha256sum -c manifest.txt)
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.boot-cache.outputs.cache-hit != 'true'
         with:
           path: .qemu-lab
@@ -71,7 +73,7 @@ jobs:
         run: |
           mkdir -p vm-evidence
           /usr/bin/time -f 'elapsed_seconds=%e' -o vm-evidence/timing.txt timeout --kill-after=2s 58s bash ci/images/qemu-run.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: qemu-kernel-evidence

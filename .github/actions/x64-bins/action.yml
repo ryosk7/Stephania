@@ -11,7 +11,7 @@ runs:
     - id: key
       shell: bash
       run: echo "key=ci-bins-x64-${{ hashFiles('src/**', 'services/phone/**', 'services/ble/Cargo.toml', 'tools/stephctl/**', 'Cargo.toml', 'Cargo.lock', 'build.rs', 'ci/build-bins.sh', 'ci/images/build.Dockerfile') }}" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: reuse
       with:
         path: ci-bins.tar
@@ -32,7 +32,7 @@ runs:
         echo "ci-bins: ${{ steps.reuse.outputs.cache-hit == 'true' && 'reused from main (no Rust input changed)' || 'built' }}" >> "$GITHUB_STEP_SUMMARY"
         ls -la ci-bins
     - if: steps.reuse.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ci-bins.tar
         key: ${{ steps.key.outputs.key }}

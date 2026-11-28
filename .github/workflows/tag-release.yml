@@ -26,7 +26,8 @@ jobs:
       tag: ${{ steps.t.outputs.tag }}
       created: ${{ steps.t.outputs.created }}
     steps:
-      - uses: actions/checkout@v4
+      # Keeps the token: this job pushes the tag. It runs no dependency code.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
       - id: t
@@ -49,10 +50,14 @@ jobs:
   release:
     needs: tag
     if: needs.tag.outputs.created == 'true'
+    # The called jobs narrow this further: only release.yml's publish job
+    # writes; signing runs in the protected `release` environment.
     permissions:
       contents: write
-      packages: read
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.tag }}
-    secrets: inherit
+    # Environment secrets of `release` are not passed by the caller; the
+    # sign job reads them itself. Repository-level signing secrets, while
+    # they still exist, need inherit.
+    secrets: inherit # zizmor: ignore[secrets-inherit]

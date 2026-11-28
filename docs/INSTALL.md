@@ -4,7 +4,11 @@
 monitor, keyboard or terminal is needed.
 
 1. Format a microSD card as FAT32 (most cards up to 32 GB already are).
-2. Extract `stephania-os-pi5.zip` onto it.
+2. Extract `stephania-os-pi5.zip` onto it. To be sure the ZIP is genuine,
+   check it first with `os/release/verify.sh` against the release keys
+   committed in this repository (docs/RELEASE.md): the installer's own
+   signature check uses a key that ships inside the same ZIP, so it catches
+   corruption and mixed-up files, not a rebuilt ZIP.
 3. Insert the card into the Stephania device and power it on.
 
 The firmware boots `vmlinuz` + `installer.cpio.gz` (`config.txt`); the

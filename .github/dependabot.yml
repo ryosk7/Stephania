@@ -1,0 +1,16 @@
+# Keeps the SHA-pinned actions (`uses: owner/action@<sha> # vX.Y.Z`) current:
+# Dependabot updates the SHA and the version comment together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']
+    # New releases wait a week: a hijacked tag is usually noticed by then.
+    cooldown:
+      default-days: 7

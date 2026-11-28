@@ -66,7 +66,7 @@ RULES = [
     ("src/maint.rs", ["rust", "control", "os", "lan"]), ("src/sshcert.rs", ["rust", "control", "os", "lan"]), ("src/totp.rs", ["rust", "control", "os", "lan"]),
     ("src/bin/stephania-maint.rs", ["rust", "control", "os", "lan"]), ("src/steph.rs", ["rust", "os"]), ("src/bin/steph.rs", ["rust", "os"]), ("ci/maint-ssh-e2e.sh", ["rust", "os"]),
     ("tools/stephctl/*", ["rust", "lan"]), ("ci/stephctl*", ["lan"]),
-    ("ci/update-e2e.sh", ["os"]), ("ci/installer-e2e.sh", ["os"]), ("ci/fake_engine.py", ["os"]), ("ci/qemu-smoke.sh", ["os"]), ("ci/build-device-bins.sh", ["os"]),
+    ("ci/update-e2e.sh", ["os"]), ("ci/installer-e2e.sh", ["os"]), ("ci/release-sign-e2e.sh", ["os"]), ("ci/sbom.py", ["os"]), ("ci/fake_engine.py", ["os"]), ("ci/qemu-smoke.sh", ["os"]), ("ci/build-device-bins.sh", ["os"]),
     ("ci/check-qualification.py", ["rust"]), ("tools/qualification/*", ["rust"]),
     ("src/*", ["rust"]), ("src/bin/*", ["rust"]),
 ]
