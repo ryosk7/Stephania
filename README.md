@@ -83,6 +83,13 @@ Enable the repository hooks once per clone. The pre-commit hook compresses stage
 git config core.hooksPath .githooks
 ```
 
+**English only.** Commit messages, pull request titles and descriptions, code
+comments and docs are written in English. `ci/check-english.py` enforces it
+in the `commit-msg` and `pre-commit` hooks, in the English workflow on every
+pull request, and for Claude Code through the `PreToolUse` hook in
+`.claude/settings.json`. Non-English text inside string literals (test data
+such as Unicode SSIDs) is allowed.
+
 **Engine** (Linux; native media needs `libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config`):
 
 ```bash
