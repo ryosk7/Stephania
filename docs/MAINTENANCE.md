@@ -20,11 +20,17 @@ and changes it through `stephania-maint`'s broker socket (restart, reboot,
 update apply, window close), tested with the real OpenSSH session by
 `ci/maint-ssh-e2e.sh` and on the image by the QEMU smoke test.
 `ci/maint-ssh-e2e.sh` also checks the refusals: wrong and reused codes,
-certificates bound to another address, expired and not-yet-valid
-certificates, `maint` certificates for root, non-Ed25519 keys, and
-signing after a window closed. The LAN-only firewall rule is checked on
-the image (QEMU smoke test); a non-private source cannot be simulated
-there.
+loopback and device-own client addresses, certificates for another
+account or address than the window's opener, certificates used from
+another address, expired, not-yet-valid and revoked (earlier window)
+certificates, `maint` certificates for root, non-Ed25519 keys, signing
+after a window closed, and a forged actor on the broker socket. It runs
+sshd with the image's own `sshd_config` (same PAM, revocation and limit
+settings). The QEMU smoke test checks on the image that sessions run in
+`stephania-sshd.service`'s cgroup and end, background processes
+included, when the window closes, and that a root window logs in as
+root. The LAN-only firewall rule is checked on the image; a non-private
+source cannot be simulated there.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as
@@ -87,7 +93,8 @@ access, so that a compromise of the control plane alone cannot.
 
 - State in `/var/lib/stephania/maint` (0700): the SSH **user CA** and
   **host CA** (Ed25519), the sshd host key and its host certificate, the
-  OTP secret, the KRL, and the window state. Created on first boot and
+  OTP secret, the used code steps, the certificate serial counter and the
+  KRL (`revoked.krl`). Created on first boot and
   on factory reset, like the TLS device CA (`stephania-pki`).
 - Unix socket `/run/stephania-maint/maint.sock`, group `stephania-control`
   (0660), JSON requests like the engine IPC (`contracts/` gets a schema).
@@ -105,8 +112,8 @@ Socket operations:
 | Operation | Request | Result |
 |---|---|---|
 | `window.open` | `{actor, client_addr, code, root}` | `{window_id, expires_at, root}`; starts sshd |
-| `cert.sign` | `{window_id, public_key, client_addr, root}` | `{certificate, valid_before, host_ca, principal, port}` |
-| `window.close` | `{window_id?, actor}` | `{closed}`; stops sshd and ends its sessions |
+| `cert.sign` | `{window_id, public_key, actor, client_addr}` | `{certificate, valid_before, serial, host_ca, principal, user}` · `not_window_opener` unless `actor` and `client_addr` are the window's opener's |
+| `window.close` | `{window_id?, actor, opener?}` | `{closed}`; stops sshd and ends its sessions. With `opener`, only a window that account opened |
 | `status` | `{}` | `{open, window, code_locked_until}` |
 | `otp.rotate` | `{}` | `{otp_secret}` (hex); closes any open window |
 
@@ -120,12 +127,33 @@ Rules enforced here, not in control:
 
 - **Code check.** TOTP (RFC 6238, SHA-1, 6 digits, 30 s step), accepting
   the current step and one step either side. A step that has been used
-  once is rejected afterwards (replay). Five wrong codes lock code entry
-  for 60 s, doubling to 15 min, the same curve as Studio sign-in.
+  once is rejected afterwards (replay), and so is any step before the most
+  recent use while the clock is at or past it. If the most recent use lies
+  ahead of the device clock (a cold boot without RTC battery or network
+  time puts the clock back), current codes are accepted unless their step
+  is among the last 32 used, instead of refusing every code until the
+  clock catches up. Five wrong codes lock code entry for 60 s, doubling
+  to 15 min, the same curve as Studio sign-in.
+- **Clients.** `client_addr` must be a private IPv4 or IPv6 (ULA) address
+  or IPv4 link-local. Loopback and the device's own addresses (the PKI
+  endpoint's) are refused, so a request relayed by a compromised control
+  plane cannot get a certificate that works from the device itself. IPv6
+  link-local clients are refused with a reason: sshd compares the
+  interface scope of such a peer and a certificate's `source-address`
+  cannot carry one, so the certificate could never match.
 - **Window.** One window at a time, 10 minutes to start sessions, closed
   early by `window.close`. Sessions started in the window may run to an
   absolute limit of 60 minutes; closing the window or reaching the limit
-  ends them (`KillMode=control-group`).
+  ends them (`KillMode=control-group`). sshd runs without PAM so that
+  sessions stay in the unit's cgroup: with PAM, `pam_systemd` would move
+  each login into a logind session scope that stopping the unit does not
+  touch. The image sets the password field of `maint` and `root` to `*`
+  (no password, not locked), which sshd without PAM requires.
+- **Opener.** A window belongs to the account and address that opened it.
+  `cert.sign` carries the requesting account; certificates are issued only
+  to the opener from the opener's address, so another admin cannot take
+  over a window without the code. Control shows the window ID only to the
+  opener.
 - **Certificate.** Signed with the user CA: principal `maint`, or
   `maint-root` when the window was opened with `root` (see
   [Privileges](#privileges)), validity
@@ -133,9 +161,14 @@ Rules enforced here, not in control:
   from a counter, `source-address=<client_addr>/32`, and only the
   `permit-pty` extension (no agent, port or X11 forwarding, no user rc).
   Only Ed25519 keys are accepted.
+- **Revocation.** `revoked.krl` (sshd `RevokedKeys`, read on every
+  authentication) revokes every user certificate serial issued before the
+  current window. It is rewritten when a window opens, when it closes and
+  when the service starts, so a certificate never works in a later window.
 - **Audit.** Every request and result goes to the journal with actor,
-  client address, window ID and certificate serial. Control mirrors the
-  events into its own event log so the Studio can show them.
+  client address, window ID and certificate serial. Control publishes
+  window and certificate events on `/api/v1/events` so the Studio can
+  show them.
 
 ### stephania-sshd.service (new, device)
 
@@ -160,20 +193,23 @@ DisableForwarding yes
 PermitUserRC no
 MaxAuthTries 2
 LoginGraceTime 20
+MaxStartups 10:30:60                # pre-auth connections, at most 3 per client
+PerSourceMaxStartups 3
+PerSourceNetBlockSize 32:64
 ClientAliveInterval 30
 ClientAliveCountMax 4
 ExposeAuthInfo yes                  # steph reads the certificate key ID for audit
+UsePAM no                           # sessions stay in the unit's cgroup
 ```
 
 The host certificate is signed by the host CA for the names the TLS
 certificate already covers (`<host>.local` and the current LAN addresses)
 and is reissued when they change, alongside `stephania-pki`.
 
-**Firewall.** The image has no packet filter today; port 9443 relies on
-the control plane's own host checks. sshd needs one: an nftables table
-loaded at boot that accepts TCP 22 only from private and link-local
-ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fc00::/7`,
-`fe80::/10`) and drops it otherwise. It is part of this work.
+**Firewall.** An nftables table loaded at boot accepts TCP 22 only from
+private ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`,
+`fc00::/7`) and drops it otherwise, loopback included: nothing on the
+device itself has a reason to reach the maintenance sshd.
 
 ### Privileges
 
@@ -196,7 +232,7 @@ that principal, so a `maint` certificate can never log in as root.
 - Admin role required, as for `maint`. The window lasts 5 minutes to start
   sessions instead of 10, and sessions end after 30 minutes instead of 60.
 - Audited as its own event type (`maintenance.root_window_opened`,
-  `maintenance.root_certificate_issued`), shown in the Studio event log
+  `maintenance.root_certificate_issued`), published on `/api/v1/events`
   with the account name.
 - Root can change the running system (the root file system is read-only
   SquashFS with an overlay, so changes outside `/var/lib/stephania` are
@@ -210,18 +246,28 @@ a Studio session (cookie + CSRF) or an enrolled owner token.
 
 | Method and path | Body | Result |
 |---|---|---|
-| `GET /maintenance` | | `{open, window, code_locked_until}` |
+| `GET /maintenance` | | `{open, window, code_locked_until}`; `window.window_id` only for the account that opened it |
 | `POST /maintenance/window` | `{code, root?}` | `201 {window_id, expires_at, sessions_end_at, root, user}` · `401 invalid_code` · `409 window_open` · `429 code_throttled` (`Retry-After`) |
-| `POST /maintenance/certificate` | `{window_id, public_key}` | `{certificate, valid_before, serial, host_ca, principal, user, host, port}` (`user` is `maint` or `root`) · `409 window_closed` |
+| `POST /maintenance/certificate` | `{window_id, public_key}` | `{certificate, valid_before, serial, host_ca, principal, user, host, port}` (`user` is `maint` or `root`) · `403 not_window_opener` · `409 window_closed` |
 | `DELETE /maintenance/window` | | `204` |
 
 `503 maintenance_unavailable` when `stephania-maint` does not answer,
-`503 maintenance_failed` when sshd could not be started. Opening and
-closing are also published on `/api/v1/events`.
+`503 maintenance_failed` when sshd could not be started. Opening, closing
+and certificate issuance (`maintenance.certificate_issued`,
+`maintenance.root_certificate_issued`: actor, serial, valid_before,
+client_addr) are also published on `/api/v1/events`; the events carry no
+window ID.
 
 Control passes the account name (`owner` for an owner token) as `actor`
 and the TCP peer address (never `X-Forwarded-For`) as `client_addr`; it never sees the OTP secret or any CA key. Non-browser
 clients send no `Origin` header, which the existing check already allows.
+Account names that the maintenance audit uses for other identities
+(`owner`, `root`, `maint`, `maint-root`, `steph`, `stephania`,
+`stephania-maint`, `stephania-control`, `unknown`) cannot be created; an
+older account with such a name gets `409 reserved_username` from the
+maintenance routes. Disabling, deleting or changing an account (role,
+password) closes the window it opened, which stops sshd and ends its
+sessions.
 
 `stephctl login` gets the device CA from the existing unauthenticated
 `GET /ca.pem` (the TLS server also sends it in its chain) and shows its
@@ -311,16 +357,21 @@ no secrets), per-OS equivalent on Windows.
 5. Run the system client:
 
    ```text
-   ssh -F none -p <port> \
+   ssh -F none \
        -o IdentitiesOnly=yes -o IdentityAgent=none \
        -o IdentityFile=<tmp>/id -o CertificateFile=<tmp>/id-cert.pub \
        -o UserKnownHostsFile=<tmp>/known_hosts -o GlobalKnownHostsFile=none \
        -o StrictHostKeyChecking=yes -o HostKeyAlias=<host>.local \
-       maint@<address> [-- command…]          # root@<address> with --root
+       -p <port> -l maint -- <address> [command…]   # -l root with --root
    ```
 
    with `known_hosts` holding
    `@cert-authority <host>.local,<addresses> <host CA public key>`.
+   What the device returns is checked first: the login user must be
+   `maint` or `root`, and the certificate and host CA must each be one
+   well-formed key line, so a compromised device cannot pass options to
+   the local `ssh` or add `known_hosts` entries. `--` keeps the address
+   and anything after it from being read as options.
 6. When `ssh` exits, overwrite and delete the temporary directory. The
    certificate expires within 5 minutes anyway.
 
@@ -359,9 +410,11 @@ once you are in. `stephctl ssh -- steph status` runs one command.
   device goes to `stephania-maint` over `ops.sock`, which checks it,
   performs it and audits it. Root uses the same path, so its routine
   changes are audited the same way.
-- **Audited with the certificate.** sshd's `ExposeAuthInfo` gives the
-  session's certificate; `steph` sends its key ID (`<account>@<window>`)
-  with every change, and `stephania-maint` logs it with the result.
+- **Audited with the window.** `stephania-maint` names the open window's
+  account and ID (`<account>@<window>`, the key ID of the session
+  certificates) and the caller's uid in every change it logs. The key ID
+  `steph` reads from the session certificate (sshd's `ExposeAuthInfo`) and
+  sends is only a claim, kept as `claimed_actor`.
 - **Broadcast first.** A command that would interrupt the stream (restart
   the engine or the phone receiver, reboot, apply an update) is refused
   while on air. `--while-live` overrides it after the device name is
@@ -404,6 +457,10 @@ steph disk                      data partition and overlay usage
 steph diag [-o <file>|-]        evidence bundle (tar.gz) as collect.sh does,
                                 secrets excluded; `-` writes to stdout:
                                 stephctl ssh -- steph diag -o - > diag.tar.gz
+                                (assembled in a fresh 0700 directory with a
+                                random name, since /tmp is shared by maint
+                                and root sessions; the default output name
+                                is never written through an existing file)
 
 steph window close              end this window and its sessions now
 ```
@@ -450,9 +507,11 @@ broker can read.
 ## Revocation and reset
 
 - Certificates expire in 5 minutes; closing a window stops sshd and ends
-  its sessions.
-- `stephania-maint` can add a certificate serial or key to the KRL
-  (`revoked.krl`) for the rest of its validity.
+  its sessions, and revokes every certificate issued so far in the KRL
+  (`revoked.krl`), so none of them works in a later window.
+- Disabling, deleting or changing the account that opened a window closes
+  it. There is no revocation of a single certificate inside a window:
+  closing the window is the way to end access.
 - Factory reset deletes `/var/lib/stephania/maint`: new CAs, new OTP
   secret, new host key. Old pins in `stephctl` and Connect stop working.
 
@@ -460,11 +519,12 @@ broker can read.
 
 | Threat | Mitigation |
 |---|---|
-| Stolen Studio password | Also needs the code from the owner's phone |
+| Stolen Studio password | Also needs the code from the owner's phone; another admin's open window gives it nothing (certificates go only to the opener, from the opener's address) |
 | Stolen phone | The code secret is released by the OS only after Face ID / Touch ID (in-app passcode prompt on phones without biometrics); still needs the Studio password |
-| Control plane compromised | Holds no CA key or OTP secret; can only relay a code the user types |
+| Control plane compromised | Holds no CA key or OTP secret; can only relay a code the user types. Loopback and the device's own addresses get no certificate and loopback cannot reach port 22, so a relayed code does not give the device itself a shell. It can still turn a code typed for a `maint` window into a root window for the user's own address (see Open questions) |
 | Code phishing | LAN only, pinned TLS in `stephctl`; codes are single-use and live 30–90 s |
-| Leaked certificate or key | Valid ≤ 5 min, bound to the client address, KRL |
+| Leaked certificate or key | Valid ≤ 5 min, bound to the client address, revoked when its window closes |
+| LAN host holding pre-auth connections | `PerSourceMaxStartups 3`, `MaxStartups 10:30:60`, `LoginGraceTime 20` (many source addresses can still fill the global limit) |
 | Port scanning from outside | sshd not running outside a window; nftables drops non-private sources |
 | Host impersonation | Host certificate from the device's host CA; no TOFU prompt |
 | `maint` certificate used for root | Root accepts only the `maint-root` principal, issued only for a root window |
@@ -491,3 +551,7 @@ broker can read.
 - Window and certificate lifetimes (10 min / 5 min / 60 min) need a
   check against real maintenance work.
 - Name of the CLI (`stephctl` is a working name).
+- A separate code for root windows (for example HMAC of the secret with a
+  "root" label, shown by Connect only for a root request), so that a
+  compromised control plane cannot upgrade a `maint` code to root. Needs a
+  Connect change.
