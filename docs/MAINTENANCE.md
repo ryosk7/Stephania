@@ -1,14 +1,16 @@
 # Maintenance shell access (design)
 
-Status: steps 1 and 2 of the [plan](#plan) are implemented.
+Status: steps 1 to 3 of the [plan](#plan) are implemented.
 `stephania-maint` (`src/maint.rs`, `src/sshcert.rs`, `src/totp.rs`),
 `stephania-sshd`, the polkit rule and the nftables table are in the image,
 tested by `ci/maint-ssh-e2e.sh` (real OpenSSH) and the QEMU smoke test.
 Control serves `/api/v1/maintenance` (tested against the real
 `stephania-maint`), and `management.enroll` delivers the code secret to
 Connect (tested from the TypeScript client through the real
-`stephania-provision` and `stephania-maint`). Connect does not show codes
-yet, and `stephctl` and `steph` are not built.
+`stephania-provision` and `stephania-maint`). Connect shows the code behind Face ID or the passcode
+(`apps/mobile/src/features/maintenance`); a code computed by the shared
+TypeScript module opens a window on the real `stephania-maint` in CI.
+`stephctl` and `steph` are not built yet.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as
@@ -217,14 +219,16 @@ fingerprint before trusting it.
   returns one more field, `otp_secret` (20 random bytes, base64). Connect
   stores it in the keychain with the device's token and CA pin. No QR
   code, no key shown to the user. A re-enroll rotates it.
-- **Codes.** The device screen gets a "Maintenance code" row: the current
+- **Codes.** The device screen links to a "Maintenance" screen: the current
   6 digits, a countdown ring, tap to copy. Showing it requires Face ID or
-  the passcode.
+  the passcode, and leaving the app hides it again. Phones set up before
+  this get a prompt to set the device up again.
 - **Clock.** The device may have no RTC battery and no internet, so its
   clock can be off. When Connect reaches the device over the LAN it
-  records the offset from the HTTPS `Date` header and computes codes on
-  the device's time. Without a recent offset it uses the phone's time and
-  says so.
+  records the offset from the HTTPS `Date` header (control sends it on
+  every response) and computes codes on the device's time, measuring again
+  every few minutes. Without an offset from the last 5 minutes it uses the
+  phone's time and says so.
 - **Fingerprint.** The device screen shows the CA fingerprint in the same
   short form as `stephctl login` (below).
 
@@ -256,7 +260,8 @@ browses `_stephania._tcp` and lists what it finds.
 
 1. Resolve the device (mDNS, or the given name/address, port 9443).
 2. **First contact only:** fetch the CA certificate, compute its SHA-256
-   and print it as 8 groups of 4 hex digits plus a short word form. The
+   and print its first 16 bytes as 8 groups of 4 upper-case hex digits
+   (`shortFingerprint` in `packages/provisioning-client`). The
    user compares it with the fingerprint on the device screen in Connect
    and confirms. The pin is saved; later connections fail hard if the CA
    changes (factory reset: `stephctl forget` and log in again).

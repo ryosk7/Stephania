@@ -7,7 +7,7 @@ import {connect, type Socket} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import {fragment, fromHex, ProvisioningError, ProvisioningSession, toHex, type BleTransport} from './index';
+import {fragment, fromHex, otpSecretBytes, ProvisioningError, ProvisioningSession, toHex, totpCode, type BleTransport} from './index';
 
 const bin = process.env.STEPHANIA_PROVISION_BIN;
 // Optional: the real maintenance service, so enrollment rotates and delivers
@@ -54,6 +54,23 @@ class SocketTransport implements BleTransport {
     await this.call('gatt.disconnect', {peer: this.peer});
     this.peer = `${this.peer}-r${++this.reconnects}`;
   }
+}
+
+/** One request to stephania-maint's socket (docs/IPC.md framing). */
+function maintRpc(path: string, method: string, params: object): Promise<Record<string, any>> {
+  return new Promise((resolve, reject) => {
+    const s = connect(path, () => {
+      const body = Buffer.from(JSON.stringify({version: 1, request_id: 'ts', method, params}));
+      const head = Buffer.alloc(4); head.writeUInt32BE(body.length);
+      s.write(Buffer.concat([head, body]));
+    });
+    let buf = Buffer.alloc(0);
+    s.on('data', d => {
+      buf = Buffer.concat([buf, d]);
+      if (buf.length >= 4 && buf.length >= 4 + buf.readUInt32BE(0)) { s.destroy(); resolve(JSON.parse(buf.subarray(4, 4 + buf.readUInt32BE(0)).toString())); }
+    });
+    s.on('error', reject);
+  });
 }
 
 describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () => {
@@ -130,6 +147,10 @@ describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () 
       // The secret stephania-maint now verifies codes with, delivered sealed.
       const secret = JSON.parse(readFileSync(join(dir, 'maint', 'state.json'), 'utf8')).otp_secret as string;
       expect(e.otpSecret).toBe(Buffer.from(secret, 'hex').toString('base64'));
+      // A code computed here (as Connect shows it) opens a window on the device.
+      const code = totpCode(otpSecretBytes(e.otpSecret!), Date.now() / 1000);
+      const opened = await maintRpc(join(dir, 'm.sock'), 'window.open', {actor: 'connect', client_addr: '127.0.0.1', code});
+      expect(opened).toMatchObject({ok: true, result: {user: 'maint'}});
     } else {
       expect(e.otpSecret).toBeUndefined();
     }

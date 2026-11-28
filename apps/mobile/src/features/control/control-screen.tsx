@@ -44,6 +44,7 @@ function Control({deviceId, name: initialName, host, client}: {deviceId: string;
       header={<TopBar onBack={() => router.back()} trailing={<>
         <IconButton icon="camera" label="Send this phone's camera" onPress={() => router.push({pathname: '/device/[id]/camera', params: {id: deviceId}})} />
         <IconButton icon="desktop" label="Open the Studio on a PC" onPress={() => router.push({pathname: '/device/[id]/pc', params: {id: deviceId}})} />
+        <IconButton icon="maintenance" label="Maintenance code" onPress={() => router.push({pathname: '/device/[id]/maintenance', params: {id: deviceId}})} />
       </>} />}
       footer={streaming
         ? <DestructiveButton title="Stop" icon="stop" accessibilityLabel="Stop stream" busy={pending === 'stream'} onPress={() => setConfirmStop(true)} />

@@ -1783,6 +1783,12 @@
    "text": "371567d5d8999eef"
   },
   {
+   "name": "expo-clipboard",
+   "version": "58.0.4",
+   "license": "MIT",
+   "text": "371567d5d8999eef"
+  },
+  {
    "name": "expo-constants",
    "version": "58.0.16",
    "license": "MIT",
@@ -1827,6 +1833,12 @@
   {
    "name": "expo-linking",
    "version": "58.0.17",
+   "license": "MIT",
+   "text": "371567d5d8999eef"
+  },
+  {
+   "name": "expo-local-authentication",
+   "version": "58.0.3",
    "license": "MIT",
    "text": "371567d5d8999eef"
   },

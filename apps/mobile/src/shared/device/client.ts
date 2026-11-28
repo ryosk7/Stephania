@@ -26,10 +26,30 @@ export type AudioInput = {id: 'hdmi' | 'mic'; enabled: boolean; device: string; 
 
 export const TIMEOUT_MS = 8000;
 
+/** Device clock minus phone clock, measured at `atMs` (phone time). */
+export type DeviceClock = {offsetMs: number; atMs: number};
+
+/**
+ * Offset from a response's `Date` header (1 s resolution), against the
+ * midpoint of the request. The device may have no RTC battery and no
+ * internet, so its clock can be far off; maintenance codes must use it.
+ */
+export function clockFromHeaders(headersJson: string, sentMs: number, receivedMs: number): DeviceClock | null {
+  let date: unknown;
+  try { date = (JSON.parse(headersJson) as Record<string, unknown>).date; } catch { return null; }
+  const serverMs = typeof date === 'string' ? Date.parse(date) : NaN;
+  if (!Number.isFinite(serverMs)) return null;
+  const mid = (sentMs + receivedMs) / 2;
+  // Date truncates to the second: the true time is on average 0.5 s later.
+  return {offsetMs: Math.round(serverMs + 500 - mid), atMs: receivedMs};
+}
+
 export class DeviceClient {
   private preferred = 0;
+  /** From the last response that carried a Date header. */
+  clock: DeviceClock | null = null;
 
-  constructor(private readonly enrollment: ManagementEnrollment, private readonly native: NativePinned) {
+  constructor(private readonly enrollment: ManagementEnrollment, private readonly native: NativePinned, private readonly now = () => Date.now()) {
     if (!/^[0-9a-f]{64}$/.test(enrollment.caSha256)) throw new DeviceError('bad_enrollment', 'invalid CA fingerprint');
     if (!enrollment.urls.length || enrollment.urls.some(u => !u.startsWith('https://'))) throw new DeviceError('bad_enrollment', 'enrollment URLs must be https');
   }
@@ -49,6 +69,7 @@ export class DeviceClient {
       const headers: Record<string, string> = {Authorization: 'Bearer ' + this.enrollment.token, Accept: 'application/json'};
       if (body !== undefined) headers['Content-Type'] = 'application/json';
       let res;
+      const sent = this.now();
       try {
         res = await this.native.request(url, method, JSON.stringify(headers), body === undefined ? null : JSON.stringify(body), this.enrollment.caSha256, TIMEOUT_MS);
       } catch (e) {
@@ -57,6 +78,7 @@ export class DeviceClient {
         continue;
       }
       this.preferred = i;
+      this.clock = clockFromHeaders(res.headers, sent, this.now()) ?? this.clock;
       if (res.status === 204) return undefined as T;
       let data: unknown;
       try { data = res.body ? JSON.parse(res.body) : undefined; } catch { data = undefined; }
@@ -83,6 +105,8 @@ export class DeviceClient {
     this.call<{sdp: string}>('/cameras/session/offer', 'POST', replace ? {sdp, tracks, replace: true} : {sdp, tracks});
   cameraSession = () => this.call<{state: string; access_units?: number; dropped?: number}>('/cameras/session');
   cameraClose = () => this.call<void>('/cameras/session', 'DELETE');
+  /** Any cheap authenticated call, to measure the device clock. */
+  syncClock = async () => { await this.call<unknown>('/capabilities'); return this.clock; };
 }
 
 /** "ab12…" → "AB12 CD34 …" for comparing fingerprints by eye. */

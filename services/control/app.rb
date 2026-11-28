@@ -6,6 +6,7 @@ require "sequel"
 require "openssl"
 require "securerandom"
 require "tmpdir"
+require "time"
 require_relative "lib/engine_client"
 require_relative "lib/scene_validator"
 require_relative "lib/event_hub"
@@ -266,8 +267,10 @@ class Control < Sinatra::Base
   end
 
   before do
+    # Date: Connect computes maintenance codes on the device's clock, which
+    # may be off (no RTC battery, no internet), from this header.
     headers "Cache-Control" => "no-store", "X-Content-Type-Options" => "nosniff",
-      "X-Request-Id" => request_id,
+      "X-Request-Id" => request_id, "Date" => Time.now.httpdate,
       "Content-Security-Policy" => "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
     @lan_request = !ALLOWED_HOSTS.include?(request.host)
     if @lan_request
