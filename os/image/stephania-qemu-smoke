@@ -25,6 +25,13 @@ check "licence files of shipped packages are kept" sh -c 'test -s /usr/share/doc
 check "no compiler in the image" sh -c '! command -v gcc && ! command -v cc && ! command -v make'
 for u in stephania stephania-control stephania-firstboot stephania-phone; do check "$u active" systemctl is-active "$u"; done
 info "stephania-provision $(systemctl is-active stephania-provision) (no Wi-Fi device in QEMU)"
+# BLE claim and Wi-Fi setup: the adapter ships enabled; it starts with
+# bluetoothd once a controller exists (none in QEMU).
+check "stephania-ble installed and enabled" sh -c 'test -x /usr/local/bin/stephania-ble && systemctl is-enabled -q stephania-ble'
+check "stephania-ble D-Bus policy scoped to BlueZ" sh -c '! grep -q "<allow send_interface" /etc/dbus-1/system.d/stephania-ble.conf'
+check "systemd-timesyncd installed and enabled" sh -c 'systemctl is-enabled -q systemd-timesyncd && systemctl is-active -q systemd-timesyncd'
+info "clock $(date -u +%FT%TZ), synchronised: $(test -e /run/systemd/timesync/synchronized && echo yes || echo no)"
+check "boot selector writable by root only" sh -c 'f=$(stat -c "%u:%g %a" /boot/selector/autoboot.txt) && [ "$f" = "0:0 644" ]'
 STEPHANIA_CONTROL_TOKEN=
 [ -r /data/stephania/config/control.env ] && . /data/stephania/config/control.env
 # Ruby boot is slow under QEMU TCG: wait for Puma to listen.
@@ -49,7 +56,7 @@ check "stephania-maint active" systemctl is-active stephania-maint
 check "maintenance CAs created on data" test -s /var/lib/stephania/maint/user_ca.pub
 check "no maintenance sshd without a window" sh -c '! systemctl is-active -q stephania-sshd && ! ss -Hltn "sport = :22" | grep -q .'
 check "Debian ssh units masked" sh -c '[ "$(systemctl is-enabled ssh.service 2>&1)" = masked ]'
-check "nftables limits SSH to LAN sources" sh -c 'nft list table inet stephania | grep -q "tcp dport 22 drop"'
+check "nftables limits SSH, 9443 and the phone port to LAN sources" sh -c 'nft list table inet stephania | grep -q "tcp dport { 22, 9443 } drop" && nft list table inet stephania | grep -q "udp dport 40100 drop"'
 maint_rpc() {
   ruby -rjson -rsocket -e 's = UNIXSocket.new("/run/stephania-maint/maint.sock"); b = {version: 1, request_id: "smoke", method: ARGV[0], params: JSON.parse(ARGV[1])}.to_json
     s.write([b.bytesize].pack("N") + b); n = s.read(4).unpack1("N"); r = JSON.parse(s.read(n)); puts(r["ok"] ? r["result"].to_json : {error: r["error"]["code"]}.to_json)' "$1" "$2"

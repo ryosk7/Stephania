@@ -39,3 +39,10 @@ PY
 awk -F'\t' '$1 ~ /^linux-image-.*rpi-2712$/ && $2 ~ /rpt/ {found=1} END {exit !found}' "$d/dpkg.tsv" || fail "Raspberry Pi 2712 kernel package not installed"
 grep -q $'^base-files\t13' "$d/dpkg.tsv" || fail "not Debian 13 (trixie) base-files"
 echo "PASS Raspberry Pi 5 kernel from the Raspberry Pi archive on Debian 13"
+# First-run path and clock: the BLE adapter and the NTP client ship enabled.
+r="$d/rootfs"
+[ -x "$r/usr/local/bin/stephania-ble" ] || fail "stephania-ble not installed"
+[ -L "$r/etc/systemd/system/multi-user.target.wants/stephania-ble.service" ] || fail "stephania-ble.service not enabled"
+awk -F'\t' '$1 == "systemd-timesyncd" {found=1} END {exit !found}' "$d/dpkg.tsv" || fail "systemd-timesyncd not installed"
+ls "$r/etc/systemd/system/"*.wants/systemd-timesyncd.service >/dev/null 2>&1 || fail "systemd-timesyncd not enabled"
+echo "PASS stephania-ble and systemd-timesyncd installed and enabled"

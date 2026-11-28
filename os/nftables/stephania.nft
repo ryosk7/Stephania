@@ -1,7 +1,12 @@
 #!/usr/sbin/nft -f
-# Installed as /etc/nftables.conf (nftables.service). SSH (maintenance
-# windows, docs/MAINTENANCE.md) only from private and link-local
-# addresses; everything else keeps the default accept policy.
+# Installed as /etc/nftables.conf (nftables.service). The LAN-only services
+# are accepted only from private, link-local and loopback addresses:
+# maintenance SSH (tcp 22, docs/MAINTENANCE.md), the management plane's
+# TLS listener (tcp 9443, Studio, Connect and the API) and the phone media
+# port (udp 40100, ICE/DTLS/SRTP, docs/PHONE.md). On a network that hands
+# out public addresses they are therefore unreachable, from the internet
+# and from that network alike. Everything else keeps the default accept
+# policy (mDNS, DHCP, ICMP, outbound replies).
 flush ruleset
 
 table inet stephania {
@@ -15,8 +20,11 @@ table inet stephania {
   }
   chain input {
     type filter hook input priority filter; policy accept;
-    tcp dport 22 ip saddr @lan4 accept
-    tcp dport 22 ip6 saddr @lan6 accept
-    tcp dport 22 drop
+    tcp dport { 22, 9443 } ip saddr @lan4 accept
+    tcp dport { 22, 9443 } ip6 saddr @lan6 accept
+    tcp dport { 22, 9443 } drop
+    udp dport 40100 ip saddr @lan4 accept
+    udp dport 40100 ip6 saddr @lan6 accept
+    udp dport 40100 drop
   }
 }

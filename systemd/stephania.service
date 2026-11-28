@@ -1,6 +1,9 @@
 [Unit]
 Description=Stephania Raspberry Pi media engine
-After=network.target
+# Started once the clock is synchronised, or after a bounded wait
+# (stephania-time-sync.service).
+Wants=stephania-time-sync.service
+After=network.target stephania-time-sync.service
 
 [Service]
 Type=simple

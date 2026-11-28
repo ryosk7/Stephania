@@ -1,0 +1,19 @@
+[Unit]
+Description=Stephania bounded wait for system clock synchronisation
+# The engine validates RTMPS certificates against the system clock, and a
+# Pi 5 without an RTC battery boots with a clock in the past. Hold the
+# engine back until systemd-timesyncd has synchronised, but never longer
+# than 45 s: at a venue without NTP the device still starts (preview and
+# local output work; RTMPS then fails with a certificate-time error).
+After=systemd-timesyncd.service
+Before=time-sync.target stephania.service
+Wants=time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'i=0; while [ ! -e /run/systemd/timesync/synchronized ]; do i=$$((i + 1)); if [ "$$i" -gt 45 ]; then echo "clock not synchronised after 45 s; continuing"; exit 0; fi; sleep 1; done; echo "clock synchronised"'
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
