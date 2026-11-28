@@ -6,7 +6,7 @@
 # A/B GPT layout of docs/UPDATE.md.
 #
 # Usage (root): os/image/build.sh <out-dir> <bin-dir>
-#   <bin-dir> holds stephania, stephania-phone, stephania-provision, stephania-pki, stephania-bootctl, stephania-maint built
+#   <bin-dir> holds stephania, stephania-phone, stephania-provision, stephania-pki, stephania-bootctl, stephania-maint, steph built
 #   for the target architecture against Debian trixie
 #   (ci/images/device-build.Dockerfile), so library sonames match.
 # Environment:
@@ -53,7 +53,7 @@ components=${STEPHANIA_IMAGE_COMPONENTS:-main}
 root="$out/rootfs"
 . "$repo/os/layout.env"
 
-for b in stephania stephania-phone stephania-provision stephania-pki stephania-bootctl stephania-maint; do
+for b in stephania stephania-phone stephania-provision stephania-pki stephania-bootctl stephania-maint steph; do
   [ -x "$bins/$b" ] || { echo "missing $bins/$b" >&2; exit 1; }
 done
 

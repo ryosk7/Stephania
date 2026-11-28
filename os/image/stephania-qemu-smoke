@@ -71,6 +71,13 @@ ssh_maint() { ssh -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile
 login_user=$(ssh_maint maint 'id -un' 2>/dev/null)
 if [ "$login_user" = maint ]; then ok "maint logs in with a 5-minute certificate (host certificate verified)"; else bad "maint login ($login_user)"; fi
 if ssh_maint root true >/dev/null 2>&1; then bad "a maint certificate logged in as root"; else ok "a maint certificate cannot log in as root"; fi
+# steph inside the session: the certificate's account and window, and the device's own state.
+who=$(ssh_maint maint 'steph whoami --json' 2>/dev/null | ruby -rjson -e 'w = JSON.parse($stdin.read); puts [w["account"], w["window_id"], w["level"]].join(" ")' 2>/dev/null)
+if [ "$who" = "smoke $win maint" ]; then ok "steph whoami reads the session certificate (account, window)"; else bad "steph whoami ($who)"; fi
+st=$(ssh_maint maint 'steph status --json' 2>/dev/null | ruby -rjson -e 's = JSON.parse($stdin.read); puts [s["engine"], s["version"]["stephania"].to_s.empty? ? "noversion" : "version", s["failed_units"].size].join(" ")' 2>/dev/null)
+if [ "${st%% *}" = active ] && echo "$st" | grep -q " version "; then ok "steph status as maint: engine active, version ($st)"; else bad "steph status ($st)"; fi
+if ssh_maint maint 'steph logs engine -n 5' 2>/dev/null | grep -q .; then ok "steph logs engine (maint reads the journal)"; else bad "steph logs engine"; fi
+if ssh_maint maint 'steph diag -o -' 2>/dev/null | tar -tzf - 2>/dev/null | grep -q '/status.json$'; then ok "steph diag -o - streams an evidence bundle"; else bad "steph diag"; fi
 maint_rpc window.close '{"actor":"smoke"}' >/dev/null
 for i in $(seq 20); do systemctl is-active -q stephania-sshd || break; sleep 1; done
 check "maintenance sshd stopped with the window" sh -c '! systemctl is-active -q stephania-sshd'

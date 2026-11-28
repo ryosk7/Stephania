@@ -255,7 +255,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint && cargo build --release --locked -p stephania-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -309,7 +309,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint && cargo build --release --locked -p stephania-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
