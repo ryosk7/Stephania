@@ -45,9 +45,6 @@ to claim the device in Stephania Connect owns it (contracts/ble-protocol.md).
 - the installed card has the expected GPT, selector content and setup
   secret, boots and passes the full image smoke test.
 
-## Not verified
-The Raspberry Pi firmware path (`config.txt` → kernel + initramfs on a
-Pi 5), SD-card power-loss behaviour of real media and the < 3 min install
-target need hardware (docs/QUALIFICATION.md). The manifest signing key is
-ephemeral in CI; releases sign with the release key
-(`STEPHANIA_INSTALL_SIGNING_KEY`).
+## Signing
+The manifest signing key is ephemeral in CI; releases sign with the
+release key (`STEPHANIA_INSTALL_SIGNING_KEY`).
