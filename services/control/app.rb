@@ -48,7 +48,8 @@ class Control < Sinatra::Base
     "invalid_scene" => 422,
     "not_implemented" => 501,
     "program_inactive" => 409,
-    "program_timeout" => 503
+    "program_timeout" => 503,
+    "request_too_large" => 413
   }.freeze
 
   set :bind, "127.0.0.1"

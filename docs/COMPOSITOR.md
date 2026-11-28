@@ -7,7 +7,7 @@
 - IPC `scene.apply {scene, scene_id, revision}` works like this:
   1. It hands an immutable Program to the media thread.
   2. It returns `{applied, first_frame_index}` only after a frame was encoded with it.
-  3. With no stream running it returns `program_inactive`. If no frame boundary arrives within 2 s it returns `program_timeout`, and the pending request is cancelled so it can never take effect later.
+  3. With no stream running it returns `program_inactive`. One 4 s deadline (`SCENE_APPLY_DEADLINE`) covers the whole call: asset load, preparation and the frame-boundary ack. If the Program is not acknowledged by then it returns `program_timeout`, and the pending request carries the same deadline and is cancelled, so it can never take effect later. Cancelling removes only that request, never a newer one that superseded it. A fade still in progress when a media session (re)starts is completed, because fade timing follows the session timeline.
 - `engine.status.program` reports the Program on air, for reconciliation.
 - Phone tracks enter through `SourceRegistry`. A frame older than 500 ms counts as missing and is drawn black. A WebRTC receiver will feed it; in CI, a virtual `phone:rear` source does (`STEPHANIA_CI_VIRTUAL_PHONE=1`).
 - Verified by CI job `arm64-composition` (`ci/composition-e2e.sh`), which runs the controller binary with ci-virtual HDMI and a virtual phone over local RTMPS:

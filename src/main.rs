@@ -35,17 +35,20 @@ impl EngineControl for IpcEngine {
     fn stop(&self) { self.0.stop() }
 
     fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value, transition: stephania::compositor::Transition) -> Result<serde_json::Value, stephania::ipc::IpcError> {
-        use stephania::composition::{apply, ApplyError, APPLY_TIMEOUT};
+        use stephania::composition::{apply_until, ApplyError, SCENE_APPLY_DEADLINE};
         use stephania::ipc::{code, IpcError};
         if !stephania::composition::enabled() {
             return Err(IpcError { code: code::NOT_IMPLEMENTED, message: "compositor disabled (STEPHANIA_COMPOSITOR=0); Program unchanged".into() });
         }
+        // One deadline covers the whole call (asset load, preparation, ack):
+        // a Program not acknowledged by then is never applied (docs/IPC.md).
+        let deadline = std::time::Instant::now() + SCENE_APPLY_DEADLINE;
         // Assets are loaded and static layers rendered here, on the IPC
         // thread, so the media thread only swaps a finished Program.
         let store = stephania::assets::store();
         let program = stephania::compositor::Program::from_scene_with(scene_id, revision, scene, &|id| store.load(id))
             .map_err(|e| IpcError { code: code::INVALID_SCENE, message: e.to_string() })?;
-        match apply(program, transition, APPLY_TIMEOUT) {
+        match apply_until(program, transition, deadline) {
             Ok(ack) => Ok(serde_json::json!({
                 "applied": true, "scene_id": ack.scene_id, "revision": ack.revision,
                 "first_frame_index": ack.first_frame_index,
@@ -55,7 +58,7 @@ impl EngineControl for IpcEngine {
                 },
             })),
             Err(ApplyError::Inactive) => Err(IpcError { code: code::PROGRAM_INACTIVE, message: "no stream is running; Program unchanged".into() }),
-            Err(ApplyError::Timeout) => Err(IpcError { code: code::PROGRAM_TIMEOUT, message: "no frame boundary within timeout; Program unchanged".into() }),
+            Err(ApplyError::Timeout) => Err(IpcError { code: code::PROGRAM_TIMEOUT, message: "scene not on air within the scene.apply deadline; Program unchanged".into() }),
         }
     }
 

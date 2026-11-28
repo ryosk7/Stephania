@@ -27,7 +27,9 @@ stephania-phone ──Unix socket (H.264 access units)──▶ engine ── li
 - **engine** (`src/phone_ingest.rs`, `src/h264_decode.rs`): ingest socket
   `/run/stephania/media.sock`, only uid 855, one client at a time: a new
   permitted connection shuts the previous one down. One libavcodec decoder per source
-  (slice threads, low delay); decoded I420 frames go to the
+  (slice threads, low delay, `max_pixels` = 1920×1920 so an SPS declaring a
+  larger picture is refused before any frame is allocated; the engine unit
+  also has `MemoryMax=1G`); decoded I420 frames go to the
   `SourceRegistry`, where frames older than 500 ms are not composed (the
   layer falls back). Decoder errors and streams joined mid-GOP produce
   keyframe requests back to stephania-phone (rate-limited).

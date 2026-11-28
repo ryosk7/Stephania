@@ -213,6 +213,19 @@ class SceneFixtureConformanceTest < Minitest::Test
     fixtures("valid").each { |name, doc| assert_nil SceneValidator.validate(doc), name }
   end
 
+  # A scene that passes every per-field limit can still be too large for
+  # one engine IPC frame; it is refused at validation (422), not at apply (500).
+  def test_scene_that_cannot_fit_an_ipc_frame_is_invalid
+    layer = lambda do |i, chars|
+      vars = (0...16).to_h { |k| ["k#{k}", "\u00e9" * chars] }
+      {"id" => "l#{i}", "type" => "image", "x" => 0, "y" => 0, "width" => 10, "height" => 10,
+       "visible" => true, "asset" => "0123456789abcdef", "template" => {"id" => "t", "vars" => vars}}
+    end
+    doc = ->(chars) { {"version" => 2, "name" => "big", "layers" => (0...16).map { |i| layer.call(i, chars) }} }
+    assert_nil SceneValidator.validate(doc.call(20))
+    assert_equal ["", "document_too_large"], SceneValidator.validate(doc.call(200))
+  end
+
   def test_invalid_fixtures
     reasons = JSON.parse(File.read(File.join(FIXTURES, "scenes", "invalid-reasons.json")))
     fixtures("invalid").each do |name, doc|

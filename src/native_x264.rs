@@ -45,7 +45,9 @@ impl Drop for Encoder {
 }
 
 const MAX_DIMENSION: usize = 3840;
-const MAX_ACCESS_UNIT: usize = 2 * 1024 * 1024;
+/// An AVCC access unit plus the 5-byte FLV video tag header must fit one
+/// RTMP message. VBV (2 s at <= 30 Mbps, about 7.5 MB) keeps real output below.
+const MAX_ACCESS_UNIT: usize = crate::session::MAX_MEDIA_MESSAGE - 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodedAccessUnit {

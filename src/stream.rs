@@ -91,13 +91,17 @@ impl Controller {
             let mut s = worker.state.lock().unwrap_or_else(|e| e.into_inner());
             #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
             if let Some(worker) = s.native.take_if(|w| w.handle.is_finished()) {
-                    s.last_error = match worker.handle.join() {
-                        Ok(Ok(())) => String::new(),
-                        Ok(Err(e)) => format!("native publisher stopped ({:?})", e.kind()),
-                        Err(_) => "native publisher panicked".into(),
+                    let panicked;
+                    (s.last_error, panicked) = match worker.handle.join() {
+                        Ok(Ok(())) => (String::new(), false),
+                        Ok(Err(e)) => (format!("native publisher stopped ({:?})", e.kind()), false),
+                        Err(_) => ("native publisher panicked".into(), true),
                     };
-                    // A native worker handles transient retries itself.
-                    s.desired = false;
+                    // A native worker handles transient retries itself and
+                    // returns an error only for a final (configuration or
+                    // authentication) failure. A panic is not a decision to
+                    // stop: keep `desired` so the worker is respawned below.
+                    if !panicked { s.desired = false; }
             }
             if s.desired && !Self::running(&s) {
                 // Only retry configured output; avoid runaway spawning on unconfigured devices.

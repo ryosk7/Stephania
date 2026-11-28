@@ -19,14 +19,25 @@ capture device capabilities. Some HDMI USB devices require MJPEG decoding
 capture worker; copying occurs when the frame is sent to its bounded channel.
 
 ALSA capture requests 48 kHz, 16-bit, 2-channel interleaved PCM. It
-performs an xrun recovery via `prepare()` and reports queue overload rather
-than silently dropping audio. Timestamp origins use the same process
+performs an xrun recovery via `prepare()`. When the publisher loop stalls
+and the bounded queue is full, the newest periods are dropped (logged once
+per overload) and the device keeps running; the mixer covers the gap on its
+timeline. Dropping a source closes its PCM before a replacement opens the
+same device, and inputs whose device and channel count are unchanged are
+kept across audio reconfiguration and reconnects. Timestamp origins use the same process
 `Instant` origin for both workers, but this is **arrival-time stamping**,
 not exact hardware presentation timestamps. Audio clock drift correction
 and sample-accurate synchronization remain future tasks.
 
 The capture worker reconnects to devices after errors, with a fixed 2-second
-retry; the rest of the media pipeline still needs error-state propagation.
+retry. A dequeued V4L2 buffer flagged `V4L2_BUF_FLAG_ERROR` or shorter than
+one frame (`stride × height`, ×1.5 for NV12) is dropped and counted, not
+passed on. A renegotiated mode that differs from the requested one is
+reported as a retryable error: the publisher reconnects while the worker
+keeps reopening the device. Once the ingest has accepted a publish, the
+publisher treats every later failure as transient and reconnects with
+backoff (src/reconnect.rs); only errors before the first accepted publish
+(configuration, authentication) end the run.
 
 **Feature scope:** This demonstrates native device acquisition and frame
 transport only. It does not yet connect this data to the encoder or the

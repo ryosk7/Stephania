@@ -40,8 +40,24 @@ class EngineClient
     end
   end
 
+  # The request would not fit one IPC frame; it was never sent. A
+  # RemoteError so callers map it like an engine refusal (a 4xx, not a 500).
+  class RequestTooLarge < RemoteError
+    def initialize(limit)
+      super("request_too_large", "request exceeds #{limit} bytes", {})
+    end
+  end
+
   MAX_CONNECTIONS = 6
   IDLE_SECONDS = 3.0
+
+  # Response timeouts for methods whose engine-side work is bounded by a
+  # deadline longer than the default. scene.apply: the engine refuses to put
+  # a Program on air later than SCENE_APPLY_DEADLINE (src/composition.rs,
+  # 4 s for asset load, preparation and the frame-boundary ack), so waiting
+  # longer than that means control never reports a failure for a scene that
+  # then goes on air.
+  METHOD_TIMEOUTS = {"scene.apply" => 6.0}.freeze
 
   # The pooled connection was closed by the engine before it read anything.
   class Stale < StandardError; end
@@ -69,13 +85,14 @@ class EngineClient
   end
 
   # Returns the `result` object or raises RemoteError / Unavailable.
-  def call(method, params = nil, request_id: SecureRandom.hex(8))
+  # `timeout` overrides the response timeout for this call.
+  def call(method, params = nil, request_id: SecureRandom.hex(8), timeout: nil)
     request = {version: VERSION, request_id: request_id, method: method}
     request[:params] = params unless params.nil?
     body = JSON.generate(request)
-    raise ArgumentError, "request exceeds #{MAX_FRAME_BYTES} bytes" if body.bytesize > MAX_FRAME_BYTES
+    raise RequestTooLarge, MAX_FRAME_BYTES if body.bytesize > MAX_FRAME_BYTES
 
-    response = exchange(body)
+    response = exchange(body, timeout || [METHOD_TIMEOUTS.fetch(method, @timeout), @timeout].max)
     unless response.is_a?(Hash) && response["version"] == VERSION
       raise Unavailable, "engine returned an unsupported response"
     end
@@ -91,16 +108,16 @@ class EngineClient
 
   private
 
-  def exchange(body)
+  def exchange(body, read_timeout)
     socket, reused = checkout
     healthy = false
     begin
       begin
-        result = round_trip(socket, body, reused)
+        result = round_trip(socket, body, reused, read_timeout)
       rescue Stale
         socket.close rescue nil
         socket = connect
-        result = round_trip(socket, body, false)
+        result = round_trip(socket, body, false, read_timeout)
       end
       healthy = true
       result
@@ -113,7 +130,7 @@ class EngineClient
     raise Unavailable, "engine socket error: #{e.class.name.split('::').last}"
   end
 
-  def round_trip(socket, body, reused)
+  def round_trip(socket, body, reused, read_timeout)
     begin
       write_all(socket, [body.bytesize].pack("N") + body)
     rescue Errno::EPIPE, Errno::ECONNRESET
@@ -125,7 +142,7 @@ class EngineClient
     # read as EOF or, if our write raced the close, as ECONNRESET: either
     # way the request never reached the engine and is safe to retry.
     header = begin
-      read_exact(socket, 4)
+      read_exact(socket, 4, read_timeout)
     rescue Unavailable => e
       raise Stale if reused && e.message == "engine closed the connection"
 
@@ -138,7 +155,7 @@ class EngineClient
     length = header.unpack1("N")
     raise Unavailable, "invalid engine frame length" if length.zero? || length > MAX_FRAME_BYTES
 
-    JSON.parse(read_exact(socket, length).force_encoding(Encoding::UTF_8))
+    JSON.parse(read_exact(socket, length, read_timeout).force_encoding(Encoding::UTF_8))
   end
 
   # [socket, reused?]; waits up to the timeout when all connections are busy.
@@ -216,14 +233,14 @@ class EngineClient
     end
   end
 
-  def read_exact(socket, length)
+  def read_exact(socket, length, timeout = @timeout)
     buffer = +""
     while buffer.bytesize < length
       begin
         chunk = socket.read_nonblock(length - buffer.bytesize)
         buffer << chunk
       rescue IO::WaitReadable
-        raise Unavailable, "engine read timeout" unless socket.wait_readable(@timeout)
+        raise Unavailable, "engine read timeout" unless socket.wait_readable(timeout)
       rescue EOFError
         raise Unavailable, "engine closed the connection"
       end

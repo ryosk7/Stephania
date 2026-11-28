@@ -732,8 +732,10 @@ paths:
         Succeeds only after the engine acknowledges frame-boundary application
         (response `engine.first_frame_index`). Program is unchanged on 501
         not_implemented (compositor disabled), 409 program_inactive (no stream
-        running), 503 program_timeout, or 422 invalid_scene when an image
-        asset cannot be loaded. With a fade the acknowledged frame is the
+        running), 503 program_timeout (not on air within the engine's 4 s
+        scene.apply deadline; it is never applied later), 413
+        request_too_large (the scene does not fit one IPC frame), or 422
+        invalid_scene when an image asset cannot be loaded. With a fade the acknowledged frame is the
         first one showing any of the new Program.
       requestBody:
         required: true
@@ -890,7 +892,7 @@ components:
                 invalid_id(400) body_too_large(413) invalid_request(422) invalid_scene(422)
                 not_found(404) revision_conflict(409) engine_unavailable(503)
                 engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
-                program_timeout(503) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
+                program_timeout(503) request_too_large(413) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
                 too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
                 weak_password(422) user_exists(409) last_admin(409)
                 unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)

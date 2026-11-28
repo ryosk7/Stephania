@@ -45,9 +45,16 @@ pub struct Settings {
 
 /// Video source plus the audio inputs of `crate::audio::control()`.
 enum Sources {
-    Hardware(V4lVideoSource, [Option<AlsaAudioSource>; 2]),
+    Hardware(V4lVideoSource, [Option<OpenInput>; 2]),
     #[cfg(feature = "ci-virtual")]
     Virtual(VirtualCapture),
+}
+
+/// An open ALSA input and the settings it was opened with.
+struct OpenInput {
+    device: String,
+    channels: u8,
+    source: AlsaAudioSource,
 }
 
 /// ALSA settings for one mix input. Short periods and a 16-period queue
@@ -76,12 +83,21 @@ impl Sources {
 
     /// Opens or closes inputs to match the configuration. A closed ALSA
     /// source stops its capture thread; an open one reopens the device on
-    /// its own after errors (hotplug).
+    /// its own after errors (hotplug). Inputs whose device and channel count
+    /// are unchanged keep running (gain/mute changes, reconnects), and a
+    /// replaced input is closed before its successor opens the device.
     fn apply_audio(&mut self, capture: &CaptureSettings, cfg: &[crate::audio::InputConfig; 2]) -> io::Result<()> {
         match self {
             Self::Hardware(_, inputs) => {
                 for (slot, c) in inputs.iter_mut().zip(cfg) {
-                    *slot = if c.enabled { Some(AlsaAudioSource::open(input_settings(capture, c))?) } else { None };
+                    if slot.as_ref().is_some_and(|o| c.enabled && o.device == c.device && o.channels == c.channels) {
+                        continue;
+                    }
+                    *slot = None;
+                    if c.enabled {
+                        let source = AlsaAudioSource::open(input_settings(capture, c))?;
+                        *slot = Some(OpenInput { device: c.device.clone(), channels: c.channels, source });
+                    }
                 }
             }
             #[cfg(feature = "ci-virtual")]
@@ -107,7 +123,7 @@ impl Sources {
     fn audio(&mut self, input: usize) -> io::Result<Option<crate::media_core::AudioFrame>> {
         match self {
             Self::Hardware(_, inputs) => match &inputs[input] {
-                Some(a) => a.try_next_frame(),
+                Some(a) => a.source.try_next_frame(),
                 None => Ok(None),
             },
             #[cfg(feature = "ci-virtual")]
@@ -309,9 +325,10 @@ fn virtual_phone_tick(timestamp_us: u64) {
     }
 }
 
-fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool) -> io::Result<()> {
+fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool, published: &mut bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
+    *published = true;
     // Opt-in until the independent network benchmark validates the budget.
     let watchdog = if env::var("STEPHANIA_DEADLINE_TRANSPORT").as_deref() == Ok("1") {
         let guard = crate::transport_deadline::DeadlineWatchdog::start_with_queue_budget(
@@ -401,9 +418,10 @@ fn publish(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rat
     Ok(())
 }
 
-fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool) -> io::Result<()> {
+fn publish_parallel(url: &str, s: &Settings, sources: &mut Sources, rate: &mut crate::rate_control::RateController, cancelled: &impl Fn() -> bool, published: &mut bool) -> io::Result<()> {
     let mut aac = AacBackend::new(s.audio_bitrate)?;
     let mut session = stage(rtmps_tls::begin_publish(url), "publish negotiation")?;
+    *published = true;
     // Opt-in until the independent network benchmark validates the budget.
     let watchdog = {
         let guard = crate::transport_deadline::DeadlineWatchdog::start_with_queue_budget(
@@ -531,20 +549,24 @@ pub fn run_with_settings(url: &str, s: &Settings, cancelled: impl Fn() -> bool) 
     AacBackend::new(s.audio_bitrate)?;
     crate::native_x264::X264Backend::new(s.capture.width as usize,
         s.capture.height as usize, s.fps, s.video_bitrate, true)?;
+    AudioPipeline::new()?;
     let mut sources = Sources::open(s)?;
     let _audio_running = AudioRunning::start();
     let mut failures = 0u32;
     let mut rate = crate::rate_control::RateController::new(s.video_bitrate);
+    // Set once the ingest has accepted a publish: from then on the URL, key
+    // and settings are known good, so every failure is treated as transient.
+    let mut published = false;
     while !cancelled() {
         let started = Instant::now();
         let result = if env::var("STEPHANIA_PARALLEL_MEDIA").as_deref() == Ok("1") {
-            publish_parallel(url, s, &mut sources, &mut rate, &cancelled)
+            publish_parallel(url, s, &mut sources, &mut rate, &cancelled, &mut published)
         } else {
-            publish(url, s, &mut sources, &mut rate, &cancelled)
+            publish(url, s, &mut sources, &mut rate, &cancelled, &mut published)
         };
         match result {
             Ok(()) => return Ok(()),
-            Err(e) if !reconnect::retryable(&e) => return Err(e),
+            Err(e) if !reconnect::retryable_after(&e, published) => return Err(e),
             Err(e) => {
                 if env::var("STEPHANIA_ADAPTIVE_RATE").as_deref() == Ok("1") {
                     rate.reconnect();

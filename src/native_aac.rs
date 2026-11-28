@@ -43,9 +43,13 @@ impl AacBackend {
 
     pub fn encode(&mut self, block: &PcmBlock) -> io::Result<Vec<AacPacket>> {
         let pts = i64::try_from(block.pts_samples).map_err(|_| invalid("AAC PTS overflow"))?;
+        // The mixer's timeline may jump forward by whole blocks after a
+        // publisher stall (audio_mixer RESYNC_SAMPLES). libavcodec carries
+        // each frame's PTS through, so a forward, block-aligned gap is valid;
+        // only overlap, regression or misalignment is refused.
         if self.finished || block.sample_rate != 48000 || block.channels != 2 ||
             block.interleaved.len() != 2048 ||
-            self.last_pts.is_some_and(|last| last.checked_add(1024) != Some(pts)) {
+            self.last_pts.is_some_and(|last| !next_block(last, pts)) {
             return Err(invalid("invalid or discontinuous AAC PCM block"));
         }
         // The bridge copies exactly 2048 validated samples before returning.
@@ -82,6 +86,11 @@ impl Drop for AacBackend {
     fn drop(&mut self) { unsafe { t3aac_free(self.handle.as_ptr()); } }
 }
 
+/// `pts` continues `last` directly or after a gap of whole 1024-sample blocks.
+fn next_block(last: i64, pts: i64) -> bool {
+    pts.checked_sub(last).is_some_and(|d| d >= 1024 && d % 1024 == 0)
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -105,6 +114,22 @@ mod tests {
         encoder.scratch.fill(0);
         assert_eq!(packets[0].raw, first);
         assert!(packets.iter().all(|p| !p.raw.is_empty() && p.raw.len() <= MAX_PACKET_BYTES));
+    }
+    #[test]
+    fn forward_block_aligned_gap_is_accepted_but_overlap_is_not() {
+        let block = |pts| PcmBlock { pts_samples: pts, sample_rate: 48000, channels: 2, interleaved: vec![0; 2048] };
+        let mut encoder = AacBackend::new(128).unwrap();
+        let mut packets = Vec::new();
+        packets.extend(encoder.encode(&block(4800)).unwrap());
+        packets.extend(encoder.encode(&block(4800 + 1024)).unwrap());
+        // A mixer resync after a >1 s stall skips whole blocks.
+        packets.extend(encoder.encode(&block(4800 + 1024 * 60)).unwrap());
+        packets.extend(encoder.encode(&block(4800 + 1024 * 61)).unwrap());
+        assert!(encoder.encode(&block(4800 + 1024 * 61)).is_err());
+        assert!(encoder.encode(&block(4800 + 1024 * 62 + 1)).is_err());
+        assert!(encoder.encode(&block(4800)).is_err());
+        packets.extend(encoder.finish().unwrap());
+        assert!(packets.windows(2).all(|p| p[1].pts_samples > p[0].pts_samples));
     }
     #[test]
     fn encodes_and_flushes_real_aac_lc() {

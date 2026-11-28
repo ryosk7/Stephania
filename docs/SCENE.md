@@ -45,6 +45,12 @@ Migration to version 2 is explicit (Studio "Convert to v2"), never silent.
 All numbers are integers so the three validators and the compositor agree
 exactly; there is no floating point anywhere in composition.
 
+A stored document must also fit one engine IPC frame with the
+`scene.apply` envelope: the control plane refuses documents whose compact
+JSON encoding exceeds 63 KiB (`document_too_large`, path `""`), checked after
+every per-field rule. A request that still does not fit is refused with
+413 `request_too_large` and never reaches the engine.
+
 ## Assets
 
 PNG uploads (`POST /api/v1/assets`, raw body, `image/png`, ≤ 8 MiB,
@@ -55,7 +61,11 @@ to delete an asset a scene uses. The engine loads assets only while
 preparing a Program on the IPC thread, re-checks the hash, decodes to RGBA
 and pre-renders static layers for the output size; a missing or modified
 asset fails `scene.apply` (`invalid_scene`, `asset_unavailable`) and
-Program stays unchanged.
+Program stays unchanged. The decoded images of one Program are limited to
+256 MiB of RGBA in total (four 4096×4096 images; an asset used by several
+layers counts once); above that `scene.apply` fails with `invalid_scene`
+(`assets_too_large`). The engine's decoded-image cache is bounded by
+128 MiB as well as by entry count.
 
 ## Composition
 

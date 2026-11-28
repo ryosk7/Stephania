@@ -29,6 +29,11 @@ use crate::colorspace::I420Frame;
 use serde_json::Value;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// Decoded RGBA bytes all image layers of one Program may hold together
+/// (four 4096x4096 images; real overlays are far smaller).
+pub const MAX_PROGRAM_IMAGE_BYTES: usize = 256 * 1024 * 1024;
 
 /// Limited-range black.
 pub const BLACK_Y: u8 = 16;
@@ -389,6 +394,8 @@ impl Program {
         let v2 = doc["version"] == 2;
         let background = doc["canvas"]["background"].as_str().and_then(parse_hex).map(|c| rgb_to_yuv(c[0], c[1], c[2])).unwrap_or(BLACK);
         let mut layers = Vec::new();
+        let mut image_bytes = 0usize;
+        let mut images: Vec<Arc<Rgba>> = Vec::new();
         for (i, l) in doc["layers"].as_array().into_iter().flatten().enumerate() {
             if l["visible"] != Value::Bool(true) {
                 continue;
@@ -400,6 +407,14 @@ impl Program {
                 (true, Some("image")) => {
                     let asset = l["asset"].as_str().unwrap_or_default().to_owned();
                     let image = assets(&asset).map_err(|_| crate::scene::SceneError { path: format!("/layers/{i}/asset"), reason: "asset_unavailable" })?;
+                    // Bound the decoded images one Program keeps alive.
+                    if !images.iter().any(|seen| Arc::ptr_eq(seen, &image)) {
+                        image_bytes += image.pixels.len();
+                        if image_bytes > MAX_PROGRAM_IMAGE_BYTES {
+                            return Err(crate::scene::SceneError { path: format!("/layers/{i}/asset"), reason: "assets_too_large" });
+                        }
+                        images.push(Arc::clone(&image));
+                    }
                     Content::Image { asset, fit, image }
                 }
                 (true, Some("color")) => {
@@ -687,7 +702,15 @@ pub struct FramePlan {
     pub fade_from: Option<(Arc<Program>, u8)>,
 }
 
-type Pending = (Arc<Program>, Transition, mpsc::Sender<ApplyAck>);
+struct Pending {
+    /// Identifies the request, so a waiter cancels only its own.
+    generation: u64,
+    program: Arc<Program>,
+    transition: Transition,
+    /// Not applied at or after this instant: its waiter has given up.
+    deadline: Option<Instant>,
+    ack: mpsc::Sender<ApplyAck>,
+}
 
 struct Fade {
     from: Arc<Program>,
@@ -704,11 +727,13 @@ pub struct ProgramSwitch {
     current: Mutex<Arc<Program>>,
     pending: Mutex<Option<Pending>>,
     fade: Mutex<Option<Fade>>,
+    generation: std::sync::atomic::AtomicU64,
 }
 
 impl ProgramSwitch {
     pub fn new(initial: Program) -> Self {
-        Self { current: Mutex::new(Arc::new(initial)), pending: Mutex::new(None), fade: Mutex::new(None) }
+        Self { current: Mutex::new(Arc::new(initial)), pending: Mutex::new(None), fade: Mutex::new(None),
+               generation: std::sync::atomic::AtomicU64::new(0) }
     }
 
     pub fn current(&self) -> Arc<Program> {
@@ -720,14 +745,40 @@ impl ProgramSwitch {
     }
 
     pub fn request_with(&self, program: Program, transition: Transition) -> mpsc::Receiver<ApplyAck> {
-        let (tx, rx) = mpsc::channel();
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((Arc::new(program), transition, tx));
-        rx
+        self.request_until(program, transition, None).1
     }
 
-    /// Drop a pending request that was not applied yet (its waiter sees failure).
+    /// Request `program`; it is never applied at or after `deadline`.
+    /// Returns the request's generation (for [`cancel`](Self::cancel)).
+    pub fn request_until(&self, program: Program, transition: Transition, deadline: Option<Instant>) -> (u64, mpsc::Receiver<ApplyAck>) {
+        let (ack, rx) = mpsc::channel();
+        let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Pending { generation, program: Arc::new(program), transition, deadline, ack });
+        (generation, rx)
+    }
+
+    /// Drop any pending request that was not applied yet (its waiter sees failure).
     pub fn cancel_pending(&self) {
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    /// Drop request `generation` if it is still pending; a newer request is
+    /// left alone. Once this returns, the request is either cancelled (true)
+    /// or was already applied, with its ack sent, or superseded (false).
+    pub fn cancel(&self, generation: u64) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.as_ref().is_some_and(|p| p.generation == generation) {
+            *pending = None;
+            return true;
+        }
+        false
+    }
+
+    /// End any fade in progress (the new Program is fully on air). Called
+    /// when a media session starts: fade timing is session-relative.
+    pub fn complete_fade(&self) {
+        self.fade.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     /// Program for frame `frame_index` (no fade information).
@@ -740,21 +791,29 @@ impl ProgramSwitch {
     /// before composition begins and names that frame — for a fade, the first
     /// frame that shows any of the new Program. Media thread only.
     pub fn at_frame(&self, frame_index: u64, timestamp_us: u64) -> FramePlan {
-        let taken = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // The pending lock is held until the ack is sent: a waiter that
+        // cancels after its timeout then either removes the request or finds
+        // the ack already in its channel, never a Program applied silently.
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
         let mut fade = self.fade.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((program, transition, ack)) = taken {
-            let previous = std::mem::replace(&mut *current, Arc::clone(&program));
-            *fade = match transition {
-                Transition::Fade { duration_us } if duration_us > 0 => Some(Fade { from: previous, start_us: None, duration_us }),
-                _ => None,
-            };
-            let _ = ack.send(ApplyAck { scene_id: program.scene_id.clone(), revision: program.revision, first_frame_index: frame_index });
+        if let Some(p) = pending.take() {
+            if p.deadline.is_none_or(|d| Instant::now() < d) {
+                let previous = std::mem::replace(&mut *current, Arc::clone(&p.program));
+                *fade = match p.transition {
+                    Transition::Fade { duration_us } if duration_us > 0 => Some(Fade { from: previous, start_us: None, duration_us }),
+                    _ => None,
+                };
+                let _ = p.ack.send(ApplyAck { scene_id: p.program.scene_id.clone(), revision: p.program.revision, first_frame_index: frame_index });
+            }
         }
+        drop(pending);
         let fade_from = match fade.as_mut() {
             Some(f) => {
                 let start = *f.start_us.get_or_insert(timestamp_us);
-                let elapsed = timestamp_us.saturating_sub(start);
+                // A timestamp before the start means a new session timeline
+                // (reconnect): finish the fade instead of freezing it.
+                let elapsed = if timestamp_us < start { f.duration_us } else { timestamp_us - start };
                 if elapsed >= f.duration_us {
                     *fade = None;
                     None
@@ -970,6 +1029,47 @@ mod tests {
     }
 
     #[test]
+    fn cancel_removes_only_its_own_request() {
+        let switch = ProgramSwitch::new(Program::empty());
+        let (a, first) = switch.request_until(Program::from_scene("a", 1, &lt_scene()).unwrap(), Transition::Cut, None);
+        let (_, second) = switch.request_until(Program::from_scene("b", 2, &lt_scene()).unwrap(), Transition::Cut, None);
+        // The superseded waiter gives up; the newer request must survive.
+        assert!(first.recv().is_err());
+        assert!(!switch.cancel(a));
+        switch.at_frame_boundary(1);
+        assert_eq!(second.recv().unwrap().revision, 2);
+    }
+
+    #[test]
+    fn request_past_its_deadline_is_never_applied() {
+        let switch = ProgramSwitch::new(Program::empty());
+        let (_, rx) = switch.request_until(Program::from_scene("late", 3, &lt_scene()).unwrap(), Transition::Cut,
+            Some(Instant::now() - Duration::from_millis(1)));
+        assert_eq!(switch.at_frame_boundary(1).revision, 0);
+        assert!(rx.recv().is_err());
+        // An applied request is acked before a cancel can observe it gone.
+        let (g, rx) = switch.request_until(Program::from_scene("ok", 4, &lt_scene()).unwrap(), Transition::Cut, None);
+        switch.at_frame_boundary(2);
+        assert!(!switch.cancel(g));
+        assert_eq!(rx.try_recv().unwrap().revision, 4);
+    }
+
+    #[test]
+    fn fade_finishes_when_the_session_timeline_restarts() {
+        let switch = ProgramSwitch::new(Program::empty());
+        let _ack = switch.request_with(Program::from_scene("b", 1, &lt_scene()).unwrap(), Transition::Fade { duration_us: 1_000_000 });
+        assert!(switch.at_frame(0, 3_600_000_000).fade_from.is_some());
+        // Reconnect: the new session's timestamps restart near 100 ms.
+        let plan = switch.at_frame(1, 100_000);
+        assert!(plan.fade_from.is_none(), "old Program must not stay on air");
+        assert_eq!(plan.program.revision, 1);
+        let _ack = switch.request_with(Program::from_scene("c", 2, &lt_scene()).unwrap(), Transition::Fade { duration_us: 1_000_000 });
+        assert!(switch.at_frame(2, 200_000).fade_from.is_some());
+        switch.complete_fade();
+        assert!(switch.at_frame(3, 210_000).fade_from.is_none());
+    }
+
+    #[test]
     fn switch_from_media_thread() {
         let switch = Arc::new(ProgramSwitch::new(Program::empty()));
         let media = {
@@ -1105,6 +1205,17 @@ mod tests {
         // A missing asset fails the whole Program.
         let err = Program::from_scene_with("i", 1, &doc, &|_| Err("gone".into())).unwrap_err();
         assert_eq!((err.path.as_str(), err.reason), ("/layers/1/asset", "asset_unavailable"));
+        // Decoded images per Program are bounded; one asset used twice counts once.
+        let half = MAX_PROGRAM_IMAGE_BYTES / 2 + 4;
+        let (a, b) = (Arc::new(Rgba { width: 1, height: half / 4, pixels: vec![0; half] }),
+                      Arc::new(Rgba { width: 1, height: half / 4, pixels: vec![0; half] }));
+        let two = |second: &str| json!({"version":2,"name":"i","layers":[
+            {"id":"a","type":"image","asset":"aaaaaaaaaaaaaaaa","x":0,"y":0,"width":10,"height":10,"visible":true},
+            {"id":"b","type":"image","asset":second,"x":0,"y":0,"width":10,"height":10,"visible":true}]});
+        let big = |id: &str| Ok(Arc::clone(if id == "aaaaaaaaaaaaaaaa" { &a } else { &b }));
+        assert!(Program::from_scene_with("i", 1, &two("aaaaaaaaaaaaaaaa"), &big).is_ok());
+        let err = Program::from_scene_with("i", 1, &two("bbbbbbbbbbbbbbbb"), &big).unwrap_err();
+        assert_eq!((err.path.as_str(), err.reason), ("/layers/1/asset", "assets_too_large"));
         // Overlays are re-rendered for the output size.
         let small = program.for_output(640, 360);
         let mut c = Compositor::new(640, 360);

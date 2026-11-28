@@ -5,6 +5,9 @@
 use crate::{amf0, amf0_decode::{self, Value}, rtmp::RtmpChunkWriter, rtmp_read::ChunkReader};
 use std::io::{self, Read, Write};
 
+/// Largest media message: the RTMP 24-bit message length.
+pub const MAX_MEDIA_MESSAGE: usize = 0x00ff_ffff;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     New,
@@ -52,7 +55,7 @@ impl<T: Read + Write> PublishSession<T> {
             18 => 5,
             _ => return Err(invalid("unsupported media message type")),
         };
-        if payload.is_empty() || payload.len() > 1024 * 1024 {
+        if payload.is_empty() || payload.len() > MAX_MEDIA_MESSAGE {
             return Err(invalid("invalid media message length"));
         }
         // Preserve RTMP framing, but avoid thousands of tiny TLS writes.
@@ -78,12 +81,14 @@ impl<T: Read + Write> PublishSession<T> {
         self.transport.flush()
     }
 
-    fn next_command(&mut self) -> io::Result<Vec<u8>> {
-        // Ignore protocol control messages and await the relevant AMF0 reply.
-        // This is bounded even if a peer floods unrelated messages.
-        for _ in 0..64 {
+    /// The next AMF0 command message on stream 0 or `stream_id`. Protocol
+    /// control and media messages are skipped. `budget` bounds the number of
+    /// messages read across one negotiation step, even if a peer floods.
+    fn next_command(&mut self, stream_id: Option<u32>, budget: &mut u32) -> io::Result<Vec<u8>> {
+        while *budget > 0 {
+            *budget -= 1;
             let msg = self.incoming.read_message(&mut self.transport)?;
-            if msg.type_id == 20 && msg.stream_id <= 1 {
+            if msg.type_id == 20 && stream_id.is_none_or(|id| msg.stream_id == 0 || msg.stream_id == id) {
                 return Ok(msg.payload);
             }
             if msg.type_id == 17 {
@@ -94,22 +99,26 @@ impl<T: Read + Write> PublishSession<T> {
     }
 
     fn transaction_result(&mut self, transaction: f64) -> io::Result<Vec<Value<'static>>> {
-        // Values borrowed from response cannot outlive its buffer. Convert only
-        // the exact data required for matching into an owned representation.
-        let payload = self.next_command()?;
-        let vals = amf0_decode::decode_all(&payload)?;
-        let name = match vals.first() { Some(Value::String(name)) => *name, _ => return Err(invalid("missing RTMP result name")) };
-        let txn = match vals.get(1) { Some(Value::Number(n)) => *n, _ => return Err(invalid("missing RTMP result transaction")) };
-        if txn != transaction { return Err(invalid("unexpected RTMP transaction id")); }
-        if name == "_error" { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "RTMP server rejected command")); }
-        if name != "_result" { return Err(invalid("expected RTMP _result")); }
-        // Re-parse into a minimal owned value projection: only stream number
-        // is used by createStream; the original response can be dropped here.
-        let last = match vals.last() {
-            Some(Value::Number(n)) if n.is_finite() && *n >= 1.0 && *n <= u32::MAX as f64 && n.fract() == 0.0 => Value::Number(*n),
-            _ => Value::Null,
-        };
-        Ok(vec![last])
+        // Servers may interleave unsolicited commands (onBWDone, onStatus,
+        // _checkbw) with replies; skip any command for another transaction.
+        let mut budget = 64;
+        loop {
+            // Values borrowed from response cannot outlive its buffer. Convert only
+            // the exact data required for matching into an owned representation.
+            let payload = self.next_command(None, &mut budget)?;
+            let vals = amf0_decode::decode_all(&payload)?;
+            let (Some(Value::String(name)), Some(Value::Number(txn))) = (vals.first(), vals.get(1)) else { continue };
+            if *txn != transaction { continue; }
+            if *name == "_error" { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "RTMP server rejected command")); }
+            if *name != "_result" { return Err(invalid("expected RTMP _result")); }
+            // Re-parse into a minimal owned value projection: only stream number
+            // is used by createStream; the original response can be dropped here.
+            let last = match vals.last() {
+                Some(Value::Number(n)) if n.is_finite() && *n >= 1.0 && *n <= u32::MAX as f64 && n.fract() == 0.0 => Value::Number(*n),
+                _ => Value::Null,
+            };
+            return Ok(vec![last]);
+        }
     }
 
     pub fn connect(&mut self, app: &str, tc_url: &str) -> io::Result<()> {
@@ -139,8 +148,10 @@ impl<T: Read + Write> PublishSession<T> {
         };
         if name.is_empty() || name.len() > 256 { return Err(invalid("invalid stream name")); }
         self.send_command(id, &amf0::publish_command(name)?)?;
-        for _ in 0..64 {
-            let payload = self.next_command()?;
+        // onStatus for the publish arrives on the created stream's id.
+        let mut budget = 64;
+        loop {
+            let payload = self.next_command(Some(id), &mut budget)?;
             let values = amf0_decode::decode_all(&payload)?;
             let event = match values.first() { Some(Value::String(s)) => *s, _ => continue };
             if event == "_error" {
@@ -157,7 +168,6 @@ impl<T: Read + Write> PublishSession<T> {
                 _ => {}
             }
         }
-        Err(invalid("RTMP server did not confirm publication"))
     }
 }
 
@@ -254,6 +264,23 @@ mod tests {
         session.create_stream().unwrap();
         assert_eq!(session.publish("test").unwrap_err().kind(),io::ErrorKind::PermissionDenied);
         assert_eq!(session.state(),State::StreamCreated(1));
+    }
+    #[test]
+    fn unsolicited_commands_are_skipped_and_stream_ids_above_one_work() {
+        let mut bwdone = Vec::new();
+        amf0::encode(&mut bwdone, amf0::Value::String("onBWDone")).unwrap();
+        amf0::encode(&mut bwdone, amf0::Value::Number(0.0)).unwrap();
+        amf0::encode(&mut bwdone, amf0::Value::Null).unwrap();
+        let mut out = RtmpChunkWriter::new(Vec::new(), 128).unwrap();
+        out.message(3,20,0,0,&server_result(1.0,amf0::Value::Null)).unwrap();
+        out.message(3,20,0,0,&bwdone).unwrap();
+        out.message(3,20,0,0,&server_result(2.0,amf0::Value::Number(3.0))).unwrap();
+        out.message(3,20,3,0,&server_status("NetStream.Publish.Start")).unwrap();
+        let mut session = PublishSession::new(Duplex { read: Cursor::new(out.into_inner()), written: vec![] });
+        session.connect("live2","rtmps://example.test/live2").unwrap();
+        assert_eq!(session.create_stream().unwrap(), 3);
+        session.publish("test").unwrap();
+        assert_eq!(session.state(), State::Publishing(3));
     }
     #[test]
     fn unexpected_order_and_truncated_server_are_errors() {

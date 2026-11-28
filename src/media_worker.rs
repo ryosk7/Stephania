@@ -23,8 +23,10 @@ impl Queue {
     fn push(&mut self, media: Media, captured: Instant, now: Instant) -> io::Result<()> {
         let bytes = media.bytes();
         let expires = captured + MAX_AGE;
+        // One access unit larger than the byte budget (a big keyframe) is
+        // accepted into an empty queue; it is bounded by the RTMP message size.
         if self.closed || self.aborted || expires <= now || self.entries.len() >= MAX_PACKETS ||
-            bytes > MAX_BYTES.saturating_sub(self.bytes) {
+            (bytes > MAX_BYTES.saturating_sub(self.bytes) && !self.entries.is_empty()) {
             self.aborted = true;
             return Err(timeout());
         }
@@ -137,6 +139,13 @@ mod tests {
         assert_eq!(q.bytes,2);
         assert!(q.push(audio(MAX_BYTES),t,t).is_err());
         assert!(q.pop(t).is_err());
+    }
+    #[test]
+    fn one_large_access_unit_fits_an_empty_queue() {
+        let t=Instant::now();
+        let mut q=Queue::default();
+        q.push(audio(3*MAX_BYTES),t,t).unwrap();
+        assert!(q.push(audio(1),t,t).is_err());
     }
     #[test]
     fn age_and_count_are_bounded() {
