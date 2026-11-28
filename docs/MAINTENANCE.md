@@ -14,7 +14,10 @@ TypeScript module opens a window on the real `stephania-maint` in CI.
 logs in and copies files with the system OpenSSH client, tested end to end
 against the real control plane, `stephania-maint` and OpenSSH by
 `ci/stephctl-e2e.sh`, and is built for Linux, macOS and Windows with each
-release. `steph` is not built yet.
+release. `steph` (`src/bin/steph.rs`) has its read commands (status, whoami,
+version, logs, services, update status, net, hw, time, disk, diag), checked
+inside a real maintenance session by the QEMU smoke test; the brokered
+changes (restart, reboot, update apply, window close) are next.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as

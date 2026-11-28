@@ -9,7 +9,7 @@ echo "$version" >"$r/etc/stephania-version"
 echo stephania >"$r/etc/hostname"
 
 # Binaries and helpers.
-install -m 0755 "$bins"/stephania "$bins"/stephania-phone "$bins"/stephania-provision "$bins"/stephania-pki "$bins"/stephania-bootctl "$bins"/stephania-maint "$r/usr/local/bin/"
+install -m 0755 "$bins"/stephania "$bins"/stephania-phone "$bins"/stephania-provision "$bins"/stephania-pki "$bins"/stephania-bootctl "$bins"/stephania-maint "$bins"/steph "$r/usr/local/bin/"
 install -m 0755 "$repo/os/rauc/stephania-update" "$r/usr/local/bin/stephania-update"
 install -d "$r/usr/local/lib/stephania" "$r/usr/local/sbin"
 install -m 0755 "$repo/os/rauc/rauc-pre-install" "$r/usr/local/lib/stephania/rauc-pre-install"

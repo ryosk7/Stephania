@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ryosk7/Stephania/contracts/steph.schema.json",
+  "title": "steph --json outputs (docs/MAINTENANCE.md)",
+  "description": "Shapes of the read commands of the on-device CLI. A probe that could not read its source reports {\"error\": <reason>} or null instead of failing the command.",
+  "$defs": {
+    "unavailable": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
+    "version": {
+      "type": "object",
+      "required": ["stephania", "os", "kernel", "booted_slot"],
+      "properties": {
+        "stephania": {"type": ["string", "null"]},
+        "os": {"type": ["string", "null"]},
+        "kernel": {"type": ["string", "null"]},
+        "booted_slot": {"type": ["string", "null"]}
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["service", "unit", "active"],
+      "properties": {
+        "service": {"enum": ["engine", "control", "phone", "ble", "provision", "pki", "update", "maint"]},
+        "unit": {"type": "string"},
+        "active": {"type": "string"},
+        "sub": {"type": ["string", "null"]},
+        "since": {"type": ["string", "null"]},
+        "restarts": {"type": ["integer", "null"]},
+        "memory_bytes": {"type": ["integer", "null"]}
+      }
+    },
+    "services": {"oneOf": [{"type": "array", "items": {"$ref": "#/$defs/service"}}, {"$ref": "#/$defs/unavailable"}]},
+    "disk": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string"},
+          "total_bytes": {"type": "integer"},
+          "free_bytes": {"type": "integer"},
+          "used_percent": {"type": "integer"},
+          "error": {"type": "string"}
+        }
+      }
+    },
+    "whoami": {
+      "type": "object",
+      "required": ["user", "level", "account"],
+      "properties": {
+        "user": {"type": "string"},
+        "level": {"enum": ["maint", "root"]},
+        "account": {"type": ["string", "null"]},
+        "window_id": {"type": "string"},
+        "certificate_serial": {"type": "integer"},
+        "certificate_valid_before": {"type": "integer"},
+        "certificate_seconds_left": {"type": "integer"},
+        "note": {"type": "string"}
+      }
+    },
+    "throttling": {
+      "type": ["object", "null"],
+      "properties": {
+        "raw": {"type": "string"},
+        "now": {"$ref": "#/$defs/throttle_bits"},
+        "since_boot": {"$ref": "#/$defs/throttle_bits"}
+      }
+    },
+    "throttle_bits": {
+      "type": "object",
+      "properties": {
+        "under_voltage": {"type": "boolean"},
+        "frequency_capped": {"type": "boolean"},
+        "throttled": {"type": "boolean"},
+        "soft_temp_limit": {"type": "boolean"}
+      }
+    },
+    "status": {
+      "type": "object",
+      "required": ["version", "uptime_seconds", "engine", "failed_units", "network", "temperature_c", "throttling", "disk", "session"],
+      "properties": {
+        "version": {"$ref": "#/$defs/version"},
+        "uptime_seconds": {"type": ["integer", "null"]},
+        "engine": {"type": ["string", "null"]},
+        "failed_units": {"type": "array", "items": {"type": "string"}},
+        "network": {"type": "object"},
+        "temperature_c": {"type": ["number", "null"]},
+        "throttling": {"$ref": "#/$defs/throttling"},
+        "disk": {"$ref": "#/$defs/disk"},
+        "session": {"$ref": "#/$defs/whoami"}
+      }
+    }
+  }
+}

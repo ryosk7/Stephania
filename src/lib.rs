@@ -25,6 +25,8 @@ pub mod sshcert;
 pub mod totp;
 #[cfg(unix)]
 pub mod maint;
+#[cfg(unix)]
+pub mod steph;
 pub mod bootctl;
 #[cfg(unix)]
 pub mod nm;
