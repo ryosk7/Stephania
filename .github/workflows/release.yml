@@ -1,10 +1,31 @@
 name: Release
 # Tag v<version> → signed release artifacts (§7) as a draft GitHub release.
-# Signing material comes only from repository secrets; without them the run
-# fails before anything is published (never an unsigned release):
-#   STEPHANIA_RELEASE_SIGNING_KEY  Ed25519 PEM (installer manifest, SHA256SUMS)
-#   STEPHANIA_RAUC_CA_CERT         release CA certificate, built into the image keyring
-#   STEPHANIA_RAUC_SIGNING_CERT, STEPHANIA_RAUC_SIGNING_KEY  code-signing pair for bundles
+#
+# The run is split so that no signing key exists where dependency code runs
+# (npm install scripts and build plugins, crate build scripts, gem native
+# builds in the image chroot, the toolchain image build):
+#   prepare   version, mode, trust checks; throwaway keys for dry runs
+#   image     Rust binaries, Studio, Pi image, unsigned installer card tree,
+#             SBOM → unsigned stage (os/release/stage.sh); contents: read
+#   stephctl  maintenance CLI archives (docs/MAINTENANCE.md); contents: read
+#   sign      checks the stage against the digest the image job reported,
+#             signs it (os/release/sign.sh) with keys on a tmpfs that are
+#             deleted right after, verifies; environment `release`
+#   publish   creates the draft release with every file at once; the only
+#             job with contents: write
+#
+# Production keys are used only for a v* tag whose commit is on main (a tag
+# push, or tag-release.yml). A dispatched run on a branch is a dry run: it is
+# signed with throwaway keys (os/release/test-keys.sh), so its artifact is
+# useless to devices. Signing material (repository or `release` environment
+# secrets; docs/RELEASE.md):
+#   STEPHANIA_RELEASE_SIGNING_KEY  Ed25519 PEM (installer manifest, SHA256SUMS);
+#                                  its public key must be os/release/keys/release-signing.pub
+#   STEPHANIA_RAUC_SIGNING_CERT, STEPHANIA_RAUC_SIGNING_KEY  code-signing pair for
+#                                  bundles, issued by os/release/keys/rauc-ca.pem
+#   STEPHANIA_RAUC_CA_CERT         optional; if set it must equal os/release/keys/rauc-ca.pem
+# Without them a production run fails before anything is signed (never an
+# unsigned release).
 on:
   push:
     tags: ['v*']
@@ -19,62 +40,118 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to build (dry run without publishing when not a tag)
+        description: Version to build (dry run with throwaway keys when not run on a tag)
         required: true
-permissions:
-  contents: write
-  packages: read
+permissions: {}
 defaults:
   run:
     # Explicit bash runs steps with -o pipefail: a failing command before
     # `| tee` or `| tail` fails the step.
     shell: bash
 
-env:
-  # The tag being released; empty for a dispatched dry run.
-  TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
-
 jobs:
-  release:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      epoch: ${{ steps.v.outputs.epoch }}
+      commit: ${{ steps.v.outputs.commit }}
+      signing: ${{ steps.v.outputs.signing }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || '' }}
+          # All branches and tags: the tag must be on main.
           fetch-depth: 0
-      - name: Signing material
-        env:
-          RELEASE_KEY: ${{ secrets.STEPHANIA_RELEASE_SIGNING_KEY }}
-          RAUC_CA: ${{ secrets.STEPHANIA_RAUC_CA_CERT }}
-          RAUC_CERT: ${{ secrets.STEPHANIA_RAUC_SIGNING_CERT }}
-          RAUC_KEY: ${{ secrets.STEPHANIA_RAUC_SIGNING_KEY }}
-        run: |
-          for v in RELEASE_KEY RAUC_CA RAUC_CERT RAUC_KEY; do
-            [ -n "${!v}" ] || { echo "::error::release secret for $v is not configured; refusing to build an unsigned release"; exit 1; }
-          done
-          k="$RUNNER_TEMP/keys"; install -d -m 0700 "$k"
-          printf '%s\n' "$RELEASE_KEY" >"$k/release-signing.pem"
-          printf '%s\n' "$RAUC_CA" >"$k/rauc-ca.pem"
-          printf '%s\n' "$RAUC_CERT" >"$k/rauc-signing.pem"
-          printf '%s\n' "$RAUC_KEY" >"$k/rauc-signing.key"
-          chmod 0600 "$k"/*
-          openssl pkey -in "$k/release-signing.pem" -pubout -out "$k/release-signing.pub"
+          persist-credentials: false
       - id: v
-        run: |
-          v="${{ inputs.tag || github.event.inputs.version || github.ref_name }}"; v="${v#v}"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
-      - name: Authenticate read-only GHCR access
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          tag=""
+          if [ -n "$INPUT_TAG" ]; then tag=$INPUT_TAG
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag=$GITHUB_REF_NAME; fi
+          if [ -n "$tag" ]; then v=${tag#v}; else v=${INPUT_VERSION#v}; fi
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::not a version: $v"; exit 1; }
+          commit=$(git rev-parse HEAD)
+          if [ -n "$tag" ]; then
+            [ "$tag" = "v$v" ] || { echo "::error::tag $tag is not v<version>"; exit 1; }
+            [ "$(git rev-parse "refs/tags/$tag^{commit}")" = "$commit" ] || { echo "::error::checked-out commit is not tag $tag"; exit 1; }
+            # Production keys sign only reviewed code: the tagged commit must
+            # be on main.
+            git merge-base --is-ancestor "$commit" refs/remotes/origin/main \
+              || { echo "::error::tag $tag ($commit) is not on main; refusing to sign it with the release keys"; exit 1; }
+            signing="production"
+          else
+            echo "::notice::dry run of $v from $GITHUB_REF: signed with throwaway keys, not published"
+            signing="test"
+          fi
+          { echo "tag=$tag"; echo "version=$v"; echo "commit=$commit"; echo "signing=$signing"
+            echo "epoch=$(git log -1 --format=%ct)"; } >> "$GITHUB_OUTPUT"
+      - name: Throwaway keys (dry run)
+        if: steps.v.outputs.signing == 'test'
+        run: |
+          bash os/release/test-keys.sh "$RUNNER_TEMP/test-keys"
+          openssl pkey -in "$RUNNER_TEMP/test-keys/release-signing.pem" -pubout -out "$RUNNER_TEMP/test-keys/release-signing.pub"
+          mkdir -p "$RUNNER_TEMP/test-public"
+          cp "$RUNNER_TEMP/test-keys/release-signing.pub" "$RUNNER_TEMP/test-keys/rauc-ca.pem" "$RUNNER_TEMP/test-public/"
+      - if: steps.v.outputs.signing == 'test'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-test-public
+          path: ${{ runner.temp }}/test-public
+          retention-days: 1
+      - if: steps.v.outputs.signing == 'test'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-test-keys
+          path: ${{ runner.temp }}/test-keys
+          retention-days: 1
+
+  # Everything that runs third-party code. No signing key, read-only token,
+  # no Actions cache and no prebuilt toolchain image from the registry.
+  image:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      stage-digest: ${{ steps.stage.outputs.digest }}
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_EPOCH: ${{ needs.prepare.outputs.epoch }}
+      SIGNING: ${{ needs.prepare.outputs.signing }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - if: env.SIGNING == 'test'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-test-public
+          path: ${{ runner.temp }}/keys
+      - name: Public keys (the image keyring and the installer's built-in key)
+        if: env.SIGNING == 'production'
+        run: |
+          install -d -m 0755 "$RUNNER_TEMP/keys"
+          cp os/release/keys/release-signing.pub os/release/keys/rauc-ca.pem "$RUNNER_TEMP/keys/"
       - uses: ./.github/actions/cached-build
         with:
           profile: arm64-image
           image: device-build
+          cache: none
+          local-image: 'true'
           command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone
-      - uses: actions/setup-node@v4
+      # No `cache:` input: setup-node v4 then restores no npm cache, which
+      # other workflows could have written.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
         with:
           node-version: '22'
       - name: Build Studio
@@ -87,39 +164,33 @@ jobs:
           echo "STEPHANIA_IMAGE_DEBIAN_KEYRING=$RUNNER_TEMP/debian-archive-keyring.gpg" >>"$GITHUB_ENV"
       - name: Pi image
         run: |
-          sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="${{ steps.v.outputs.version }}" STEPHANIA_IMAGE_VARIANT=pi \
-            STEPHANIA_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" \
+          sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="$RELEASE_VERSION" STEPHANIA_IMAGE_VARIANT=pi \
+            STEPHANIA_RAUC_KEYRING="$RUNNER_TEMP/keys/rauc-ca.pem" SOURCE_DATE_EPOCH="$RELEASE_EPOCH" \
             os/image/build.sh "$RUNNER_TEMP/image" target/release
           ci/pi-image-check.sh "$RUNNER_TEMP/image"
-      - name: Installer ZIP
+      - name: Installer card tree (unsigned; the sign job signs it)
         run: |
-          sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="${{ steps.v.outputs.version }}" STEPHANIA_INSTALL_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
+          sudo env STEPHANIA_IMAGE_DEBIAN_KEYRING="$STEPHANIA_IMAGE_DEBIAN_KEYRING" STEPHANIA_IMAGE_VERSION="$RELEASE_VERSION" STEPHANIA_INSTALL_PUBLIC_KEY="$RUNNER_TEMP/keys/release-signing.pub" \
             os/installer/build.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer"
-      - name: Assemble and verify
+      - name: Stage
+        id: stage
         run: |
-          env STEPHANIA_RELEASE_VERSION="${{ steps.v.outputs.version }}" STEPHANIA_RELEASE_SIGNING_KEY="$RUNNER_TEMP/keys/release-signing.pem" \
-            STEPHANIA_RAUC_CERT="$RUNNER_TEMP/keys/rauc-signing.pem" STEPHANIA_RAUC_KEY="$RUNNER_TEMP/keys/rauc-signing.key" \
-            SOURCE_DATE_EPOCH="${{ steps.v.outputs.epoch }}" os/release/assemble.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "$RUNNER_TEMP/dist"
-          os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/keys/release-signing.pub" "$RUNNER_TEMP/keys/rauc-ca.pem"
-          rm -rf "$RUNNER_TEMP/keys"
-      - name: Draft GitHub release
-        if: env.TAG != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$TAG" --draft --verify-tag --title "Stephania ${{ steps.v.outputs.version }}" \
-            --notes "Verify: os/release/verify.sh with the published release-signing.pub." \
-            "$RUNNER_TEMP"/dist/*
-      - if: env.TAG == ''
-        uses: actions/upload-artifact@v4
+          # The card tree was written as root (vmlinuz may be 0600).
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/installer"
+          env STEPHANIA_RELEASE_VERSION="$RELEASE_VERSION" SOURCE_DATE_EPOCH="$RELEASE_EPOCH" \
+            os/release/stage.sh "$RUNNER_TEMP/image" "$RUNNER_TEMP/installer" "$RUNNER_TEMP/stage"
+          echo "digest=$(sha256sum "$RUNNER_TEMP/stage/STAGE.sha256" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-dry-run
-          path: ${{ runner.temp }}/dist
-          retention-days: 7
+          name: release-stage
+          path: ${{ runner.temp }}/stage
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
 
-  # The maintenance CLI (docs/MAINTENANCE.md), added to the draft release.
+  # The maintenance CLI (docs/MAINTENANCE.md), listed in the signed SHA256SUMS.
   stephctl:
-    needs: release
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -131,34 +202,179 @@ jobs:
           - {os: windows-latest, target: x86_64-pc-windows-msvc}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ inputs.tag || '' }}
-      - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --release --locked -p stephctl --target ${{ matrix.target }}
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - run: rustup target add "$TARGET"
+      - run: cargo build --release --locked -p stephctl --target "$TARGET"
       - name: Package
         id: pkg
         run: |
-          v="${{ inputs.tag || github.event.inputs.version || github.ref_name }}"; v="${v#v}"
-          name="stephctl-$v-${{ matrix.target }}"
+          name="stephctl-$RELEASE_VERSION-$TARGET"
           mkdir "$name" && cp LICENSE "$name/"
-          if [ "${{ runner.os }}" = Windows ]; then
-            cp "target/${{ matrix.target }}/release/stephctl.exe" "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "target/$TARGET/release/stephctl.exe" "$name/"
             7z a -bd "$name.zip" "$name" >/dev/null; file="$name.zip"
           else
-            cp "target/${{ matrix.target }}/release/stephctl" "$name/"
+            cp "target/$TARGET/release/stephctl" "$name/"
             tar -czf "$name.tar.gz" "$name"; file="$name.tar.gz"
           fi
           echo "file=$file" >> "$GITHUB_OUTPUT"
-      - name: Add to the draft release
-        if: env.TAG != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" "${{ steps.pkg.outputs.file }}" --clobber
-      - if: env.TAG == ''
-        uses: actions/upload-artifact@v4
+          echo "$file sha256 $(sha256sum "$file" | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: stephctl-${{ matrix.target }}
           path: ${{ steps.pkg.outputs.file }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # Minimal signing job: trusted repository scripts and distribution tools
+  # only; no package manager runs after the keys exist, and they live on a
+  # tmpfs for the one step that signs.
+  sign:
+    needs: [prepare, image, stephctl]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Production keys only behind the protected environment `release`
+    # (required reviewer; deployment refs main and v* tags; holds the
+    # signing secrets, docs/RELEASE.md). Dry runs use the unprotected
+    # `release-dry-run`, which holds no secrets.
+    environment: ${{ needs.prepare.outputs.signing == 'production' && 'release' || 'release-dry-run' }}
+    permissions:
+      contents: read
+    outputs:
+      sums-digest: ${{ steps.sign.outputs.sums }}
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_EPOCH: ${{ needs.prepare.outputs.epoch }}
+      SIGNING: ${{ needs.prepare.outputs.signing }}
+      STAGE_DIGEST: ${{ needs.image.outputs.stage-digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - name: Signing tools
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends rauc squashfs-tools zip unzip cpio xz-utils >/dev/null
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-stage
+          path: ${{ runner.temp }}/stage
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: stephctl-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/stephctl
+      - name: Check the stephctl archives
+        run: |
+          want=$(for t in x86_64-unknown-linux-gnu.tar.gz aarch64-unknown-linux-gnu.tar.gz aarch64-apple-darwin.tar.gz x86_64-apple-darwin.tar.gz x86_64-pc-windows-msvc.zip; do
+            echo "stephctl-$RELEASE_VERSION-$t"; done | LC_ALL=C sort)
+          [ "$(find "$RUNNER_TEMP/stephctl" -mindepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$want" ] || { ls -la "$RUNNER_TEMP/stephctl"; echo "::error::unexpected stephctl archives"; exit 1; }
+      - if: env.SIGNING == 'test'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-test-keys
+          path: ${{ runner.temp }}/test-keys
+      - name: Trusted public keys
+        run: |
+          t="$RUNNER_TEMP/trusted"; mkdir -p "$t"
+          if [ "$SIGNING" = production ]; then
+            cp os/release/keys/release-signing.pub os/release/keys/rauc-ca.pem "$t/"
+          else
+            cp "$RUNNER_TEMP/test-keys/release-signing.pub" "$RUNNER_TEMP/test-keys/rauc-ca.pem" "$t/"
+          fi
+      - name: Sign
+        id: sign
+        env:
+          RELEASE_KEY: ${{ env.SIGNING == 'production' && secrets.STEPHANIA_RELEASE_SIGNING_KEY || '' }}
+          RAUC_CA: ${{ env.SIGNING == 'production' && secrets.STEPHANIA_RAUC_CA_CERT || '' }}
+          RAUC_CERT: ${{ env.SIGNING == 'production' && secrets.STEPHANIA_RAUC_SIGNING_CERT || '' }}
+          RAUC_KEY: ${{ env.SIGNING == 'production' && secrets.STEPHANIA_RAUC_SIGNING_KEY || '' }}
+        run: |
+          k=$(mktemp -d -p /dev/shm release-keys.XXXXXX); chmod 0700 "$k"
+          trap 'rm -rf "$k"' EXIT
+          if [ "$SIGNING" = production ]; then
+            for v in RELEASE_KEY RAUC_CERT RAUC_KEY; do
+              [ -n "${!v}" ] || { echo "::error::release secret for $v is not configured; refusing to build an unsigned release"; exit 1; }
+            done
+            (umask 077
+             printf '%s\n' "$RELEASE_KEY" >"$k/release-signing.pem"
+             printf '%s\n' "$RAUC_CERT" >"$k/rauc-signing.pem"
+             printf '%s\n' "$RAUC_KEY" >"$k/rauc-signing.key")
+            unset RELEASE_KEY RAUC_CERT RAUC_KEY
+            openssl pkey -in "$k/release-signing.pem" -pubout | cmp -s - os/release/keys/release-signing.pub \
+              || { echo "::error::STEPHANIA_RELEASE_SIGNING_KEY does not match os/release/keys/release-signing.pub (rotate keys by committing the new public key)"; exit 1; }
+            if [ -n "$RAUC_CA" ]; then
+              printf '%s\n' "$RAUC_CA" | openssl x509 | cmp -s - <(openssl x509 -in os/release/keys/rauc-ca.pem) \
+                || { echo "::error::STEPHANIA_RAUC_CA_CERT differs from os/release/keys/rauc-ca.pem"; exit 1; }
+            fi
+            openssl verify -CAfile os/release/keys/rauc-ca.pem "$k/rauc-signing.pem" >/dev/null \
+              || { echo "::error::the RAUC signing certificate is not issued by os/release/keys/rauc-ca.pem"; exit 1; }
+          else
+            cp "$RUNNER_TEMP/test-keys/release-signing.pem" "$RUNNER_TEMP/test-keys/rauc-signing.pem" "$RUNNER_TEMP/test-keys/rauc-signing.key" "$k/"
+          fi
+          env STEPHANIA_RELEASE_VERSION="$RELEASE_VERSION" SOURCE_DATE_EPOCH="$RELEASE_EPOCH" STEPHANIA_STAGE_DIGEST="$STAGE_DIGEST" \
+            STEPHANIA_RELEASE_EXTRA="$RUNNER_TEMP/stephctl" STEPHANIA_RELEASE_SIGNING_KEY="$k/release-signing.pem" \
+            STEPHANIA_RAUC_CERT="$k/rauc-signing.pem" STEPHANIA_RAUC_KEY="$k/rauc-signing.key" \
+            os/release/sign.sh "$RUNNER_TEMP/stage" "$RUNNER_TEMP/dist"
+          echo "sums=$(sha256sum "$RUNNER_TEMP/dist/SHA256SUMS" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Remove key material
+        if: always()
+        run: rm -rf /dev/shm/release-keys.* "$RUNNER_TEMP/test-keys"
+      - name: Verify
+        run: |
+          STEPHANIA_VERIFY_REQUIRE_RAUC=1 os/release/verify.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/trusted/release-signing.pub" "$RUNNER_TEMP/trusted/rauc-ca.pem"
+      - if: env.SIGNING == 'production'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dist
+          path: ${{ runner.temp }}/dist
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+      - if: env.SIGNING == 'test'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dry-run
+          path: ${{ runner.temp }}/dist
+          compression-level: 0
           retention-days: 7
+
+  publish:
+    needs: [prepare, sign]
+    if: needs.prepare.outputs.signing == 'production'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      SUMS_DIGEST: ${{ needs.sign.outputs.sums-digest }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dist
+          path: ${{ runner.temp }}/dist
+      - name: Draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd "$RUNNER_TEMP/dist"
+          [ "$(sha256sum SHA256SUMS | cut -d' ' -f1)" = "$SUMS_DIGEST" ] || { echo "::error::SHA256SUMS is not the one the sign job produced"; exit 1; }
+          sha256sum -c --strict --quiet SHA256SUMS
+          # Every asset in one call, never with clobbering: an existing release or
+          # asset is never replaced.
+          gh release create "$TAG" --draft --verify-tag --title "Stephania $RELEASE_VERSION" \
+            --notes "Verify: os/release/verify.sh <download dir> checks every file against the release keys committed in os/release/keys/ (fingerprints in docs/RELEASE.md). stephctl archives are listed in the signed SHA256SUMS." \
+            ./*
