@@ -7,6 +7,8 @@
 //! Stephania commands:
 //!   confirm   — after boot: health-check a trial, then `rauc status mark-*`
 //!   guard     — RAUC pre-install handler: refuse while streaming
+//!   check-version — RAUC pre-install handler: refuse a bundle older than
+//!               the running release (anti-rollback)
 //!   health    — run the local health check only
 //!   snapshot  — RAUC pre-install (after guard): online backup of the control DB
 //!   restore-data — boot, before control: restore it after a rejected trial
@@ -15,7 +17,9 @@
 //! Environment: STEPHANIA_AUTOBOOT, STEPHANIA_BOOT_STATE, STEPHANIA_BOOT_SLOTS (A=2,B=3),
 //! STEPHANIA_DEVICE_TREE, STEPHANIA_ENGINE_SOCKET, STEPHANIA_DATA_DIR, STEPHANIA_RAUC,
 //! STEPHANIA_HEALTH_ATTEMPTS, STEPHANIA_REBOOT (command run after a failed trial),
-//! STEPHANIA_CONTROL_DB, STEPHANIA_SNAPSHOT_DIR, STEPHANIA_SQLITE3.
+//! STEPHANIA_CONTROL_DB, STEPHANIA_SNAPSHOT_DIR, STEPHANIA_SQLITE3,
+//! STEPHANIA_VERSION_FILE (/etc/stephania-version); RAUC sets
+//! RAUC_BUNDLE_MOUNT_POINT for handlers.
 #[cfg(unix)]
 fn main() {
     use std::path::PathBuf;
@@ -61,19 +65,26 @@ fn main() {
         },
         Some("get-current") => ctl.booted().and_then(|b| b.ok_or_else(|| "booted partition is not a known slot".into())).map(|b| println!("{b}")),
         Some("guard") => bootctl::install_guard(&socket),
+        Some("check-version") => {
+            let mount = std::env::var_os("RAUC_BUNDLE_MOUNT_POINT").map(PathBuf::from).unwrap_or_else(|| die("RAUC_BUNDLE_MOUNT_POINT is not set (run as RAUC pre-install handler)".into()));
+            let manifest = std::fs::read_to_string(mount.join("manifest.raucm")).unwrap_or_else(|e| die(format!("bundle manifest: {e}")));
+            let installed = std::fs::read_to_string(env("STEPHANIA_VERSION_FILE", "/etc/stephania-version")).ok();
+            bootctl::check_bundle_version(installed.as_deref(), bootctl::manifest_version(&manifest).as_deref()).map(|m| eprintln!("stephania-bootctl: {m}"))
+        }
         Some("health") => bootctl::health(&socket, &data, attempts, std::time::Duration::from_secs(1)),
         Some("confirm") => match ctl.decide() {
             Ok(Decision::Nothing) => { eprintln!("stephania-bootctl: no trial pending"); Ok(()) }
             Ok(Decision::TrialFailed(slot)) => {
                 eprintln!("stephania-bootctl: trial of {slot} did not reach confirmation; marking it bad");
                 rauc("mark-bad", "other");
+                ctl.discard_snapshot_if_unneeded(&snapshot);
                 Ok(())
             }
             Ok(Decision::CheckTrial(slot)) => match bootctl::health(&socket, &data, attempts, std::time::Duration::from_secs(1)) {
                 Ok(()) => {
                     eprintln!("stephania-bootctl: {slot} healthy; committing");
                     rauc("mark-good", "booted");
-                    ctl.discard_snapshot_if_committed(&snapshot);
+                    ctl.discard_snapshot_if_unneeded(&snapshot);
                     Ok(())
                 }
                 Err(e) => {
@@ -98,7 +109,7 @@ fn main() {
             Err(e) => Err(e),
         },
         _ => {
-            eprintln!("usage: stephania-bootctl get-primary|set-primary <s>|get-state <s>|set-state <s> good|bad|get-current|confirm|guard|health|snapshot|restore-data|deadline");
+            eprintln!("usage: stephania-bootctl get-primary|set-primary <s>|get-state <s>|set-state <s> good|bad|get-current|confirm|guard|check-version|health|snapshot|restore-data|deadline");
             std::process::exit(2);
         }
     };

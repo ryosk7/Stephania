@@ -1,5 +1,7 @@
 #!/bin/sh
-# RAUC pre-install handler: never update while a stream is requested, then
-# take an online snapshot of persistent data for rollback.
+# RAUC pre-install handler: never update while a stream is requested, never
+# install a release older than the running one (anti-rollback), then take
+# an online snapshot of persistent data for rollback.
 /usr/local/bin/stephania-bootctl guard || exit 1
+/usr/local/bin/stephania-bootctl check-version || exit 1
 exec /usr/local/bin/stephania-bootctl snapshot

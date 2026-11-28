@@ -2,6 +2,7 @@
 # A/B update end to end with real RAUC on loop devices and an emulated
 # Raspberry Pi tryboot firmware (crate::bootctl, docs/UPDATE.md).
 # Usage (root): ci/update-e2e.sh <stephania-bootctl>
+# Needs rauc, sqlite3, squashfs-tools, dosfstools and mtools.
 set -euo pipefail
 bootctl=$(readlink -f "$1")
 # CI uses verity bundles (needs device-mapper; RAUC v1.15 rejects the
@@ -51,16 +52,21 @@ firmware_boot() { # $1 = normal|tryboot
   python3 -c 'import struct,sys;open(sys.argv[1],"wb").write(struct.pack(">I",int(sys.argv[2])));open(sys.argv[3],"wb").write(struct.pack(">I",int(sys.argv[4])))' \
     "$w/dt/partition" "$p" "$w/dt/tryboot" "$([ "$1" = tryboot ] && echo 1 || echo 0)"
   booted=$([ "$p" = 2 ] && echo A || echo B)
+  # The running release is the booted rootfs's /etc/stephania-version
+  # (the factory slot A, still empty here, counts as 1.0.0).
+  local r=rootfs-a; [ "$booted" = B ] && r=rootfs-b
+  unsquashfs -cat "${dev[$r]}" etc/stephania-version >"$w/stephania-version" 2>/dev/null || echo 1.0.0 >"$w/stephania-version"
   "$bootctl" restore-data >>"$w/restore.log" 2>&1 || fail "restore-data"
   start_rauc "$booted"
 }
-export STEPHANIA_CONTROL_DB=$w/data/control.db STEPHANIA_SNAPSHOT_DIR=$w/data/snapshot
+export STEPHANIA_CONTROL_DB=$w/data/control.db STEPHANIA_SNAPSHOT_DIR=$w/data/snapshot STEPHANIA_VERSION_FILE=$w/stephania-version
 export STEPHANIA_AUTOBOOT=$w/selector/autoboot.txt STEPHANIA_BOOT_STATE=$w/data/bootctl.json STEPHANIA_BOOT_SLOTS=A=2,B=3 \
   STEPHANIA_DEVICE_TREE=$w/dt STEPHANIA_ENGINE_SOCKET=$w/engine.sock STEPHANIA_DATA_DIR=$w/data STEPHANIA_HEALTH_ATTEMPTS=2 STEPHANIA_REBOOT=true
 
 cat >"$w/pre-install" <<SH
 #!/bin/sh
 "$bootctl" guard || exit 1
+"$bootctl" check-version || exit 1
 exec "$bootctl" snapshot
 SH
 chmod +x "$w/pre-install"
@@ -120,14 +126,32 @@ make_bundle() { # $1 out, $2 version, $3 compatible, $4 key, $5 cert
   echo "$2" >"$d/root/etc/stephania-version"
   head -c 40M /dev/urandom >"$d/root/payload"
   mksquashfs "$d/root" "$d/rootfs.img" -noappend -quiet >/dev/null
-  truncate -s 16M "$d/boot.vfat"; mkfs.vfat -n BOOT "$d/boot.vfat" >/dev/null
-  printf '[update]\ncompatible=%s\nversion=%s\n[bundle]\nformat=%s\n[image.rootfs]\nfilename=rootfs.img\n[image.boot]\nfilename=boot.vfat\n' "$3" "$2" "$format" >"$d/manifest.raucm"
+  # Per-slot boot images and the production bundle hook, as
+  # os/release/assemble.sh builds them.
+  local slot
+  for slot in a b; do
+    truncate -s 16M "$d/boot-$slot.vfat"; mkfs.vfat -n "BOOT-${slot^^}" "$d/boot-$slot.vfat" >/dev/null
+    echo "root=PARTLABEL=rootfs-$slot ro rauc.slot=${slot^^} stephania.test=$2" >"$d/cmdline.txt"
+    mcopy -i "$d/boot-$slot.vfat" "$d/cmdline.txt" ::cmdline.txt
+  done
+  rm -f "$d/cmdline.txt"
+  install -m 0755 "$root/os/rauc/bundle-hook" "$d/hook"
+  printf '[update]\ncompatible=%s\nversion=%s\n[bundle]\nformat=%s\n[hooks]\nfilename=hook\n[image.rootfs]\nfilename=rootfs.img\n[image.boot]\nfilename=boot-a.vfat\nhooks=install\n' "$3" "$2" "$format" >"$d/manifest.raucm"
   rm -f "$d/root" -r
   rauc bundle --cert="$5" --key="$4" "$d" "$1" >>"$w/bundle.log" 2>&1
   sha256sum "$d/rootfs.img" | cut -d' ' -f1 >"$1.rootfs.sha256"
   stat -c %s "$d/rootfs.img" >"$1.rootfs.size"
 }
 slot_sha() { head -c "$(cat "$2.rootfs.size")" "${dev[$1]}" | sha256sum | cut -d' ' -f1; }
+# The boot slot's cmdline must name its own rootfs and RAUC slot, from the
+# installed version ($2).
+boot_cmdline_ok() { # $1 a|b, $2 version
+  local cmd; cmd=$(mtype -i "${dev[boot-$1]}" ::cmdline.txt 2>/dev/null) || return 1
+  local want
+  for want in "root=PARTLABEL=rootfs-$1" "rauc.slot=${1^^}" "stephania.test=$2"; do
+    case " $cmd " in *" $want "*) ;; *) echo "boot-$1 cmdline lacks $want: $cmd" >&2; return 1 ;; esac
+  done
+}
 
 sqlite3 "$STEPHANIA_CONTROL_DB" 'create table schema_info(version integer); insert into schema_info values(2); create table scenes(id text);'
 firmware_boot normal
@@ -176,7 +200,9 @@ pass "interrupted install leaves A primary and bootable"
 rauc install "$w/v2.raucb" >>"$w/install.log" 2>&1 || fail "install v2"
 [ "$(primary)" = B ] && [ "$(committed)" = 2 ] || fail "after install: primary=$(primary) committed=$(committed)"
 [ "$(slot_sha rootfs-b "$w/v2.raucb")" = "$(cat "$w/v2.raucb.rootfs.sha256")" ] || fail "slot B content"
+boot_cmdline_ok b 2.0.0 || fail "boot-b does not boot rootfs-b as slot B"
 pass "v2 written to inactive B and staged as a one-time trial (A still committed)"
+pass "boot-b received the B boot image (root=PARTLABEL=rootfs-b rauc.slot=B)"
 
 [ -f "$STEPHANIA_SNAPSHOT_DIR/control.db" ] || fail "pre-install snapshot missing"
 firmware_boot tryboot
@@ -189,9 +215,18 @@ firmware_boot normal
 [ "$(db_version)" = 3 ] || fail "committed data lost"
 pass "healthy trial committed with its migrated data; normal boots stay on B"
 
+# Anti-rollback: B now runs 2.0.0; an older signed release is refused.
+make_bundle "$w/v1.raucb" 1.5.0 stephania-pi5 "$w/rel.key" "$w/rel.pem"
+expect_refused "$w/v1.raucb" "older than the installed 2.0.0"
+[ "$(primary)" = B ] && [ ! -f "$STEPHANIA_SNAPSHOT_DIR/control.db" ] || fail "refused downgrade changed state"
+pass "bundle older than the running release refused (anti-rollback)"
+
 make_bundle "$w/v3.raucb" 3.0.0 stephania-pi5 "$w/rel.key" "$w/rel.pem"
 rauc install "$w/v3.raucb" >>"$w/install.log" 2>&1 || fail "install v3"
 [ "$(primary)" = A ] || fail "v3 pending on A"
+boot_cmdline_ok a 3.0.0 || fail "boot-a does not boot rootfs-a as slot A"
+[ "$(stat -c %a "$STEPHANIA_SNAPSHOT_DIR")" = 700 ] && [ "$(stat -c %a "$STEPHANIA_SNAPSHOT_DIR/control.db")" = 600 ] || fail "snapshot readable by others"
+pass "boot-a received the A boot image; the data snapshot is private (0700/0600)"
 kill "${pids[-1]}"; wait "${pids[-1]}" 2>/dev/null || true; rm -f "$w/engine.sock"  # engine broken in v3
 firmware_boot tryboot
 migrate_to 4
@@ -201,6 +236,7 @@ firmware_boot normal
 [ "$(sqlite3 "$STEPHANIA_CONTROL_DB" "select count(*) from scenes where id='from-v4'")" = 0 ] || fail "trial writes survived"
 [ "$("$bootctl" get-current)" = B ] && [ "$(committed)" = 3 ] || fail "rollback after failed health"
 [ "$("$bootctl" get-state A)" = bad ] || fail "A not marked bad"
+[ ! -e "$STEPHANIA_SNAPSHOT_DIR/control.db" ] || fail "snapshot kept after the restore"
 pass "unhealthy trial (engine down) rolled back to B, marked bad, data restored to the pre-update snapshot"
 
 python3 "$root/ci/fake_engine.py" "$w/engine.sock" idle & pids+=($!)

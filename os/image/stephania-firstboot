@@ -3,6 +3,10 @@
 # directory skeleton. Idempotent.
 set -eu
 install -d -m 0755 /data/stephania/config /data/stephania/update /data/stephania/rauc
+# The pre-update snapshot of the control database holds credential hashes:
+# owner-only, also where an older image created it world-readable.
+install -d -m 0700 /data/stephania/update/snapshot
+chmod 0700 /data/stephania/update/snapshot
 if [ ! -s /data/stephania/config/control.env ]; then
   umask 077
   printf 'STEPHANIA_CONTROL_TOKEN=%s\n' "$(openssl rand -hex 32)" >/data/stephania/config/control.env.new

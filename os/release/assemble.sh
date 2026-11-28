@@ -35,11 +35,21 @@ cp "$inst/stephania-os.zip" "$dist/$name.zip"
 # STEPHANIA_RELEASE_XZ_LEVEL lowers the level for CI checks only (default 9).
 xz -T0 "-${STEPHANIA_RELEASE_XZ_LEVEL:-9}" -c --keep "$img/stephania.img" >"$dist/$name.img.xz"
 
-# Signed verity update bundle (os/rauc/system.conf, docs/UPDATE.md).
+# Signed verity update bundle (os/rauc/system.conf, docs/UPDATE.md). Both
+# boot images go in: the bundle hook (os/rauc/bundle-hook) writes the one
+# whose cmdline names the target slot (boot-b boots rootfs-b, rauc.slot=B).
 b=$(mktemp -d)
 cp "$img/rootfs.squashfs" "$b/rootfs.img"
-cp "$img/boot-a.vfat" "$b/boot.vfat"
-printf '[update]\ncompatible=stephania-pi5\nversion=%s\n[bundle]\nformat=verity\n[image.rootfs]\nfilename=rootfs.img\n[image.boot]\nfilename=boot.vfat\n' "$version" >"$b/manifest.raucm"
+for slot in a b; do
+  upper=$(echo "$slot" | tr a-z A-Z)
+  cmd=$(mtype -i "$img/boot-$slot.vfat" ::/cmdline.txt)
+  for want in "root=PARTLABEL=rootfs-$slot" "rauc.slot=$upper"; do
+    case " $cmd " in *" $want "*) ;; *) echo "boot-$slot.vfat cmdline lacks $want: $cmd" >&2; exit 1 ;; esac
+  done
+  cp "$img/boot-$slot.vfat" "$b/"
+done
+install -m 0755 "$repo/os/rauc/bundle-hook" "$b/hook"
+printf '[update]\ncompatible=stephania-pi5\nversion=%s\n[bundle]\nformat=verity\n[hooks]\nfilename=hook\n[image.rootfs]\nfilename=rootfs.img\n[image.boot]\nfilename=boot-a.vfat\nhooks=install\n' "$version" >"$b/manifest.raucm"
 rauc bundle --cert="$rauc_cert" --key="$rauc_key" "$b" "$dist/$name.raucb" >/dev/null
 rm -rf "$b"
 

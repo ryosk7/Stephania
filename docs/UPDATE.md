@@ -18,10 +18,24 @@ firmware and a boot-time confirmation.
 RAUC slot groups pair `boot.N` with `rootfs.N`; bootnames `A`/`B` map to
 firmware partitions 2/3 (`os/rauc/system.conf`).
 
+Each boot partition's `cmdline.txt` names its own pair, so the update
+bundle carries both boot images (`boot-a.vfat`, `boot-b.vfat`). RAUC has
+one image per slot class; the bundle's slot-install hook
+(`os/rauc/bundle-hook`, `[image.boot] hooks=install`) writes the image
+whose cmdline matches the target slot's bootname. A B install therefore
+boots `root=PARTLABEL=rootfs-b rauc.slot=B`. `os/release/assemble.sh`
+refuses to bundle boot images that do not name their slot, and
+`os/release/verify.sh` checks the same in the published bundle.
+
 ## Flow
 1. `stephania-update bundle.raucb` → `rauc install`. The pre-install handler
    (`stephania-bootctl guard`) refuses while the engine reports
-   `streaming_requested` (§8: never update while streaming).
+   `streaming_requested` (§8: never update while streaming), and
+   `stephania-bootctl check-version` refuses a bundle whose `[update] version`
+   is older than `/etc/stephania-version` (anti-rollback: an old, signed but
+   vulnerable release cannot be installed again; the same version can be
+   reinstalled). Going back to an older release needs the installer.
+   Images without a release version (development, CI) have no baseline.
 2. RAUC verifies signature (`check-purpose=codesign`) and `compatible`,
    writes the inactive pair, then calls `set-primary B`. The backend does
    **not** switch permanently: it records B as pending and writes
@@ -37,19 +51,32 @@ firmware partitions 2/3 (`os/rauc/system.conf`).
    a pending trial while booted elsewhere and marks it bad.
 
 6. Persistent data: the pre-install handler also takes an online SQLite
-   backup of the control database (`stephania-bootctl snapshot`). When a trial
-   is rejected (health failure, crash, deadline), `stephania-data-restore.service`
-   restores it on the committed slot **before** the control plane starts
-   (the old version cannot read a schema the trial migrated). A crashed
-   trial is restored once; the later mark-bad does not restore again over
-   data written since. A committed trial discards the snapshot.
+   backup of the control database (`stephania-bootctl snapshot`) into
+   `/data/stephania/update/snapshot` (directory 0700, file 0600: it holds
+   credential hashes). When a trial that booted is rejected (health
+   failure, crash, deadline), `stephania-data-restore.service` restores it
+   on the committed slot **before** the control plane starts (the old
+   version cannot read a schema the trial migrated). It runs on every boot
+   and records on the trial boot that the trial ran; an install followed
+   by a normal reboot never ran the new version and keeps its data. A
+   crashed trial is restored once, also when the later mark-bad fails or
+   never runs; the mark-bad does not restore again over data written
+   since. The restore never follows links in the control plane's
+   directory (new file with O_EXCL|O_NOFOLLOW) and gives the database the
+   state directory's owner, so the control plane can write it. The
+   snapshot is discarded once restored, after a commit, and after a
+   trial rejected without having run.
 7. Deadline and watchdog: `stephania-update-deadline.timer` rejects a trial not
    confirmed 10 min after boot; the hardware watchdog
    (`dtparam=watchdog=on`, `os/systemd/10-stephania-watchdog.conf`) turns a
    hung system into a reset, i.e. a normal boot onto the committed slot.
 
 `set-state X good` commits only while actually booted from X, so nothing
-but a confirmed trial can change the permanent selection. State
+but a confirmed trial can change the permanent selection. RAUC's own D-Bus
+policy lets every local user call every method; the image narrows it
+(`systemd/stephania-maint-rauc.dbus.conf`): other users may only read the
+status, `stephania-maint` may also call `InstallBundle`, and only root may
+`Mark` slots (stephania-bootctl after its health check). State
 (`pending`, bad slots) is a small JSON file on the data partition; every
 file is replaced atomically (write, fsync, rename, fsync dir).
 
@@ -57,8 +84,11 @@ file is replaced atomically (write, fsync, rename, fsync dir).
 Real RAUC v1.15 (built from source) on a 6.8 kernel. Found while setting this up: on kernels whose dm-verity status carries an FEC field (`V -`), RAUC v1.15 refuses to mount verity bundles; the image must pin a kernel/RAUC pair that agree (risk register) with verity bundles on loop devices, test-only
 signing PKI generated per run, emulated tryboot firmware:
 untrusted signer refused; incompatible bundle refused; install refused
-while streaming; RAUC killed mid-write leaves A committed and bootable;
-healthy trial committed; unhealthy trial rolled back and marked bad;
+while streaming; older release refused (anti-rollback); RAUC killed
+mid-write leaves A committed and bootable; each boot slot receives the
+boot image naming its own rootfs and slot (production bundle hook);
+snapshot private (0700/0600); healthy trial committed; unhealthy trial
+rolled back and marked bad;
 crashed trial falls back by the firmware rule; data migrated by a rejected
 or crashed trial restored to the pre-update snapshot (exactly once),
 committed data kept; unconfirmed trial rejected at the deadline. The
