@@ -109,7 +109,10 @@ pub struct V4lVideoSource {
     queue: Arc<SharedVideoQueue>,
 }
 pub struct AlsaAudioSource {
-    rx: Receiver<io::Result<AudioFrame>>,
+    rx: Option<Receiver<io::Result<AudioFrame>>>,
+    stop: Option<SyncSender<()>>,
+    /// Disconnects when the capture thread exits (and has closed the PCM).
+    exited: Receiver<()>,
 }
 
 impl VideoSource for V4lVideoSource {
@@ -124,7 +127,7 @@ impl VideoSource for V4lVideoSource {
 }
 impl AudioSource for AlsaAudioSource {
     fn next_frame(&mut self) -> io::Result<AudioFrame> {
-        recv(&self.rx)
+        recv(self.receiver()?)
     }
 }
 fn recv<T>(rx: &Receiver<io::Result<T>>) -> io::Result<T> {
@@ -187,18 +190,31 @@ fn capture_video_session(settings: &CaptureSettings, queue: &Weak<SharedVideoQue
     let actual = device.set_format(&format)?;
     if actual.width != settings.width || actual.height != settings.height ||
         actual.fourcc != format.fourcc {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!(
+        // Not a configuration error: after a hotplug or source mode change the
+        // device may come back in another mode. The thread keeps reopening
+        // and the publisher reconnects (a retryable error kind).
+        return Err(io::Error::other(format!(
             "V4L2 capture format rejected: requested {}x{} {:?}, negotiated {}x{} {:?} (stride {})",
             settings.width, settings.height, format.fourcc, actual.width, actual.height,
             actual.fourcc, actual.stride,
         )));
     }
     let mut stream = Stream::with_buffers(&device, Type::VideoCapture, 4)?;
+    let required = frame_bytes(settings.preferred_format, actual.stride as usize, actual.height as usize);
+    let mut dropped = 0u64;
     loop {
         let (buffer, meta) = stream.next()?;
         let Some(shared) = queue.upgrade() else { return Ok(()); };
-        let bytes = buffer.get(..meta.bytesused as usize)
-            .ok_or_else(|| invalid("V4L2 bytesused exceeds mapped buffer"))?;
+        // A corrupt or short buffer (USB bandwidth loss, signal glitch) is a
+        // dropped frame, not a reason to end the broadcast.
+        let Some(bytes) = usable_frame(buffer, meta.bytesused as usize,
+            meta.flags.contains(v4l::buffer::Flags::ERROR), required) else {
+            dropped += 1;
+            if dropped.is_power_of_two() {
+                eprintln!("V4L2 capture: dropped {dropped} corrupt or short frame(s)");
+            }
+            continue;
+        };
         let frame = VideoFrame {
             timestamp_us: timestamp_us(),
             sequence: u64::from(meta.sequence),
@@ -214,16 +230,55 @@ fn capture_video_session(settings: &CaptureSettings, queue: &Weak<SharedVideoQue
     }
 }
 
+/// Bytes one captured frame must contain to be converted.
+fn frame_bytes(format: PixelFormat, stride: usize, height: usize) -> Option<usize> {
+    let plane = stride.checked_mul(height)?;
+    match format {
+        PixelFormat::Yuyv422 => Some(plane),
+        PixelFormat::Nv12 => plane.checked_add(stride.checked_mul(height / 2)?),
+        PixelFormat::Mjpeg => Some(1),
+    }
+}
+
+/// The used part of a dequeued buffer, or None when the frame must be dropped.
+fn usable_frame(buffer: &[u8], bytesused: usize, error_flag: bool, required: Option<usize>) -> Option<&[u8]> {
+    let bytes = buffer.get(..bytesused)?;
+    if error_flag || required.is_none_or(|n| bytes.len() < n) { return None; }
+    Some(bytes)
+}
+
 impl AlsaAudioSource {
     pub fn open(settings: CaptureSettings) -> io::Result<Self> {
         settings.validate()?;
         let (tx, rx) = mpsc::sync_channel(settings.frame_queue);
+        // `stop` disconnects when the source is dropped; `exited` disconnects
+        // once the thread has returned and closed the PCM.
+        let (stop, stopped) = mpsc::sync_channel::<()>(0);
+        let (exit_tx, exited) = mpsc::sync_channel::<()>(0);
         thread::Builder::new().name("stephania-alsa".into()).spawn(move || {
+            let _exit = exit_tx;
             while !capture_audio(&settings, &tx) {
-                thread::sleep(Duration::from_secs(2));
+                if matches!(stopped.recv_timeout(Duration::from_secs(2)), Err(mpsc::RecvTimeoutError::Disconnected)) {
+                    return;
+                }
             }
         })?;
-        Ok(Self { rx })
+        Ok(Self { rx: Some(rx), stop: Some(stop), exited })
+    }
+
+    fn receiver(&self) -> io::Result<&Receiver<io::Result<AudioFrame>>> {
+        self.rx.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "capture worker exited"))
+    }
+}
+
+/// Dropping a source stops its capture thread and waits briefly (about one
+/// period) for it to close the PCM, so that a source reopened on the same
+/// exclusive hw device does not fail with EBUSY.
+impl Drop for AlsaAudioSource {
+    fn drop(&mut self) {
+        self.rx = None;
+        self.stop = None;
+        let _ = self.exited.recv_timeout(Duration::from_millis(250));
     }
 }
 
@@ -252,6 +307,7 @@ fn capture_audio_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
         return Err(invalid("ALSA device did not support exact capture sample rate"));
     }
     let mut samples = vec![0i16; settings.audio_period_frames * usize::from(settings.audio_channels)];
+    let mut overflow = 0u64;
     loop {
         let frames = match pcm.io_i16().map_err(audio_error)?.readi(&mut samples) {
             Ok(n) => n,
@@ -273,12 +329,14 @@ fn capture_audio_session(settings: &CaptureSettings, tx: &SyncSender<io::Result<
             channels: settings.audio_channels,
             samples: samples[..len].to_vec(),
         };
-        // Audio should not be silently dropped: errors are surfaced to the
-        // owner when backpressure makes the capture timeline unreliable.
+        // Backpressure (a stalled publisher loop) drops this period and keeps
+        // the device running: the mixer fills the gap on its timeline. Closing
+        // and reopening the PCM here would silence the input for seconds.
         match tx.try_send(Ok(frame)) {
-            Ok(()) => {}
+            Ok(()) => { overflow = 0; }
             Err(TrySendError::Full(_)) => {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, "audio capture queue overflow"));
+                overflow += 1;
+                if overflow == 1 { eprintln!("ALSA capture: queue full, dropping periods until the publisher catches up"); }
             }
             Err(TrySendError::Disconnected(_)) => return Ok(()),
         }
@@ -304,7 +362,7 @@ impl V4lVideoSource {
 }
 impl AlsaAudioSource {
     pub fn try_next_frame(&self) -> io::Result<Option<AudioFrame>> {
-        poll(&self.rx)
+        poll(self.receiver()?)
     }
 }
 fn poll<T>(rx: &Receiver<io::Result<T>>) -> io::Result<Option<T>> {
@@ -364,6 +422,18 @@ mod tests {
         assert!(q.pop_latest(70_000, 20_000).is_err());
         assert!(q.pop_latest(70_000, 20_000).unwrap().is_none());
         assert!(q.spare.len() <= q.capacity);
+    }
+    #[test]
+    fn short_or_corrupt_capture_buffers_are_dropped() {
+        let required = frame_bytes(PixelFormat::Yuyv422, 8, 2);
+        assert_eq!(required, Some(16));
+        assert_eq!(frame_bytes(PixelFormat::Nv12, 4, 2), Some(12));
+        let buffer = [7u8; 32];
+        assert_eq!(usable_frame(&buffer, 16, false, required), Some(&buffer[..16]));
+        assert_eq!(usable_frame(&buffer, 15, false, required), None, "short frame");
+        assert_eq!(usable_frame(&buffer, 16, true, required), None, "V4L2_BUF_FLAG_ERROR");
+        assert_eq!(usable_frame(&buffer, 33, false, required), None, "bytesused beyond the mapping");
+        assert_eq!(usable_frame(&buffer, 16, false, None), None);
     }
     #[test]
     fn default_settings_have_bounded_buffers() {

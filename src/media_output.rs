@@ -7,7 +7,9 @@
 use crate::session::{PublishSession, State};
 use std::io::{self, Read, Write};
 
-const MAX_MESSAGE: usize = 1024 * 1024;
+/// RTMP message lengths are 24-bit. Encoder VBV (2 s of the configured
+/// bitrate, at most 30 Mbps = 7.5 MB) keeps legitimate access units below it.
+pub const MAX_MESSAGE: usize = crate::session::MAX_MEDIA_MESSAGE;
 
 pub struct EncodedPublisher<T: Read + Write> {
     session: PublishSession<T>,
@@ -228,6 +230,17 @@ mod tests {
         p.aac_frame(21,&[0x12,0x34]).unwrap();
         assert!(p.aac_frame(20,&[1]).is_err());
         assert!(p.aac_frame(22,&[0xff,0xf1,0x00]).is_err());
+    }
+
+    #[test]
+    fn keyframe_over_one_mib_is_sent() {
+        let mut p=EncodedPublisher::new(mock_session()).unwrap();
+        p.avc_configuration(0,&[0x67,0x42,0,0x1f],&[0x68,1]).unwrap();
+        let mut idr=vec![0x55u8; 1_500_000];
+        idr[0]=0x65;
+        p.avc_frame(33,0,true,&[&idr]).unwrap();
+        let too_big=vec![0x41u8; MAX_MESSAGE];
+        assert!(p.avc_frame(66,0,false,&[&too_big]).is_err());
     }
 
     #[test]

@@ -330,4 +330,21 @@ mod tests {
         assert!(out[0].block.pts_samples > last + RESYNC_SAMPLES);
         assert_eq!((out[0].block.pts_samples - 4800) % BLOCK as u64, 0);
     }
+
+    /// The AAC encoder must accept the mixer's timeline across a resync;
+    /// otherwise a short publisher stall ends the broadcast.
+    #[cfg(feature = "native-aac")]
+    #[test]
+    fn aac_encoder_accepts_blocks_across_a_resync() {
+        let mut m = AudioMixer::new(40);
+        let mut aac = crate::native_aac::AacBackend::new(128).unwrap();
+        let mut resynced = false;
+        for now in [100_000, 200_000, 2_500_000, 2_600_000] {
+            let (p, out) = poll(&mut m, now, [1.0, 0.0]);
+            resynced |= p.resynced;
+            for mixed in out { aac.encode(&mixed.block).unwrap(); }
+        }
+        assert!(resynced);
+        aac.finish().unwrap();
+    }
 }
