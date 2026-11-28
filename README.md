@@ -23,9 +23,8 @@ The name comes from the plant genus *Stephania* and stands for
 
 > **Status: in development.** The engine, management plane, Studio, phone
 > app, OS image and installer are implemented and tested in CI (QEMU and
-> ARM64 runners). Physical Raspberry Pi 5 qualification — real HDMI capture,
-> thermals, power and multi-hour endurance — is still open; see
-> [Validation](#validation). Release status of every part is tracked in
+> ARM64 runners); see [Validation](#validation). Release status of every
+> part is tracked in
 > [docs/MASTER-ARCHITECTURE.md](docs/MASTER-ARCHITECTURE.md).
 
 ## How it works
@@ -111,9 +110,7 @@ CI runs unit and contract tests across Rust, Ruby and TypeScript;
 end-to-end tests of BLE provisioning, Wi-Fi, LAN TLS, the Studio, phone
 WebRTC, the RAM installer (with power cuts at every stage) and A/B
 updates; and native encoding and RTMPS transport on ARM64 runners
-([ci/README.md](ci/README.md)). ARM64 CI is not a Raspberry Pi 5:
-physical HDMI/ALSA capture, thermal behaviour, power and long-run
-reliability still need qualification ([docs/QUALIFICATION.md](docs/QUALIFICATION.md)).
+([ci/README.md](ci/README.md)).
 `native_worker_running` reports worker activity, never confirmed YouTube
 ingest.
 
