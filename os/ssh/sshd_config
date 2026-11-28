@@ -1,0 +1,30 @@
+# sshd for maintenance windows only (docs/MAINTENANCE.md). Started and
+# stopped by stephania-maint through stephania-sshd.service; never enabled.
+# Logins need a short-lived certificate from the device's user CA.
+Port 22
+HostKey /var/lib/stephania/maint/ssh_host_ed25519_key
+HostCertificate /var/lib/stephania/maint/ssh_host_ed25519_key-cert.pub
+TrustedUserCAKeys /var/lib/stephania/maint/user_ca.pub
+# maint accepts the "maint" principal, root only "maint-root".
+AuthorizedPrincipalsFile /etc/stephania/ssh_principals/%u
+AuthorizedKeysFile none
+AuthenticationMethods publickey
+PubkeyAcceptedAlgorithms ssh-ed25519-cert-v01@openssh.com
+HostKeyAlgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+AllowUsers maint root
+DisableForwarding yes
+PermitUserRC no
+PermitUserEnvironment no
+MaxAuthTries 2
+MaxSessions 4
+LoginGraceTime 20
+ClientAliveInterval 30
+ClientAliveCountMax 4
+# steph reads the session's certificate (key ID) for its audit lines.
+ExposeAuthInfo yes
+UsePAM yes
+PrintMotd no
+LogLevel VERBOSE

@@ -1,0 +1,41 @@
+[Unit]
+Description=Stephania maintenance windows and SSH certificates (docs/MAINTENANCE.md)
+After=stephania-pki.service
+
+[Service]
+Type=simple
+User=stephania-maint
+Group=stephania-maint
+ExecStart=/usr/local/bin/stephania-maint
+Environment=STEPHANIA_MAINT_DIR=/var/lib/stephania/maint
+Environment=STEPHANIA_MAINT_SOCKET=/run/stephania-maint/maint.sock
+Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
+# Only the control plane (stephania-control, uid 852) besides root.
+Environment=STEPHANIA_IPC_ALLOWED_UIDS=852
+ReadWritePaths=/var/lib/stephania/maint
+RuntimeDirectory=stephania-maint
+# 0750 + group stephania-maint (control is a member) reaches the 0660 socket.
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=3
+# systemctl start/stop of stephania-sshd goes through polkit
+# (stephania-maint.polkit.rules), so no privileges are needed here.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+UMask=0077
+MemoryMax=32M
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

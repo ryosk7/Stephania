@@ -81,6 +81,24 @@ jobs:
       - name: A/B update end to end (verity bundles)
         run: sudo env PATH="$PATH" ci/update-e2e.sh target/debug/stephania-bootctl
 
+  # Maintenance SSH (docs/MAINTENANCE.md): stephania-maint with the real
+  # OpenSSH server and client, unprivileged. The image wiring (units,
+  # polkit, nftables) is checked by the QEMU smoke test.
+  maint-ssh-e2e:
+    needs: changes
+    if: needs.changes.outputs.os == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: maint-2404
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || { sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server >/dev/null; }
+      - run: cargo build --locked --no-default-features --bin stephania-maint
+      - run: ci/maint-ssh-e2e.sh target/debug/stephania-maint
+
   # PR image check: the same image recipe for x86_64, booted with KVM
   # (seconds instead of minutes of arm64 emulation), with binaries built
   # for Debian trixie like the image (ci/build-device-bins.sh). One job
@@ -237,7 +255,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl && cargo build --release --locked -p stephania-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint && cargo build --release --locked -p stephania-phone
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -291,7 +309,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl && cargo build --release --locked -p stephania-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint && cargo build --release --locked -p stephania-phone
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

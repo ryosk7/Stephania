@@ -6,7 +6,7 @@
 set -Eeuo pipefail
 out=${1:-device-bins}
 mkdir -p "$out"
-cargo build --locked --bin stephania --bin stephania-pki --bin stephania-bootctl
+cargo build --locked --bin stephania --bin stephania-pki --bin stephania-bootctl --bin stephania-maint
 cargo build --locked -p stephania-phone
 cp target/debug/stephania target/debug/stephania-pki target/debug/stephania-bootctl target/debug/stephania-phone "$out/"
 cargo build --locked --no-default-features --features ci-virtual,networkmanager --bin stephania-provision

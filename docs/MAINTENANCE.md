@@ -1,6 +1,11 @@
 # Maintenance shell access (design)
 
-Status: design, not implemented. Nothing here ships in the image yet.
+Status: step 1 of the [plan](#plan) is implemented: `stephania-maint`
+(`src/maint.rs`, `src/sshcert.rs`, `src/totp.rs`), `stephania-sshd`, the
+polkit rule and the nftables table are in the image, tested by
+`ci/maint-ssh-e2e.sh` (real OpenSSH) and the QEMU smoke test. The control
+endpoints, Connect, `stephctl` and `steph` are not built yet, so nothing
+outside the device can open a window.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as

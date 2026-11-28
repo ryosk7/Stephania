@@ -13,7 +13,7 @@ cp target/debug/stephania "$out/stephania"
 cargo build --locked --no-default-features --bin stephania
 cp target/debug/stephania "$out/stephania-diag"
 # Device core with both the virtual and the NetworkManager backend.
-cargo build --locked --no-default-features --features ci-virtual,networkmanager --bin stephania-provision --bin stephania-pki --bin stephania-bootctl
+cargo build --locked --no-default-features --features ci-virtual,networkmanager --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint
 cp target/debug/stephania-provision target/debug/stephania-pki target/debug/stephania-bootctl "$out/"
 cargo build --locked -p stephania-phone
 cp target/debug/stephania-phone "$out/"
