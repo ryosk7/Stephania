@@ -56,6 +56,26 @@ class LanAccessTest < Minitest::Test
     assert_equal 403, last_response.status, "plain HTTP on the LAN is refused"
   end
 
+  def test_ca_certificate_in_der_hashes_to_the_pinned_fingerprint
+    key = OpenSSL::PKey::EC.generate("prime256v1")
+    cert = OpenSSL::X509::Certificate.new
+    cert.version = 2
+    cert.serial = 1
+    cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=Stephania device CA stephania-ab12")
+    cert.public_key = key
+    cert.not_before = Time.now - 60
+    cert.not_after = Time.now + 3600
+    cert.sign(key, OpenSSL::Digest.new("SHA256"))
+    File.write(File.join(@dir, "ca.pem"), cert.to_pem)
+    get "/ca.crt", {}, {"HTTP_HOST" => "stephania-ab12.local", "HTTPS" => "on", "rack.url_scheme" => "https"}
+    assert_equal 200, last_response.status
+    assert_equal "application/pkix-cert", last_response.content_type
+    assert_match(/stephania-ca\.crt/, last_response.headers["Content-Disposition"])
+    assert_equal OpenSSL::Digest::SHA256.hexdigest(cert.to_der), OpenSSL::Digest::SHA256.hexdigest(last_response.body)
+    get "/ca.crt", {}, {"HTTP_HOST" => "stephania-ab12.local"}
+    assert_equal 403, last_response.status, "plain HTTP on the LAN is refused"
+  end
+
   def test_lan_requires_tls_certified_host_and_issued_token
     assert_equal [403, "forbidden_host"], call(host: "stephania-ab12.local", https: false, token: ISSUED)
     assert_equal [403, "forbidden_host"], call(host: "evil.example", https: true, token: ISSUED)

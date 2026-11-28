@@ -18,12 +18,12 @@ loop=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print
 export STEPHANIA_PKI_DIR=$work/pki
 mkdir -p "$work/tokens" "$work/cred"
 
-set +e; "$target/stephania-pki" ensure --host stephania-ci --ip 127.0.0.1 --ip 8.8.8.8 --port "$port" >"$work/pki.json"; rc=$?; set -e
+set +e; "$target/stephania-pki" ensure --test-loopback --host stephania-ci --ip 127.0.0.1 --ip 8.8.8.8 --port "$port" >"$work/pki.json"; rc=$?; set -e
 [ "$rc" = 10 ] || fail "first ensure must issue (exit $rc)"
 python3 - "$work/pki.json" <<'PY' || fail "endpoint json"
 import json,sys; e=json.load(open(sys.argv[1]))["endpoint"]; assert e["ips"]==["127.0.0.1"], e
 PY
-"$target/stephania-pki" ensure --host stephania-ci --ip 127.0.0.1 --port "$port" >/dev/null || fail "second ensure must be unchanged (exit $?)"
+"$target/stephania-pki" ensure --test-loopback --host stephania-ci --ip 127.0.0.1 --port "$port" >/dev/null || fail "second ensure must be unchanged (exit $?)"
 pass "PKI issued once, public address excluded"
 openssl verify -CAfile "$work/pki/ca.pem" -verify_hostname stephania-ci.local <(awk '/BEGIN/{n++} n==1' "$work/pki/server.pem") >/dev/null || fail "openssl chain"
 pass "openssl verifies leaf for stephania-ci.local"

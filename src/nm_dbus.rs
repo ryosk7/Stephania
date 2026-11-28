@@ -5,10 +5,17 @@
 //! its own after a reboot or an access-point outage.
 //!
 //! Join semantics, chosen so a failed attempt never breaks a working setup:
-//! 1. add a fresh profile `stephania-<hex ssid>` (autoconnect, DHCP);
+//! 1. add a fresh profile `stephania-<hex ssid>` (secured) or
+//!    `stephania-<hex ssid>-open` (autoconnect, DHCP);
 //! 2. activate it on the Wi-Fi device and wait for ACTIVATED (≤ 35 s);
-//! 3. on success delete older profiles with the same id; on failure delete
-//!    only the new profile, leaving any previous profile untouched.
+//! 3. on success delete older profiles with the same id (and, for a secured
+//!    join, the open profile for that SSID); on failure delete only the new
+//!    profile, leaving any previous profile untouched. Joining an open
+//!    network therefore never deletes the secured profile of the same name.
+//!
+//! "wpa-psk" in the BLE protocol means a passphrase network: WPA2-Personal
+//! or WPA3-Personal. When no access point with the SSID offers PSK, the
+//! profile uses key-mgmt `sae` (WPA3-only networks).
 //!
 //! The PSK crosses only the local system bus to NetworkManager and is never
 //! logged; errors are reduced to fixed strings.
@@ -51,6 +58,14 @@ pub fn security_name(flags: u32, wpa_flags: u32, rsn_flags: u32) -> &'static str
     }
 }
 
+/// Key management for a passphrase network, from the access points that
+/// carry its SSID: `wpa-psk` when any offers PSK (WPA2 or WPA2/WPA3
+/// transition), `sae` when they offer only SAE (WPA3-Personal only).
+pub fn passphrase_key_mgmt(aps: &[(u32, u32)]) -> &'static str {
+    let any = |bit| aps.iter().any(|(wpa, rsn)| (wpa | rsn) & bit != 0);
+    if !any(SEC_KEY_MGMT_PSK) && any(SEC_KEY_MGMT_SAE) { "sae" } else { "wpa-psk" }
+}
+
 /// NetworkManager signal strength (0–100 %) to an approximate dBm.
 pub fn strength_to_rssi(strength: u8) -> i32 {
     i32::from(strength.min(100)) / 2 - 100
@@ -58,6 +73,19 @@ pub fn strength_to_rssi(strength: u8) -> i32 {
 
 pub fn profile_id(ssid: &[u8]) -> String {
     format!("stephania-{}", hex(ssid))
+}
+
+/// Open networks get their own profile, so joining one never replaces a
+/// secured profile for the same name.
+pub fn open_profile_id(ssid: &[u8]) -> String {
+    format!("{}-open", profile_id(ssid))
+}
+
+fn profile_id_for(config: &WifiConfiguration) -> String {
+    match config.security {
+        WifiSecurity::Open => open_profile_id(&config.ssid),
+        WifiSecurity::WpaPsk(_) => profile_id(&config.ssid),
+    }
 }
 
 fn uuid_v4() -> String {
@@ -72,10 +100,11 @@ fn uuid_v4() -> String {
 type Settings<'a> = HashMap<&'static str, HashMap<&'static str, Value<'a>>>;
 
 /// Connection settings for AddConnection. Public for unit tests.
-pub fn connection_settings<'a>(config: &'a WifiConfiguration, interface: &'a str, uuid: &'a str) -> Settings<'a> {
+/// `key_mgmt` applies to passphrase networks ([`passphrase_key_mgmt`]).
+pub fn connection_settings<'a>(config: &'a WifiConfiguration, interface: &'a str, uuid: &'a str, key_mgmt: &'static str) -> Settings<'a> {
     let mut s: Settings = HashMap::new();
     s.insert("connection", HashMap::from([
-        ("id", Value::from(profile_id(&config.ssid))),
+        ("id", Value::from(profile_id_for(config))),
         ("uuid", Value::from(uuid)),
         ("type", Value::from("802-11-wireless")),
         ("interface-name", Value::from(interface)),
@@ -88,13 +117,21 @@ pub fn connection_settings<'a>(config: &'a WifiConfiguration, interface: &'a str
     if let WifiSecurity::WpaPsk(psk) = &config.security {
         // psk-flags 0 (default) = system-owned: stored by NM, root-only.
         s.insert("802-11-wireless-security", HashMap::from([
-            ("key-mgmt", Value::from("wpa-psk")),
+            ("key-mgmt", Value::from(key_mgmt)),
             ("psk", Value::from(psk.as_str())),
         ]));
     }
     s.insert("ipv4", HashMap::from([("method", Value::from("auto"))]));
     s.insert("ipv6", HashMap::from([("method", Value::from("auto"))]));
     s
+}
+
+struct AccessPoint {
+    ssid: Vec<u8>,
+    strength: u8,
+    flags: u32,
+    wpa: u32,
+    rsn: u32,
 }
 
 pub struct NetworkManagerDbus {
@@ -153,6 +190,23 @@ impl NetworkManagerDbus {
         }
     }
 
+    fn access_points(&self, device: &OwnedObjectPath) -> Result<Vec<AccessPoint>, String> {
+        let wifi = proxy(&self.conn, device.as_str(), "org.freedesktop.NetworkManager.Device.Wireless")?;
+        let aps: Vec<OwnedObjectPath> = wifi.call("GetAllAccessPoints", &()).map_err(|_| "GetAllAccessPoints failed")?;
+        let mut out = Vec::new();
+        for ap in aps {
+            let p = proxy(&self.conn, ap.as_str(), "org.freedesktop.NetworkManager.AccessPoint")?;
+            out.push(AccessPoint {
+                ssid: p.get_property("Ssid").unwrap_or_default(),
+                strength: p.get_property("Strength").unwrap_or(0),
+                flags: p.get_property("Flags").unwrap_or(0),
+                wpa: p.get_property("WpaFlags").unwrap_or(0),
+                rsn: p.get_property("RsnFlags").unwrap_or(0),
+            });
+        }
+        Ok(out)
+    }
+
     fn wait_active(&self, active: &OwnedObjectPath) -> Result<(), String> {
         let deadline = Instant::now() + JOIN_TIMEOUT;
         while Instant::now() < deadline {
@@ -181,29 +235,32 @@ impl NetworkBackend for NetworkManagerDbus {
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
-        let aps: Vec<OwnedObjectPath> = wifi.call("GetAllAccessPoints", &()).map_err(|_| "GetAllAccessPoints failed")?;
+        drop(wifi);
         let mut out = Vec::new();
-        for ap in aps {
-            let p = proxy(&self.conn, ap.as_str(), "org.freedesktop.NetworkManager.AccessPoint")?;
-            let ssid: Vec<u8> = p.get_property("Ssid").unwrap_or_default();
-            let Ok(ssid) = String::from_utf8(ssid) else { continue }; // non-UTF-8 SSIDs cannot be represented in JSON text
-            let strength: u8 = p.get_property("Strength").unwrap_or(0);
-            let flags: u32 = p.get_property("Flags").unwrap_or(0);
-            let wpa: u32 = p.get_property("WpaFlags").unwrap_or(0);
-            let rsn: u32 = p.get_property("RsnFlags").unwrap_or(0);
-            out.push(ScanResult { ssid, rssi: strength_to_rssi(strength), security: security_name(flags, wpa, rsn).into() });
+        for ap in self.access_points(&device)? {
+            let Ok(ssid) = String::from_utf8(ap.ssid) else { continue }; // non-UTF-8 SSIDs cannot be represented in JSON text
+            out.push(ScanResult { ssid, rssi: strength_to_rssi(ap.strength), security: security_name(ap.flags, ap.wpa, ap.rsn).into() });
         }
         Ok(out)
     }
 
     fn connect(&mut self, config: &WifiConfiguration) -> Result<(), String> {
         let device = self.device()?;
-        let id = profile_id(&config.ssid);
-        let previous = self.profiles_with_id(&id)?;
+        let id = profile_id_for(config);
+        let mut previous = self.profiles_with_id(&id)?;
+        let key_mgmt = match config.security {
+            WifiSecurity::Open => "wpa-psk", // unused
+            WifiSecurity::WpaPsk(_) => {
+                // A secured join supersedes an open profile for the same name.
+                previous.extend(self.profiles_with_id(&open_profile_id(&config.ssid))?);
+                let aps = self.access_points(&device).unwrap_or_default();
+                passphrase_key_mgmt(&aps.iter().filter(|a| a.ssid == config.ssid).map(|a| (a.wpa, a.rsn)).collect::<Vec<_>>())
+            }
+        };
         let uuid = uuid_v4();
         let settings_proxy = proxy(&self.conn, "/org/freedesktop/NetworkManager/Settings", "org.freedesktop.NetworkManager.Settings")?;
         let added: OwnedObjectPath = settings_proxy
-            .call("AddConnection", &(connection_settings(config, &self.interface, &uuid),))
+            .call("AddConnection", &(connection_settings(config, &self.interface, &uuid, key_mgmt),))
             .map_err(|_| "AddConnection failed")?;
         let nm = proxy(&self.conn, NM_PATH, NM)?;
         let root = OwnedObjectPath::try_from("/").expect("root path");
@@ -254,14 +311,27 @@ mod tests {
     #[test]
     fn settings_store_psk_system_owned_and_autoconnect() {
         let cfg = WifiConfiguration { ssid: b"LT Hall".to_vec(), security: WifiSecurity::WpaPsk("correct horse".into()) };
-        let s = connection_settings(&cfg, "wlan0", "u");
+        let s = connection_settings(&cfg, "wlan0", "u", "wpa-psk");
         assert_eq!(s["connection"]["id"], Value::from("stephania-4c542048616c6c"));
+        assert_eq!(s["802-11-wireless-security"]["key-mgmt"], Value::from("wpa-psk"));
         assert_eq!(s["connection"]["autoconnect"], Value::from(true));
         assert_eq!(s["802-11-wireless"]["ssid"], Value::from(b"LT Hall".to_vec()));
         assert_eq!(s["802-11-wireless-security"]["psk"], Value::from("correct horse"));
         assert!(!s["802-11-wireless-security"].contains_key("psk-flags"), "default 0 = stored by NM");
         let open = WifiConfiguration { ssid: b"Open".to_vec(), security: WifiSecurity::Open };
-        assert!(!connection_settings(&open, "wlan0", "u").contains_key("802-11-wireless-security"));
+        let o = connection_settings(&open, "wlan0", "u", "wpa-psk");
+        assert!(!o.contains_key("802-11-wireless-security"));
+        assert_eq!(o["connection"]["id"], Value::from("stephania-4f70656e-open"), "never the secured profile's id");
+        let sae = connection_settings(&cfg, "wlan0", "u", "sae");
+        assert_eq!(sae["802-11-wireless-security"]["key-mgmt"], Value::from("sae"));
+    }
+
+    #[test]
+    fn wpa3_only_networks_use_sae() {
+        assert_eq!(passphrase_key_mgmt(&[(0, SEC_KEY_MGMT_SAE)]), "sae");
+        assert_eq!(passphrase_key_mgmt(&[(0, SEC_KEY_MGMT_SAE | SEC_KEY_MGMT_PSK)]), "wpa-psk", "transition mode");
+        assert_eq!(passphrase_key_mgmt(&[(0, SEC_KEY_MGMT_SAE), (SEC_KEY_MGMT_PSK, 0)]), "wpa-psk");
+        assert_eq!(passphrase_key_mgmt(&[]), "wpa-psk");
     }
 
     #[test]

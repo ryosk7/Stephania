@@ -5,6 +5,9 @@
 // password is sent the person confirms the device: Bluetooth cannot prove
 // that the device answering is the one in front of them
 // (contracts/ble-protocol.md, "Device identity").
+// The device lists each name once per security type. An open network that
+// shares its name with a secured one may be an impostor: it cannot be
+// picked here, and the device refuses it too (`weaker_security`).
 import {router} from 'expo-router';
 import {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, View} from 'react-native';
@@ -12,9 +15,9 @@ import type {ScanNetwork} from '@stephania/provisioning-client';
 import {Field, Footnote, Icon, IconButton, List, Notice, PrimaryButton, Screen, SectionHeading, Sheet, StatusView, Toggle, TopBar, useColor} from '@/shared/ui';
 import {describeSetupError} from './errors';
 import {finishSetup} from './flow';
+import {openTwin, securityLabel, supported} from './networks';
 import {activeSession} from './state';
 
-const supported = (n: ScanNetwork) => n.security === 'open' || n.security === 'wpa-psk';
 const bars = (rssi: number): 'signal0' | 'signal1' | 'signal2' | 'signal3' => (rssi > -60 ? 'signal3' : rssi > -72 ? 'signal2' : rssi > -82 ? 'signal1' : 'signal0');
 
 export function WifiScreen() {
@@ -81,15 +84,17 @@ export function WifiScreen() {
             ? <List.Row title="Scanning…" accessory={<ActivityIndicator color={spinner} />} />
             : networks.length === 0
               ? <List.Row title="No networks found" />
-              : networks.map(n => (
-                <List.Row key={n.ssid} title={n.ssid} detail={supported(n) ? undefined : 'Not supported'}
-                  accessibilityLabel={`${n.ssid}${n.security !== 'open' ? ', secured' : ''}${supported(n) ? '' : ', security not supported'}`}
+              : networks.map(n => {
+                const joinable = supported(n) && !openTwin(n, networks);
+                const label = securityLabel(n, networks);
+                return <List.Row key={`${n.ssid}|${n.security}`} title={n.ssid} detail={label}
+                  accessibilityLabel={`${n.ssid}, ${label ?? 'secured with a password'}`}
                   accessory={<View className="flex-row items-center gap-2">
-                    {n.security !== 'open' && <Icon name="lock" size={14} color={supported(n) ? 'text' : 'tertiary'} />}
-                    <Icon name={bars(n.rssi)} size={16} color={supported(n) ? 'text' : 'tertiary'} />
+                    {n.security !== 'open' && <Icon name="lock" size={14} color={joinable ? 'text' : 'tertiary'} />}
+                    <Icon name={bars(n.rssi)} size={16} color={joinable ? 'text' : 'tertiary'} />
                   </View>}
-                  disabled={!supported(n)} onPress={() => { setError(''); setPsk(''); setPicked(n); }} />
-              ))}
+                  disabled={!joinable} onPress={() => { setError(''); setPsk(''); setPicked(n); }} />;
+              })}
         </List.Section>
       </View>
       {scanError !== '' && <Notice tone="warning">{scanError}</Notice>}
@@ -99,6 +104,9 @@ export function WifiScreen() {
 
       <Sheet visible={!!picked} icon="wifi" title={picked?.ssid} subtitle={`${active.name} joins this network`}
         onClose={() => { if (!busy) setPicked(undefined); }}>
+        {picked?.security === 'open' && (
+          <Notice tone="warning">This network is open: it has no password and is not encrypted, and anyone nearby can create a network with this name. Prefer a network with a password.</Notice>
+        )}
         {picked?.security === 'wpa-psk' && (
           <Field label={`Password for ${picked.ssid}`} icon="lock" secure autoFocus value={psk} onChangeText={setPsk}
             placeholder="At least 8 characters" returnKeyType="join" onSubmitEditing={() => canJoin && void join()} />

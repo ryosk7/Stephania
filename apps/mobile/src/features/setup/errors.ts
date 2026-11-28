@@ -15,6 +15,7 @@ export function describeSetupError(e: unknown): string {
     bad_proof: 'The Stephania device did not accept this phone\'s key. If another phone set it up, write the microSD card again to start over.',
     owner_key_exists: 'This phone already owns a device with this Bluetooth identity, but it now says it is not set up. That is expected only if you wrote its microSD card again; otherwise another device may be imitating it.',
     join_failed: 'Could not join the Wi-Fi network. Check the network name and password.',
+    weaker_security: 'A network with this name also requires a password, so this open one may be an impostor. Choose the secured network.',
     response_timeout: 'No response from the Stephania device. Move closer and try again.',
     bluetooth_off: 'Turn Bluetooth on.',
     storage_failed: 'The Stephania device could not save. Check its SD card.',

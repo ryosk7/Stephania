@@ -175,6 +175,9 @@ pub struct RpcService<N: NetworkBackend, S: OwnershipStore> {
     replay: Vec<Replay>,
     network_state: NetworkState,
     network_error: Option<&'static str>,
+    /// SSIDs that the last scan saw with any security, so an open network
+    /// with the same name (an evil twin) is not joined (`weaker_security`).
+    secured_ssids: Vec<String>,
     pub model: String,
     pub firmware: String,
     management: Option<Management>,
@@ -253,6 +256,7 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
             replay: Vec::new(),
             network_state: NetworkState::Disconnected,
             network_error: None,
+            secured_ssids: Vec::new(),
             model: "stephania-pi5".into(),
             firmware: env!("CARGO_PKG_VERSION").into(),
             management: None,
@@ -450,9 +454,11 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
         match result {
             Ok(mut list) => {
                 list.retain(|n| !n.ssid.is_empty() && n.ssid.len() <= 32 && !n.ssid.chars().any(char::is_control));
-                // Keep the strongest entry per SSID, then order by signal.
-                list.sort_by(|a, b| a.ssid.cmp(&b.ssid).then_with(|| b.rssi.cmp(&a.rssi)));
-                list.dedup_by(|later, kept| later.ssid == kept.ssid);
+                // Keep the strongest entry per SSID and security, so an open
+                // access point cannot hide a secured one with the same name.
+                list.sort_by(|a, b| (&a.ssid, &a.security).cmp(&(&b.ssid, &b.security)).then_with(|| b.rssi.cmp(&a.rssi)));
+                list.dedup_by(|later, kept| later.ssid == kept.ssid && later.security == kept.security);
+                self.secured_ssids = list.iter().filter(|n| n.security != "open").map(|n| n.ssid.clone()).collect();
                 list.sort_by(|a, b| b.rssi.cmp(&a.rssi).then_with(|| a.ssid.cmp(&b.ssid)));
                 list.truncate(MAX_SCAN_RESULTS);
                 let networks: Vec<Value> = list.iter().map(|n| json!({"ssid": n.ssid, "rssi": n.rssi, "security": n.security})).collect();
@@ -464,6 +470,9 @@ impl<N: NetworkBackend, S: OwnershipStore> RpcService<N, S> {
 
     fn wifi_configure(&mut self, plain: &[u8]) -> Result<Value, RpcError> {
         let config = parse_wifi_configuration(plain).map_err(RpcError)?;
+        if matches!(config.security, crate::provisioning::WifiSecurity::Open) && self.secured_ssids.iter().any(|s| s.as_bytes() == config.ssid.as_slice()) {
+            return Err(RpcError("weaker_security"));
+        }
         self.network_state = NetworkState::Connecting;
         self.network_error = None;
         // Backend errors are reduced to a fixed code so no credential or
@@ -589,6 +598,25 @@ mod tests {
         s.network.wired = true;
         assert_eq!(p.send(&mut s, json!({"op":"network.status"}), now)["wired"], true);
         assert_eq!(p.send(&mut s, json!({"op":"management.endpoint"}), now), json!({"available": false}));
+    }
+
+    #[test]
+    fn open_twin_of_a_secured_network_is_listed_separately_and_refused() {
+        let now = Instant::now();
+        let net = |ssid: &str, rssi, security: &str| ScanResult { ssid: ssid.into(), rssi, security: security.into() };
+        let networks = vec![net("Hall", -70, "wpa-psk"), net("Hall", -40, "open"), net("Hall", -80, "wpa-psk"), net("Cafe", -60, "open")];
+        let mut s = svc(FakeNetwork { networks, ..Default::default() });
+        let mut p = Phone::new("p");
+        let key = p.claim(&mut s, now);
+        let r = p.scan(&mut s, &key, now);
+        assert_eq!(r["networks"], json!([
+            {"ssid":"Hall","rssi":-40,"security":"open"}, {"ssid":"Cafe","rssi":-60,"security":"open"}, {"ssid":"Hall","rssi":-70,"security":"wpa-psk"},
+        ]));
+        assert_eq!(p.configure(&mut s, &key, br#"{"ssid":"Hall","security":"open"}"#, now), json!({"error":"weaker_security"}));
+        assert!(s.network().joined.is_empty(), "never joined the open twin");
+        assert_eq!(p.configure(&mut s, &key, br#"{"ssid":"Cafe","security":"open"}"#, now), json!({"state":"CONNECTED"}));
+        assert_eq!(p.configure(&mut s, &key, br#"{"ssid":"Hall","security":"wpa-psk","psk":"correct horse"}"#, now), json!({"state":"CONNECTED"}));
+        assert_eq!(s.network().joined.len(), 2);
     }
 
     #[test]
