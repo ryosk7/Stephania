@@ -1,0 +1,69 @@
+name: Branch cleanup
+# Deletes a pull request's branch once it is merged, and sweeps branches that
+# are already merged: the tip is the head of a merged pull request, or is
+# contained in main. Branches with an open pull request, unmerged work, main
+# and gh-pages are never deleted.
+on:
+  pull_request:
+    types: [closed]
+  push:
+    branches: [main]
+    paths: [.github/workflows/branch-cleanup.yml]
+  schedule:
+    - cron: '17 19 * * 0'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: read
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  merged-pr:
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - run: |
+          case "$BRANCH" in main|gh-pages) exit 0 ;; esac
+          tip="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null)" || { echo "$BRANCH is already gone"; exit 0; }
+          [ "$tip" = "$HEAD_SHA" ] || { echo "$BRANCH has commits after the merge; keeping it"; exit 0; }
+          open="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:$BRANCH" --jq length)"
+          [ "$open" = 0 ] || { echo "$BRANCH still has an open pull request; keeping it"; exit 0; }
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH"
+          echo "deleted $BRANCH"
+
+  sweep:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          r="$GITHUB_REPOSITORY"
+          gh api "repos/$r/branches?per_page=100" --paginate --jq '.[]|select(.protected|not)|[.name,.commit.sha]|@tsv' >branches.tsv
+          gh api "repos/$r/pulls?state=all&per_page=100" --paginate \
+            --jq '.[]|select(.head.repo.full_name=="'"$r"'")|[.head.ref,.head.sha,.state,(.merged_at!=null)]|@tsv' >pulls.tsv
+          deleted=0; kept=0
+          while IFS=$'\t' read -r b sha; do
+            case "$b" in main|gh-pages) continue ;; esac
+            if awk -F'\t' -v b="$b" '$1==b && $3=="open"{f=1} END{exit !f}' pulls.tsv; then kept=$((kept+1)); continue; fi
+            why=""
+            if awk -F'\t' -v b="$b" -v s="$sha" '$1==b && $2==s && $4=="true"{f=1} END{exit !f}' pulls.tsv; then
+              why="merged pull request"
+            elif [ "$(gh api "repos/$r/compare/main...$sha" --jq .ahead_by)" = 0 ]; then
+              why="contained in main"
+            fi
+            if [ -n "$why" ]; then
+              gh api -X DELETE "repos/$r/git/refs/heads/$b" && { echo "deleted $b ($why)"; deleted=$((deleted+1)); }
+            else
+              echo "kept $b (unmerged work)"; kept=$((kept+1))
+            fi
+          done <branches.tsv
+          echo "deleted $deleted, kept $kept" | tee -a "$GITHUB_STEP_SUMMARY"

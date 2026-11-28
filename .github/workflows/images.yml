@@ -1,0 +1,22 @@
+name: Images
+# Committed PNG/JPEG files must already be compressed (ci/compress-images.sh,
+# run automatically by .githooks/pre-commit).
+on:
+  pull_request:
+    paths: ['**/*.png', '**/*.PNG', '**/*.jpg', '**/*.jpeg', 'ci/compress-images.sh']
+  push:
+    branches: [main]
+    paths: ['**/*.png', '**/*.PNG', '**/*.jpg', '**/*.jpeg', 'ci/compress-images.sh']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  compressed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -qq pngquant optipng jpegoptim >/dev/null
+      - run: git ls-files -z '*.png' '*.PNG' '*.jpg' '*.JPG' '*.jpeg' '*.JPEG' | xargs -0 -r ci/compress-images.sh --check

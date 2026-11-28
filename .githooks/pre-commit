@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Compress staged PNG/JPEG files before they are committed.
+# Enable once per clone: git config core.hooksPath .githooks
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+mapfile -d '' files < <(git diff --cached --name-only --diff-filter=AM -z -- '*.png' '*.PNG' '*.jpg' '*.JPG' '*.jpeg' '*.JPEG')
+[ "${#files[@]}" -eq 0 ] && exit 0
+cd "$root"
+for f in "${files[@]}"; do
+  if ! git diff --quiet -- "$f"; then
+    echo "pre-commit: $f has unstaged changes; stage or stash them first" >&2; exit 1
+  fi
+done
+"$root/ci/compress-images.sh" "${files[@]}"
+git add -- "${files[@]}"
