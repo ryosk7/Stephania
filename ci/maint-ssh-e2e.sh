@@ -144,6 +144,39 @@ r=$(rpc window.open "{\"actor\":\"bob\",\"client_addr\":\"127.0.0.1\",\"code\":\
 
 if login "$win" 10.0.0.9 >/dev/null; then fail "certificate for another address logged in"; else ok "certificate bound to another client address is refused"; fi
 
+# Expired certificates: sign with the device's own user CA (rebuilt from its
+# seed), once valid now (control: the CA is right) and once expired.
+ca_key() {
+  python3 -I - "$w/maint/state.json" "$w/ca" <<'PY'
+import json, os, sys
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+seed = bytes.fromhex(json.load(open(sys.argv[1]))["user_ca_seed"])
+pem = Ed25519PrivateKey.from_private_bytes(seed).private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())
+fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.write(fd, pem); os.close(fd)
+PY
+}
+# signed_login <validity> → runs `echo maint-ok` with a certificate signed here.
+signed_login() {
+  rm -f "$w/id" "$w/id.pub" "$w/id-cert.pub"
+  ssh-keygen -q -t ed25519 -N '' -f "$w/id"
+  ssh-keygen -q -s "$w/ca" -I "e2e@$win" -n maint -V "$1" -O clear -O permit-pty -O source-address=127.0.0.1/32 "$w/id.pub"
+  ssh -F none -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
+    -o IdentityFile="$w/id" -o CertificateFile="$w/id-cert.pub" \
+    -o UserKnownHostsFile="$w/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+    -o StrictHostKeyChecking=yes -o HostKeyAlias=stephania-e2e.local -o ConnectTimeout=5 \
+    "$me@127.0.0.1" echo maint-ok 2>>"$w/ssh.err"
+}
+if ca_key; then
+  [ "$(signed_login -1m:+5m)" = maint-ok ] && ok "control: a certificate from the device's user CA logs in" || fail "rebuilt CA: $(tail -3 "$w/ssh.err")"
+  if signed_login 20200101:20200102 >/dev/null; then fail "an expired certificate logged in"; else ok "an expired certificate is refused"; fi
+  if signed_login +10m:+20m >/dev/null; then fail "a not-yet-valid certificate logged in"; else ok "a certificate that is not valid yet is refused"; fi
+  rm -f "$w/ca"
+else
+  fail "python3 cryptography is needed to rebuild the CA for the expiry checks"
+fi
+
 principal maint-root
 if login "$win" 127.0.0.1 >/dev/null; then fail "maint certificate accepted for a maint-root user"; else ok "a maint certificate cannot log in where only maint-root is allowed"; fi
 principal maint

@@ -1,6 +1,6 @@
 # Maintenance shell access (design)
 
-Status: steps 1 to 4 of the [plan](#plan) are implemented.
+Status: the [plan](#plan) is implemented.
 `stephania-maint` (`src/maint.rs`, `src/sshcert.rs`, `src/totp.rs`),
 `stephania-sshd`, the polkit rule and the nftables table are in the image,
 tested by `ci/maint-ssh-e2e.sh` (real OpenSSH) and the QEMU smoke test.
@@ -19,6 +19,12 @@ whoami, version, logs, services, update status, net, hw, time, disk, diag)
 and changes it through `stephania-maint`'s broker socket (restart, reboot,
 update apply, window close), tested with the real OpenSSH session by
 `ci/maint-ssh-e2e.sh` and on the image by the QEMU smoke test.
+`ci/maint-ssh-e2e.sh` also checks the refusals: wrong and reused codes,
+certificates bound to another address, expired and not-yet-valid
+certificates, `maint` certificates for root, non-Ed25519 keys, and
+signing after a window closed. The LAN-only firewall rule is checked on
+the image (QEMU smoke test); a non-private source cannot be simulated
+there.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as
