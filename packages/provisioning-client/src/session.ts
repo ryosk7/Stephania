@@ -54,7 +54,9 @@ export function validateWifi(c: WifiConfig): void {
 const TIMEOUTS: Record<string, number> = {'wifi.configure': 45_000, 'wifi.scan': 20_000};
 
 export class ProvisioningSession {
-  private messageId = 0;
+  // Start at a random id so a new session does not repeat the ids of an
+  // earlier one (the device's replay cache is keyed by id and bytes).
+  private messageId = Math.floor(Math.random() * 255);
   private ownerKey?: Uint8Array;
 
   constructor(private readonly transport: BleTransport, private readonly retries = 2) {}
@@ -93,8 +95,12 @@ export class ProvisioningSession {
    * exchange gives both sides the owner key without sending it; the app
    * keeps it in secure storage. `privateKey` is 32 fresh random bytes (the
    * caller supplies them so React Native can use its native random source).
+   *
+   * `beforeClaim` receives the derived owner key before the claim is sent,
+   * so the caller can store it as pending: if the device stores the claim
+   * but its response is lost, the phone still holds the key.
    */
-  async claim(ownerId: string, privateKey: Uint8Array): Promise<Uint8Array> {
+  async claim(ownerId: string, privateKey: Uint8Array, beforeClaim?: (ownerKey: Uint8Array) => Promise<void>): Promise<Uint8Array> {
     if (!OWNER_ID.test(ownerId)) throw new ProvisioningError('invalid_owner_id');
     if (privateKey.length !== 32) throw new ProvisioningError('invalid_key');
     const challenge = await this.call({op: 'pairing.challenge'});
@@ -104,6 +110,7 @@ export class ProvisioningSession {
     const nonce = fromHex(challenge.nonce), deviceKey = fromHex(challenge.device_key);
     const phoneKey = x25519PublicKey(privateKey);
     const ownerKey = deriveOwnerKey(x25519Shared(privateKey, deviceKey), nonce, ownerId, deviceKey, phoneKey);
+    await beforeClaim?.(ownerKey);
     const r = await this.call({op: 'pairing.claim', owner_id: ownerId, phone_key: toHex(phoneKey)});
     if (r.state !== 'CLAIMED' || r.confirm !== toHex(claimConfirmation(ownerKey, nonce))) throw new ProvisioningError('claim_failed');
     this.ownerKey = ownerKey;

@@ -5,7 +5,8 @@ against stephania-ble + stephania-provision. Written from contracts/ble-protocol
 only, so it is a third implementation next to Rust and TypeScript.
 
 Phases:
-  claim   bad key refused, first claim wins (X25519), lost-response replay,
+  claim   bad key refused, challenges never replayed, first claim wins
+          (X25519), lost-response replay,
           scan, join fail/ok, unauthenticated rejection (fresh device)
   resume  after bluetoothd restart: the device is found again and still owned
 
@@ -131,7 +132,10 @@ async def phase_claim(rpc):
     bad = await rpc.send({"op": "pairing.claim", "owner_id": "ble-ci", "phone_key": "00" * 32})
     check(bad == {"error": "bad_key"}, f"degenerate key rejected {bad}")
 
-    c = await rpc.send({"op": "pairing.challenge"})
+    # A retried challenge (same id and bytes) is fresh, never replayed.
+    lost = await rpc.send({"op": "pairing.challenge"}, mid=150)
+    c = await rpc.send({"op": "pairing.challenge"}, mid=150)
+    check(c["nonce"] != lost["nonce"], "retried challenge is fresh")
     nonce, device_key = bytes.fromhex(c["nonce"]), bytes.fromhex(c["device_key"])
     private = X25519PrivateKey.generate()
     phone_key = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real BLE end-to-end (protocol v2) on a Linux host with two virtual LE
+# Real BLE end-to-end (protocol v3) on a Linux host with two virtual LE
 # controllers:
 #   hci0: stephania-ble (GATT server, supervised like systemd Restart=always)
 #         -> stephania-provision (device core)

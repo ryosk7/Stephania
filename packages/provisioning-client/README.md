@@ -2,7 +2,7 @@
 
 Phone-side implementation of `contracts/ble-protocol.md` for the Expo app (Phase 5). Transport-agnostic: the app supplies a `BleTransport` backed by react-native-ble-plx (not written yet); tests use a Unix-socket transport against the real Rust `stephania-provision` binary.
 
-- `ProvisioningSession.claim(setupSecret, ownerId)` → owner key (store in Keychain/Keystore; never transmitted)
+- `ProvisioningSession.claim(ownerId, privateKey, beforeClaim?)` → owner key (store in Keychain/Keystore; never transmitted). `beforeClaim` gets the key before the claim is sent, so it can be stored as pending in case the response is lost
 - `scan()`, `configureWifi()`, `networkStatus()` — owner-authenticated
 - Pure-JS HMAC-SHA256 (`@noble/hashes`), verified against `contracts/fixtures/ble/hmac-vectors.json`
 
