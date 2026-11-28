@@ -163,6 +163,25 @@ class ControlTest < Minitest::Test
     assert_error 422, "invalid_request"
   end
 
+  # Checked before Sinatra parses anything and before authentication, so an
+  # anonymous client cannot make control parse large or multipart bodies.
+  def test_body_limits_apply_before_parsing_and_authentication
+    header "Authorization", nil
+    header "Content-Type", "application/x-www-form-urlencoded"
+    post "/api/v1/auth/session", "a=#{"x" * Control::MAX_BODY_BYTES}"
+    assert_error 413, "body_too_large"
+    header "Content-Type", "multipart/form-data; boundary=x"
+    post "/api/v1/assets", "--x\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a\"\r\n\r\nA\r\n--x--\r\n"
+    assert_error 415, "unsupported_media_type"
+    header "Content-Type", "image/png"
+    post "/api/v1/assets", "x" * (Control::MAX_BODY_BYTES + 1)
+    assert_error 401, "unauthorized" # the upload route has its own, larger limit
+    post "/api/v1/%61ssets", "x" * (Control::MAX_BODY_BYTES + 1)
+    assert_error 413, "body_too_large"
+    post "/api/v1/assets", "x" * (AssetStore::MAX_BYTES + 1)
+    assert_error 413, "body_too_large"
+  end
+
   def test_program_transition_fails_closed_through_engine
     use_engine { |req| FakeEngine.error(req, "not_implemented", "compositor is not implemented; Program unchanged") }
     auth

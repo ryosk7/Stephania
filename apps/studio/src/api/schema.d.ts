@@ -63,8 +63,10 @@ export interface paths {
          * @description Sets `stephania_session` (HttpOnly, SameSite=Strict, Secure over TLS,
          *     Path=/api/). Cookie-authenticated state-changing requests must send
          *     the returned csrf_token as X-CSRF-Token. 5 failures per username or
-         *     client address lock for 60 s (doubling, max 15 min): 429 with
-         *     Retry-After.
+         *     client address (the TCP peer) lock for 60 s (doubling, max 15 min):
+         *     429 login_throttled with Retry-After. Password checks are bounded
+         *     overall (2 at once, 2/s on average): beyond that 429 login_busy with
+         *     Retry-After: 1, not counted as a failure.
          */
         post: {
             parameters: {
@@ -432,7 +434,14 @@ export interface paths {
                         "text/event-stream": string;
                     };
                 };
-                /** @description Concurrent stream limit (8) reached (error code too_many_streams) */
+                /**
+                 * @description Stream limit reached (error code too_many_streams): 8 in total, of
+                 *     which non-admins may hold 6. One session or token holds at most 3
+                 *     and one account at most 4; a new stream beyond those per-principal
+                 *     limits replaces that principal's oldest stream instead. A stream
+                 *     ends when its session expires or its token is revoked (re-checked
+                 *     every 15 s).
+                 */
                 429: {
                     headers: {
                         [name: string]: unknown;
@@ -713,7 +722,10 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a scene from a name (id derived from the name, made unique) */
+        /**
+         * Create a scene from a name (id derived from the name, made unique)
+         * @description At most 128 scenes exist (409 too_many_scenes); the same applies to import and duplicate.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -906,7 +918,8 @@ export interface paths {
         };
         /**
          * Create (revision 0) or update a draft with optimistic concurrency
-         * @description Saving a draft never changes Program. 409 when revision is stale.
+         * @description Saving a draft never changes Program. 409 revision_conflict when
+         *     revision is stale; 409 too_many_scenes when creating beyond 128 scenes.
          */
         put: {
             parameters: {
@@ -1924,9 +1937,9 @@ export interface components {
                  *     not_found(404) revision_conflict(409) engine_unavailable(503)
                  *     engine_start_failed(503) busy(503) not_implemented(501) program_inactive(409)
                  *     program_timeout(503) request_too_large(413) too_many_streams(429) busy(409, phone) invalid_offer(422) phone_unavailable(503) forbidden_role(403) invalid_audio(422)
-                 *     too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429)
+                 *     too_many_credentials(409) csrf_failed(403) invalid_login(401) login_throttled(429) login_busy(429)
                  *     weak_password(422) user_exists(409) last_admin(409)
-                 *     unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
+                 *     unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415) too_many_scenes(409)
                  *     invalid_code(401, maintenance) code_throttled(429) window_open(409) window_closed(409)
                  *     maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
                  *     invalid_output(422) storage_failed(503)

@@ -7,6 +7,8 @@ require "openssl"
 require "securerandom"
 require "tmpdir"
 require "time"
+require "ipaddr"
+require "socket"
 require_relative "lib/engine_client"
 require_relative "lib/scene_validator"
 require_relative "lib/event_hub"
@@ -16,6 +18,7 @@ require_relative "lib/accounts"
 require_relative "lib/asset_store"
 require_relative "lib/template_validator"
 require_relative "lib/output_store"
+require_relative "lib/body_limit"
 
 # Stephania management plane. Contract: contracts/openapi.yaml.
 #
@@ -39,6 +42,10 @@ class Control < Sinatra::Base
   OPERATOR_WRITES = [%w[POST /api/v1/stream/start], %w[POST /api/v1/stream/stop], %w[POST /api/v1/program/transition],
     %w[PUT /api/v1/audio], %w[DELETE /api/v1/auth/session], %w[PUT /api/v1/auth/password]].freeze
   ADMIN_ONLY_READS = %r{\A/api/v1/(users|credentials|maintenance)(/|\z)}
+  MAX_SCENES = 128
+  # Puma sets HTTPS for requests that arrived on its ssl_bind listener (a
+  # header cannot set it: headers arrive as HTTP_*).
+  TLS_LISTENER = %w[on https].freeze
 
   # Engine IPC error code -> HTTP status. Unknown codes are a contract
   # violation by the engine and surface as 502.
@@ -60,17 +67,29 @@ class Control < Sinatra::Base
   set :logging, false
   set :host_authorization, {permitted_hosts: []} if Sinatra::VERSION.to_i >= 4
 
+  # There is no reverse proxy in front of control. Forwarded and
+  # X-Forwarded-* headers are client-controlled, so they never change the
+  # host, scheme or client address Rack reports.
+  Rack::Request.forwarded_priority = []
+  Rack::Request.x_forwarded_proto_priority = []
+  Rack::Request.ip_filter = ->(_ip) { false }
+
+  # Per-route body limits and multipart refusal before Sinatra parses
+  # anything (dispatch! parses form bodies before any filter runs).
+  use BodyLimit, default: MAX_BODY_BYTES, routes: {%w[POST /api/v1/assets] => AssetStore::MAX_BYTES}
+
   # Dependencies are plain class attributes, not Sinatra settings: `set`
   # treats any Proc value as a lazily evaluated getter and calls it with no
   # arguments, which is what turned the injected engine adapter into an
   # HTTP 500 in the first foundation CI run.
   class << self
     attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone, :maint, :assets_dir
-    attr_writer :throttle
+    attr_writer :throttle, :login_gate
     # Stream destination (OutputStore); see the /api/v1/output routes.
     attr_accessor :stream_output
 
     def throttle = (@throttle ||= Accounts::Throttle.new)
+    def login_gate = (@login_gate ||= Accounts::LoginGate.new)
     # Camera credential id that opened the current phone session (nil when
     # the owner opened it); revoking that credential ends the session.
     attr_accessor :phone_session_owner
@@ -216,6 +235,77 @@ class Control < Sinatra::Base
     # this address (source-address), and there is no proxy in front.
     def client_addr = request.env["REMOTE_ADDR"].to_s
 
+    def tls_listener? = TLS_LISTENER.include?(request.env["HTTPS"])
+
+    # The plain-HTTP listener (bound to 127.0.0.1) with a loopback TCP peer.
+    # Decided from the connection only, never from Host or X-Forwarded-*.
+    def loopback_request?
+      !tls_listener? && IPAddr.new(client_addr).loopback?
+    rescue IPAddr::Error
+      false
+    end
+
+    # The route pattern the router will dispatch this request to (e.g.
+    # "/api/v1/users/:id"), or nil. Authorization decides on this, never on
+    # the raw PATH_INFO: Mustermann also matches percent-encoded characters,
+    # so "/api/v1/%75sers" is routed to "/api/v1/users". Mirrors
+    # Sinatra::Base#route! / #process_route.
+    def matched_route
+      return @matched_route if defined?(@matched_route)
+
+      path = request.path_info
+      path = "/" if path.empty? && !settings.empty_path_info?
+      path = path[0..-2] if !settings.strict_paths? && path != "/" && path.end_with?("/")
+      route = Array(settings.routes[request.request_method]).find do |pattern, _conditions, _block|
+        pattern.params(path)
+      rescue ArgumentError, Mustermann::Error
+        false
+      end
+      @matched_route = route && route[0].to_s
+    end
+
+    def route?(verb, path) = request.request_method == verb && matched_route == path
+
+    def bearer_token
+      header = request.env.fetch("HTTP_AUTHORIZATION", "")
+      header.delete_prefix("Bearer ") if header.start_with?("Bearer ")
+    end
+
+    # Event streams: which credential holds the stream (EventHub limits).
+    def stream_principal
+      return "session:#{@session[:token_sha256]}" if @session
+
+      "token:#{OpenSSL::Digest::SHA256.hexdigest(bearer_token.to_s)}"
+    end
+
+    # Re-validates the stream's credential on every heartbeat. Enrolled
+    # tokens are revoked by rewriting tokens.json, sessions expire or end
+    # with the account; the bootstrap token never changes while running.
+    def stream_check
+      db = settings.db
+      if @session
+        digest = @session[:token_sha256]
+        -> { Accounts.session_live?(db, digest) }
+      elsif !@bootstrap
+        lan = settings.lan
+        token = bearer_token
+        -> { lan&.issued_token?(token) == true }
+      end
+    end
+
+    # A client that vanished without FIN/RST would hold its stream until TCP
+    # gives up (~15 min); keepalives are unacknowledged data, so
+    # TCP_USER_TIMEOUT drops it within a minute and frees the slot.
+    def reap_dead_peer
+      socket = request.env["puma.socket"]
+      socket = socket.to_io if socket.respond_to?(:to_io)
+      return unless socket.respond_to?(:setsockopt) && defined?(Socket::TCP_USER_TIMEOUT)
+
+      socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_USER_TIMEOUT, 45_000)
+    rescue SystemCallError, IOError
+      nil
+    end
+
     def scene_row(id)
       fail_with 400, "invalid_id", "scene id must match #{ID.source}" unless id.match?(ID)
       settings.db[:scenes].where(id: id).first
@@ -249,11 +339,15 @@ class Control < Sinatra::Base
       db = settings.db
       raw = JSON.generate(document)
       id = nil
-      db.transaction(mode: :immediate) do
+      full = db.transaction(mode: :immediate) do
+        next true if db[:scenes].count >= MAX_SCENES
+
         id = unique_scene_id(base)
         db[:scenes].insert(id: id, revision: 1, document: raw)
         db[:scene_revisions].insert(scene_id: id, revision: 1, document: raw, created_at_unix: Time.now.to_i)
+        false
       end
+      fail_with 409, "too_many_scenes", "at most #{MAX_SCENES} scenes" if full
       settings.events.publish("scene.updated", {id: id, revision: 1})
       {id: id, revision: 1, document: document}
     end
@@ -277,12 +371,14 @@ class Control < Sinatra::Base
     headers "Cache-Control" => "no-store", "X-Content-Type-Options" => "nosniff",
       "X-Request-Id" => request_id, "Date" => Time.now.httpdate,
       "Content-Security-Policy" => "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
-    @lan_request = !ALLOWED_HOSTS.include?(request.host)
+    @lan_request = !loopback_request?
     if @lan_request
-      # Non-loopback Host values are accepted only over TLS and only for the
-      # names/addresses in the device certificate (DNS-rebinding defence).
-      fail_with 403, "forbidden_host", "LAN access requires TLS to a certified device name" unless request.ssl? && settings.lan&.lan_host?(request.host)
+      # Everything but the loopback listener is LAN: TLS only, and only for
+      # the names/addresses in the device certificate (DNS-rebinding defence).
+      fail_with 403, "forbidden_host", "LAN access requires TLS to a certified device name" unless tls_listener? && settings.lan&.lan_host?(request.host)
       headers "Strict-Transport-Security" => "max-age=31536000"
+    elsif !ALLOWED_HOSTS.include?(request.host)
+      fail_with 403, "forbidden_host", "loopback access requires Host localhost or 127.0.0.1"
     end
     origin = request.env["HTTP_ORIGIN"]
     fail_with 403, "forbidden_origin", "cross-origin requests are not allowed" if origin && origin != "#{request.scheme}://#{request.host_with_port}"
@@ -292,7 +388,7 @@ class Control < Sinatra::Base
     content_type :json
     # Login is the one unauthenticated API call (host/origin checks above
     # still apply, so on the LAN it is TLS-only).
-    next if request.request_method == LOGIN_ROUTE[0] && request.path_info == LOGIN_ROUTE[1]
+    next if route?(*LOGIN_ROUTE)
 
     token = settings.token
     env_token = token.is_a?(String) && token.bytesize >= 32
@@ -302,10 +398,12 @@ class Control < Sinatra::Base
     header = request.env.fetch("HTTP_AUTHORIZATION", "")
     supplied = header.delete_prefix("Bearer ")
     bearer = header.start_with?("Bearer ")
-    # The bootstrap token is loopback-only; the LAN accepts only tokens the
+    # The bootstrap token is accepted only on the loopback listener; the LAN
+    # (the TLS listener, whatever Host it names) accepts only tokens the
     # owner enrolled over BLE (revoked by factory reset).
     local = !@lan_request && bearer && env_token && supplied.bytesize == token.bytesize &&
       OpenSSL.fixed_length_secure_compare(supplied, token)
+    @bootstrap = local
     owner = local || (bearer && settings.lan&.issued_token?(supplied))
     @camera = !owner && bearer && camera_credential(supplied)
     if owner
@@ -325,14 +423,14 @@ class Control < Sinatra::Base
     end
     fail_with 401, "unauthorized", "missing or invalid credentials" unless @principal || @camera
     # Camera role: media session only (§26).
-    if @camera && !CAMERA_ROUTES.any? { |verb, path| request.request_method == verb && request.path_info == path }
+    if @camera && CAMERA_ROUTES.none? { |verb, path| route?(verb, path) }
       fail_with 403, "forbidden_role", "camera credentials only allow the camera session"
     end
     if @principal && @principal[:role] == "operator"
       allowed = if %w[GET HEAD].include?(request.request_method)
-        !request.path_info.match?(ADMIN_ONLY_READS)
+        !matched_route.to_s.match?(ADMIN_ONLY_READS)
       else
-        OPERATOR_WRITES.any? { |verb, path| request.request_method == verb && request.path_info == path }
+        OPERATOR_WRITES.any? { |verb, path| route?(verb, path) }
       end
       fail_with 403, "forbidden_role", "operators cannot do this" unless allowed
     end
@@ -356,14 +454,28 @@ class Control < Sinatra::Base
       fail_with 422, "invalid_request", "body must be {username, password}"
     end
     name = input["username"].downcase
-    keys = ["user:#{name}", "ip:#{request.ip}"]
+    valid_name = name.match?(Accounts::USERNAME)
+    # Keyed on the TCP peer (never X-Forwarded-For: there is no proxy) and,
+    # for well-formed names only, on the username, so keys stay short.
+    keys = ["ip:#{client_addr}"]
+    keys << "user:#{name}" if valid_name
     if (wait = settings.throttle.wait(keys)).positive?
       headers "Retry-After" => wait.to_s
       fail_with 429, "login_throttled", "too many failed logins; retry in #{wait} s"
     end
-    user = name.match?(Accounts::USERNAME) ? settings.db[:users].where(username: name).first : nil
-    # Same scrypt work whether or not the user exists.
-    ok = Accounts.verify_password(input["password"], user ? user[:password_hash] : Accounts::DUMMY_HASH) && user && !user[:disabled]
+    # scrypt holds the GVL for its whole run: bound how much of it logins
+    # can demand, so a flood cannot stall the rest of the control plane.
+    unless settings.login_gate.enter
+      headers "Retry-After" => "1"
+      fail_with 429, "login_busy", "too many sign-ins in progress; retry in 1 s"
+    end
+    begin
+      user = valid_name ? settings.db[:users].where(username: name).first : nil
+      # Same scrypt work whether or not the user exists.
+      ok = Accounts.verify_password(input["password"], user ? user[:password_hash] : Accounts::DUMMY_HASH) && user && !user[:disabled]
+    ensure
+      settings.login_gate.leave
+    end
     unless ok
       settings.throttle.failure(keys)
       fail_with 401, "invalid_login", "unknown user or wrong password"
@@ -492,14 +604,18 @@ class Control < Sinatra::Base
   # ({engine, scenes}); then engine.connected / engine.unavailable /
   # engine.restarted / stream.state_changed / program.changed /
   # scene.updated / scene.deleted, plus comment keepalives. Bounded to
-  # EventHub::MAX_CLIENTS concurrent streams (429 beyond).
+  # EventHub::MAX_CLIENTS concurrent streams (429 beyond), with per-session,
+  # per-token and per-account limits (EventHub). A stream ends when its
+  # credential stops being valid (revoked token, expired session).
   get "/api/v1/events" do
     hub = settings.events
     settings.poller.start
     settings.levels.start
     snapshot = {engine: settings.poller.last, scenes: settings.db[:scenes].order(:id).select(:id, :revision).all}
-    sub = hub.subscribe(user_id: @principal&.dig(:user_id), session: @session&.dig(:token_sha256))
-    fail_with 429, "too_many_streams", "at most #{EventHub::MAX_CLIENTS} event streams" unless sub
+    sub = hub.subscribe(user_id: @principal&.dig(:user_id), session: @session&.dig(:token_sha256),
+      principal: stream_principal, admin: @principal&.dig(:role) == "admin", check: stream_check)
+    fail_with 429, "too_many_streams", "event stream limit reached (#{EventHub::MAX_CLIENTS} in total)" unless sub
+    reap_dead_peer
     headers "Content-Type" => "text/event-stream", "X-Accel-Buffering" => "no"
     halt 200, EventHub::Stream.new(hub, sub, snapshot)
   end
@@ -555,8 +671,16 @@ class Control < Sinatra::Base
     json_reply(engine_call("stream.stop"))
   end
 
+  # Documents are stored as validated JSON and spliced in unparsed, so the
+  # listing costs about the size of the stored documents, not a Ruby object
+  # tree per scene (at most MAX_SCENES of at most MAX_BODY_BYTES each).
   get "/api/v1/scenes" do
-    json_reply(settings.db[:scenes].order(:id).all.map { |row| scene_json(row) })
+    out = +"["
+    settings.db[:scenes].order(:id).each_with_index do |row, i|
+      out << "," unless i.zero?
+      out << %({"id":#{JSON.generate(row[:id])},"revision":#{Integer(row[:revision])},"document":#{row[:document]}})
+    end
+    out << "]"
   end
 
   get "/api/v1/scenes/:id" do
@@ -645,6 +769,8 @@ class Control < Sinatra::Base
       row = db[:scenes].where(id: id).first
       if (row && row[:revision] != revision) || (!row && revision != 0)
         false
+      elsif !row && db[:scenes].count >= MAX_SCENES
+        :full
       else
         if row
           db[:scenes].where(id: id).update(revision: revision + 1, document: document)
@@ -657,6 +783,7 @@ class Control < Sinatra::Base
         true
       end
     end
+    fail_with 409, "too_many_scenes", "at most #{MAX_SCENES} scenes" if saved == :full
     fail_with 409, "revision_conflict", "scene was modified; reload and retry" unless saved
     settings.events.publish("scene.updated", {id: id, revision: revision + 1})
     json_reply({id: id, revision: revision + 1, document: input["document"]})
@@ -736,7 +863,9 @@ class Control < Sinatra::Base
     fail_with 400, "invalid_id", "asset id must be 16 hex digits" unless id.match?(AssetStore::ID)
     db = settings.db
     fail_with 404, "not_found", "no such asset" unless db[:assets].where(id: id).count.positive?
-    users = db[:scenes].all.select { |r| AssetStore.referenced(JSON.parse(r[:document])).include?(id) }.map { |r| r[:id] }
+    # Only documents that mention the id at all are parsed.
+    users = db[:scenes].where(Sequel.like(:document, "%#{id}%")).all
+      .select { |r| AssetStore.referenced(JSON.parse(r[:document])).include?(id) }.map { |r| r[:id] }
     fail_with 409, "asset_in_use", "used by scene #{users.join(", ")}" unless users.empty?
     db[:assets].where(id: id).delete
     File.unlink(AssetStore.path(settings.assets_dir, id)) if File.exist?(AssetStore.path(settings.assets_dir, id))

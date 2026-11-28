@@ -37,8 +37,8 @@ class LanAccessTest < Minitest::Test
     File.utime(mtime, mtime, @tokens)
   end
 
-  def call(host:, https:, token:, origin: nil)
-    env = {"HTTP_HOST" => host, "HTTP_AUTHORIZATION" => "Bearer #{token}"}
+  def call(host:, https:, token:, origin: nil, extra: {})
+    env = {"HTTP_HOST" => host, "HTTP_AUTHORIZATION" => "Bearer #{token}"}.merge(extra)
     env["HTTPS"] = "on" if https
     env["rack.url_scheme"] = https ? "https" : "http"
     env["HTTP_ORIGIN"] = origin if origin
@@ -64,6 +64,24 @@ class LanAccessTest < Minitest::Test
     assert_equal 200, call(host: "192.168.1.20", https: true, token: ISSUED).first
     assert_equal 200, call(host: "[fd00::5]:9443", https: true, token: ISSUED).first
     assert_equal "max-age=31536000", last_response.headers["Strict-Transport-Security"]
+  end
+
+  # Local vs LAN is decided by the listener and the TCP peer, never by Host
+  # or X-Forwarded-*: the bootstrap token works only on the loopback listener.
+  def test_bootstrap_token_is_refused_off_the_loopback_listener_whatever_the_headers
+    lan = {"REMOTE_ADDR" => "192.168.1.50"}
+    assert_equal [403, "forbidden_host"], call(host: "localhost", https: true, token: BOOT, extra: lan)
+    assert_equal [403, "forbidden_host"], call(host: "localhost:9443", https: true, token: BOOT), "TLS listener even from loopback"
+    assert_equal [401, "unauthorized"],
+      call(host: "stephania-ab12.local", https: true, token: BOOT, extra: lan.merge("HTTP_X_FORWARDED_HOST" => "localhost"))
+    assert_equal [401, "unauthorized"],
+      call(host: "stephania-ab12.local", https: true, token: BOOT, extra: lan.merge("HTTP_FORWARDED" => "host=localhost;for=127.0.0.1"))
+    assert_equal [403, "forbidden_host"], call(host: "localhost", https: false, token: BOOT, extra: lan), "plain HTTP from a LAN peer"
+    assert_equal [403, "forbidden_host"],
+      call(host: "localhost", https: false, token: BOOT, extra: lan.merge("HTTP_X_FORWARDED_FOR" => "127.0.0.1"))
+    assert_equal [403, "forbidden_host"], call(host: "evil.example", https: false, token: BOOT), "DNS rebinding on loopback"
+    assert_equal [403, "forbidden_host"], call(host: "evil.example", https: false, token: BOOT, extra: {"HTTP_X_FORWARDED_HOST" => "localhost"})
+    assert_equal 200, call(host: "stephania-ab12.local", https: true, token: ISSUED, extra: lan).first
   end
 
   def test_loopback_accepts_bootstrap_and_issued_tokens

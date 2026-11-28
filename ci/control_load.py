@@ -7,6 +7,8 @@ throughput, latency percentiles per route, errors and stream health.
 Usage: control_load.py <base-url> <token> <seconds> <clients> <label> [streams]
 Streams default to the maximum (8); the warm-up passes 0 because an
 abandoned stream keeps its slot until the next 15 s keepalive write fails.
+One credential may hold only a few streams, so each stream uses its own
+enrolled token (STREAM_TOKENS; ci/control-load.sh writes their hashes).
 """
 import http.client, json, random, socket, statistics, sys, threading, time
 from urllib.parse import urlparse
@@ -43,10 +45,11 @@ for n in range(clients):
 c.close()
 
 # Hold the maximum number of event streams; one more must be refused.
+STREAM_TOKENS = ["t3b_" + f"{i:02x}" * 32 for i in range(8)]
 streams, stream_alive = [], []
 def stream(i):
     s = socket.create_connection((u.hostname, u.port))
-    s.sendall(f"GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nAccept: text/event-stream\r\n\r\n".encode())
+    s.sendall(f"GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {STREAM_TOKENS[i]}\r\nAccept: text/event-stream\r\n\r\n".encode())
     s.settimeout(None)
     first = s.recv(4096)
     stream_heads[i] = first[:60]

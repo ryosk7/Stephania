@@ -9,9 +9,12 @@ require "net/http"
 require "json"
 require "socket"
 require "tmpdir"
+require "openssl"
 
 class EventsPumaTest < Minitest::Test
   TOKEN = "p" * 32
+  # Enrolled owner tokens (also accepted on loopback): one principal each.
+  ISSUED = Array.new(8) { |i| "t3b_#{format("%02x", i) * 32}" }
   SCENE = {version: 1, name: "LT", layers: [{id: "hdmi", source: "hdmi", x: 0, y: 0, width: 1920, height: 1080, visible: true}]}.freeze
   ROOT = File.expand_path("..", __dir__)
 
@@ -24,7 +27,9 @@ class EventsPumaTest < Minitest::Test
     end
     @dir = Dir.mktmpdir("stephania-events-puma")
     @port = TCPServer.open("127.0.0.1", 0) { |s| s.addr[1] }
-    env = {"STEPHANIA_CONTROL_TOKEN" => TOKEN, "STEPHANIA_CONTROL_PORT" => @port.to_s,
+    tokens = File.join(@dir, "tokens.json")
+    File.write(tokens, JSON.generate(tokens: ISSUED.map { |t| {id: t[4, 4], sha256: OpenSSL::Digest::SHA256.hexdigest(t)} }))
+    env = {"STEPHANIA_CONTROL_TOKEN" => TOKEN, "STEPHANIA_CONTROL_PORT" => @port.to_s, "STEPHANIA_CONTROL_TOKENS_FILE" => tokens,
            "STEPHANIA_ENGINE_SOCKET" => File.join(@dir, "none.sock"), "STEPHANIA_CONTROL_DB" => File.join(@dir, "c.db"),
            "STEPHANIA_CONTROL_POLL_SECONDS" => "0.2", "RACK_ENV" => "production"}
     @log = File.join(@dir, "puma.log")
@@ -60,17 +65,17 @@ class EventsPumaTest < Minitest::Test
   end
 
   # Opens a raw stream socket and returns it once the response head arrived.
-  def open_stream
+  def open_stream(token = TOKEN)
     sock = TCPSocket.new("127.0.0.1", @port)
-    sock.write("GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer #{TOKEN}\r\nAccept: text/event-stream\r\n\r\n")
+    sock.write("GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer #{token}\r\nAccept: text/event-stream\r\n\r\n")
     head = +""
     head << sock.readpartial(4096) until head.include?("\r\n\r\n")
     [sock, head]
   end
 
   # Status line of a fresh stream request; the socket is closed right away.
-  def stream_status
-    sock, head = open_stream
+  def stream_status(token = TOKEN)
+    sock, head = open_stream(token)
     head.lines.first
   ensure
     sock&.close
@@ -114,8 +119,8 @@ class EventsPumaTest < Minitest::Test
     assert_equal "200", request(:Put, "/api/v1/scenes/main", {revision: 0, document: SCENE}).code
     read_until(sock, %(event: scene.updated\ndata: {"id":"main","revision":1}), buffer)
 
-    others = Array.new(7) { open_stream.first }
-    assert_match %r{\AHTTP/1.1 429}, stream_status
+    others = ISSUED.first(7).map { |t| open_stream(t).first }
+    assert_match %r{\AHTTP/1.1 429}, stream_status(ISSUED.last)
     # Eight open streams must not starve ordinary requests.
     assert_equal "200", request(:Get, "/api/v1/scenes").code
 
@@ -126,11 +131,56 @@ class EventsPumaTest < Minitest::Test
     loop do
       current = JSON.parse(request(:Get, "/api/v1/scenes/main").body)["revision"]
       request(:Put, "/api/v1/scenes/main", {revision: current, document: SCENE})
-      break if stream_status.start_with?("HTTP/1.1 200")
+      break if stream_status(ISSUED.last).start_with?("HTTP/1.1 200")
       flunk "stream slot was not released" if Time.now > deadline
       sleep 0.2
     end
   ensure
     others&.each(&:close)
+  end
+
+  def test_one_token_cannot_hold_every_stream
+    first, head = open_stream
+    buffer = read_until(first, "event: snapshot", head.dup)
+    later = Array.new(3) { open_stream.first }
+    # The fourth stream of the same credential replaces the oldest, whose
+    # response ends (last chunk).
+    read_until(first, "\r\n0\r\n\r\n", buffer)
+    assert_match %r{\AHTTP/1.1 200}, stream_status(ISSUED.first), "other principals still get a stream"
+  ensure
+    first&.close
+    later&.each(&:close)
+  end
+
+  # Puma refuses bodies above http_content_length_limit before reading them,
+  # and chunked bodies as soon as they pass it (config/puma.rb).
+  def test_oversized_bodies_are_refused_before_buffering
+    sock = TCPSocket.new("127.0.0.1", @port)
+    sock.write("POST /api/v1/auth/session HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n" \
+               "Content-Length: #{(8 * 1024 * 1024) + 1}\r\n\r\n")
+    head = +""
+    head << sock.readpartial(4096) until head.include?("\r\n\r\n")
+    assert_match %r{\AHTTP/1.1 413}, head
+    sock.close
+
+    sock = TCPSocket.new("127.0.0.1", @port)
+    sock.write("POST /api/v1/auth/session HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
+    chunk = "#{(1024 * 1024).to_s(16)}\r\n#{"x" * 1024 * 1024}\r\n"
+    sent = 0
+    response = +""
+    begin
+      20.times do
+        sock.write(chunk)
+        sent += 1
+      end
+      response << sock.readpartial(4096) while sock.wait_readable(2) && !response.include?("\r\n\r\n")
+    rescue SystemCallError, IOError
+      nil # the server dropped the connection mid-body (reset: its 400 may be lost)
+    end
+    assert sent < 20 || response.start_with?("HTTP/1.1 400"), "20 MiB chunked body was accepted: #{response.inspect}"
+    # Still serving.
+    assert_equal "200", request(:Get, "/api/v1/scenes").code
+  ensure
+    sock&.close
   end
 end

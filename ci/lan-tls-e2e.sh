@@ -55,6 +55,11 @@ pass "issued token accepted over TLS with CA verification"
 code=$(https -H "Authorization: Bearer ci-bootstrap-token-0123456789abcdef" "https://stephania-ci.local:$port/api/v1/capabilities")
 [ "$code" = 401 ] || fail "bootstrap token must be loopback-only: $code"
 pass "bootstrap token rejected on the LAN listener"
+code=$(https -H "Host: localhost" -H "Authorization: Bearer ci-bootstrap-token-0123456789abcdef" "https://stephania-ci.local:$port/api/v1/capabilities")
+[ "$code" = 403 ] || fail "bootstrap token with Host: localhost on the LAN listener: $code"
+code=$(https -H "X-Forwarded-Host: localhost" -H "Authorization: Bearer ci-bootstrap-token-0123456789abcdef" "https://stephania-ci.local:$port/api/v1/capabilities")
+[ "$code" = 401 ] || fail "bootstrap token with X-Forwarded-Host: localhost on the LAN listener: $code"
+pass "Host / X-Forwarded-Host cannot make a LAN request local"
 code=$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$work/pki/ca.pem" --resolve "evil.example:$port:127.0.0.1" -H "Authorization: Bearer $token" "https://evil.example:$port/api/v1/capabilities" || true)
 [ "$code" = 000 ] || [ "$code" = 403 ] || fail "uncertified name must fail TLS or Host check: $code"
 pass "uncertified host name refused ($code)"

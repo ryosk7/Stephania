@@ -26,6 +26,45 @@ class EventHubTest < Minitest::Test
     refute_nil hub.subscribe
   end
 
+  def test_one_principal_cannot_take_every_slot
+    hub = EventHub.new
+    first, *rest = Array.new(EventHub::MAX_PER_PRINCIPAL + 1) { hub.subscribe(principal: "a") }
+    assert first.closed?, "a new stream beyond the per-principal limit replaces that principal's oldest"
+    refute rest.any?(&:closed?)
+    assert_equal EventHub::MAX_PER_PRINCIPAL, hub.subscriber_count
+    # One account over several sessions is bounded too.
+    hub = EventHub.new
+    subs = Array.new(EventHub::MAX_PER_USER + 1) { |i| hub.subscribe(user_id: 7, principal: "s#{i}", admin: false) }
+    assert subs.first.closed?
+    assert_equal EventHub::MAX_PER_USER, hub.subscriptions.count { |s| s.user_id == 7 }
+  end
+
+  def test_non_admins_leave_slots_for_admins
+    hub = EventHub.new
+    open = (1..EventHub::MAX_CLIENTS).map { |i| hub.subscribe(principal: "op#{i}", user_id: i, admin: false) }
+    assert_equal EventHub::MAX_CLIENTS - EventHub::RESERVED_FOR_ADMIN, open.compact.size
+    refute_nil hub.subscribe(principal: "admin", user_id: 99, admin: true)
+  end
+
+  def test_stream_ends_when_its_credential_is_no_longer_valid
+    hub = EventHub.new
+    valid = true
+    sub = hub.subscribe(principal: "t", check: -> { valid })
+    stream = EventHub::Stream.new(hub, sub, {}, heartbeat: 0.02, recheck: 0.05)
+    reader = Thread.new { stream.each { |_| nil } }
+    # Events keep flowing; the credential is still re-checked.
+    pump = Thread.new { 200.times { hub.publish("audio.levels", {}) && sleep(0.005) } }
+    sleep 0.15
+    assert reader.alive?
+    valid = false
+    assert reader.join(2), "stream must end once the credential is revoked"
+    stream.close
+    pump.kill
+    assert_equal 0, hub.subscriber_count
+    raising = hub.subscribe(check: -> { raise "db down" })
+    refute raising.valid?
+  end
+
   def test_slow_consumer_is_dropped_without_blocking
     hub = EventHub.new
     slow = hub.subscribe
@@ -142,7 +181,7 @@ class EventsEndpointTest < Minitest::Test
   end
 
   def env_for(path, token: TOKEN)
-    Rack::MockRequest.env_for(path, "HTTP_HOST" => "localhost", "HTTP_AUTHORIZATION" => "Bearer #{token}")
+    Rack::MockRequest.env_for(path, "HTTP_HOST" => "localhost", "HTTP_AUTHORIZATION" => "Bearer #{token}", "REMOTE_ADDR" => "127.0.0.1")
   end
 
   def test_requires_token
@@ -177,11 +216,54 @@ class EventsEndpointTest < Minitest::Test
   end
 
   def test_stream_limit_is_429
-    bodies = Array.new(EventHub::MAX_CLIENTS) { Control.call(env_for("/api/v1/events"))[2] }
+    # Fill the hub with other principals, then one more stream is refused.
+    others = Array.new(EventHub::MAX_CLIENTS) { |i| Control.events.subscribe(principal: "other#{i}") }
     status, _, rejected = Control.call(env_for("/api/v1/events"))
     assert_equal 429, status
     assert_equal "too_many_streams", JSON.parse(rejected.each.to_a.join).dig("error", "code")
   ensure
+    others&.each { |s| Control.events.unsubscribe(s) }
+  end
+
+  def test_same_token_replaces_its_oldest_stream
+    bodies = Array.new(EventHub::MAX_PER_PRINCIPAL + 1) { Control.call(env_for("/api/v1/events")).tap { |r| assert_equal 200, r[0] }[2] }
+    assert_equal EventHub::MAX_PER_PRINCIPAL, Control.events.subscriber_count
+  ensure
     bodies&.each(&:close)
+  end
+
+  def test_stream_checks_follow_session_expiry_and_token_revocation
+    Control.login_gate = Accounts::LoginGate.new
+    header "Authorization", "Bearer #{TOKEN}"
+    header "Content-Type", "application/json"
+    post "/api/v1/users", JSON.generate(username: "sam", password: "correct horse battery", role: "operator")
+    header "Authorization", nil
+    post "/api/v1/auth/session", JSON.generate(username: "sam", password: "correct horse battery")
+    cookie = last_response.headers["Set-Cookie"][/stephania_session=[^;]+/]
+    status, _, body = Control.call(env_for("/api/v1/events").merge("HTTP_COOKIE" => cookie).tap { |e| e.delete("HTTP_AUTHORIZATION") })
+    assert_equal 200, status
+    sub = Control.events.subscriptions.last
+    refute sub.admin
+    assert sub.valid?
+    Control.db[:sessions].update(last_seen_unix: Time.now.to_i - Accounts::IDLE_SECONDS - 1)
+    refute sub.valid?, "an idle-expired session ends its stream"
+    body.close
+
+    dir = Dir.mktmpdir("stephania-events-lan")
+    issued = "t3b_#{"3c" * 32}"
+    tokens = File.join(dir, "tokens.json")
+    File.write(tokens, JSON.generate(tokens: [{id: "x", sha256: OpenSSL::Digest::SHA256.hexdigest(issued)}]))
+    Control.lan = LanAccess.new(pki_dir: dir, tokens_file: tokens)
+    status, _, body = Control.call(env_for("/api/v1/events", token: issued))
+    assert_equal 200, status
+    sub = Control.events.subscriptions.last
+    assert sub.valid?
+    File.write(tokens, JSON.generate(tokens: []))
+    File.utime(Time.now + 5, Time.now + 5, tokens)
+    refute sub.valid?, "a revoked enrolled token ends its stream"
+    body.close
+  ensure
+    Control.lan = LanAccess.new(pki_dir: nil, tokens_file: nil)
+    FileUtils.remove_entry(dir) if dir
   end
 end
