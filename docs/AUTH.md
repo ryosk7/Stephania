@@ -4,10 +4,22 @@ The control plane (services/control) accepts three kinds of credentials.
 
 | Credential | Who | How it is presented | Scope |
 |---|---|---|---|
-| Bootstrap token (`STEPHANIA_CONTROL_TOKEN`) | Device owner, local maintenance | `Authorization: Bearer`, loopback only | admin |
+| Bootstrap token (`STEPHANIA_CONTROL_TOKEN`) | Device owner, local maintenance | `Authorization: Bearer`, loopback listener only | admin |
 | Enrolled token (`t3b_…`, BLE `management.enroll`) | Owner's phone / LAN clients | `Authorization: Bearer`, TLS only | admin |
 | Studio account session | People using the Studio | `stephania_session` cookie + `X-CSRF-Token` | its role |
 | Camera credential (`t3c_…`) | The phone camera | `Authorization: Bearer` | camera session only |
+
+## Loopback and LAN
+
+Whether a request is local is decided from the connection, never from
+headers: it is local only when it arrived on the plain-HTTP listener (bound
+to 127.0.0.1) from a loopback TCP peer. Everything else, including any
+request on the TLS listener (port 9443) whatever its `Host`, is LAN and
+must be TLS to a certified device name or address. Local requests must
+name `localhost` or `127.0.0.1` in `Host` (DNS-rebinding defence). There is
+no reverse proxy, so `Forwarded` and `X-Forwarded-*` (host, proto, for) are
+ignored everywhere: they change neither the host, the scheme nor the client
+address.
 
 ## Accounts
 
@@ -34,7 +46,9 @@ The control plane (services/control) accepts three kinds of credentials.
 
 Operators are for running an event without being able to change its
 layouts. The rule is enforced in the API (`403 forbidden_role`); the Studio
-hides what an operator cannot do.
+hides what an operator cannot do. Role checks are made against the route
+the request is dispatched to (e.g. `/api/v1/users`), not the raw path, so
+percent-encoded spellings such as `/api/v1/%75sers` get the same answer.
 
 ## Stream destination
 
@@ -77,9 +91,42 @@ the key is 8 to 256 of `A-Z a-z 0-9 - _ . ~`.
 
 Five failures for a username, or from one client address, lock that key
 for 60 s, doubling to at most 15 min (`429 login_throttled`, `Retry-After`).
-Unknown usernames cost the same scrypt work as known ones and get the same
-`401 invalid_login`, so the response does not reveal which usernames exist.
-The counters are in memory (reset on restart); at most 4096 keys are kept.
+The client address is the TCP peer, never `X-Forwarded-For`. Only
+well-formed usernames get a username key. Unknown usernames cost the same
+scrypt work as known ones and get the same `401 invalid_login`, so the
+response does not reveal which usernames exist.
+
+The counters are in memory (reset on restart); at most 4096 keys of at most
+128 bytes are kept. A full table evicts the least recently failed key that
+is not locked; a running lock is never evicted, and when every key is
+locked, new keys are refused until the first lock expires.
+
+Password checks are bounded overall, because scrypt holds Ruby's global
+lock and would stall every other request: at most 2 run at once and 2 per
+second on average (bursts of 10). Beyond that a sign-in is refused without
+any work (`429 login_busy`, `Retry-After: 1`) and does not count as a
+failure.
+
+## Event streams
+
+`GET /api/v1/events` allows 8 streams in total. One credential (a session
+or a token) holds at most 3 and one account at most 4; a new stream beyond
+that replaces that credential's or account's oldest stream, so a client
+that reconnects also frees the slot its dead connection still held.
+Operators cannot take the last 2 slots, which stay for admins. Idle streams
+send a keepalive every 15 s, and TCP_USER_TIMEOUT (45 s) drops peers that
+stopped acknowledging. Every 15 s the stream re-checks its credential and
+ends once the session has expired (idle or absolute) or the enrolled token
+was revoked; sign-out, password changes and account changes end streams
+immediately.
+
+## Request bodies
+
+Puma refuses bodies over 8 MiB (the image upload limit) before buffering
+them, and chunked bodies as soon as they pass it. Before anything is
+parsed, every route is limited to 64 KiB except `POST /api/v1/assets`
+(8 MiB) (`413 body_too_large`), and `multipart/form-data` is refused
+everywhere (`415 unsupported_media_type`).
 
 ## Studio
 

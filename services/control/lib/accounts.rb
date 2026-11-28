@@ -11,9 +11,9 @@ require "base64"
 # - Sessions: 256-bit random cookie value, stored only as SHA-256; a
 #   separate CSRF token must accompany every state-changing request.
 #   12 h idle timeout, 7 day absolute lifetime, at most 8 per user.
-# - Login throttling: per username and per client address, 5 failures lock
-#   for 60 s, doubling up to 15 min. Unknown users cost the same scrypt
-#   work as known ones.
+# - Login throttling: per username and per client address (the TCP peer),
+#   5 failures lock for 60 s, doubling up to 15 min. Unknown users cost the
+#   same scrypt work as known ones; LoginGate bounds that work overall.
 module Accounts
   ROLES = %w[admin operator].freeze
   USERNAME = /\A[a-z0-9][a-z0-9_.-]{0,31}\z/
@@ -95,34 +95,70 @@ module Accounts
     [session, user]
   end
 
+  # Whether the session with this stored digest is still valid, without
+  # touching last_seen (an open event stream is not activity). Event streams
+  # re-check this so they end when the session expires or the user is
+  # disabled.
+  def session_live?(db, token_sha256, now = Time.now.to_i)
+    session = db[:sessions].where(token_sha256: token_sha256).first
+    return false unless session && session[:expires_at_unix] > now && session[:last_seen_unix] + IDLE_SECONDS > now
+
+    user = db[:users].where(id: session[:user_id]).first
+    !user.nil? && !user[:disabled]
+  end
+
   def admins_remaining(db, excluding_id)
     db[:users].where(role: "admin", disabled: false).exclude(id: excluding_id).count
   end
 
   # In-memory failure counter keyed by username and by client address.
+  # Memory is bounded (MAX_KEYS keys of at most MAX_KEY_BYTES). A full table
+  # evicts the least recently failed key that is not locked; a key whose
+  # lock is still running is never evicted. When every key is locked, keys
+  # not in the table are refused until the first lock expires (fail
+  # closed), so filling the table cannot unlock or bypass anything.
   class Throttle
     LIMIT = 5
     BASE_LOCK = 60
     MAX_LOCK = 900
     MAX_KEYS = 4096
+    MAX_KEY_BYTES = 128
 
     def initialize
       @mutex = Mutex.new
+      # Insertion order is kept as least recently failed first.
       @state = {}
     end
 
+    def size = @mutex.synchronize { @state.size }
+
     # Seconds until the key may try again (0 = allowed).
     def wait(keys, now = Time.now.to_f)
+      keys = keys.map { |k| bound(k) }
       @mutex.synchronize do
-        keys.map { |k| (s = @state[k]) ? [s[:until] - now, 0].max : 0 }.max.ceil
+        waits = keys.map { |k| (s = @state[k]) ? [s[:until] - now, 0].max : 0 }
+        if keys.any? { |k| !@state.key?(k) } && @state.size >= MAX_KEYS && !evictable(now)
+          waits << @state.each_value.map { |s| s[:until] }.min - now
+        end
+        waits.max.ceil
       end
     end
 
     def failure(keys, now = Time.now.to_f)
+      keys = keys.map { |k| bound(k) }
       @mutex.synchronize do
-        @state.shift while @state.size >= MAX_KEYS
         keys.each do |k|
-          s = (@state[k] ||= {failures: 0, until: 0, lock: BASE_LOCK})
+          s = @state.delete(k)
+          if s.nil?
+            if @state.size >= MAX_KEYS
+              victim = evictable(now)
+              next unless victim
+
+              @state.delete(victim)
+            end
+            s = {failures: 0, until: 0, lock: BASE_LOCK}
+          end
+          @state[k] = s
           s[:failures] += 1
           next if s[:failures] < LIMIT
 
@@ -134,7 +170,54 @@ module Accounts
     end
 
     def success(keys)
-      @mutex.synchronize { keys.each { |k| @state.delete(k) } }
+      @mutex.synchronize { keys.each { |k| @state.delete(bound(k)) } }
     end
+
+    private
+
+    def bound(key) = key.byteslice(0, MAX_KEY_BYTES)
+
+    # Least recently failed key whose lock is not running, or nil.
+    def evictable(now) = @state.each_key.find { |k| @state[k][:until] <= now }
+  end
+
+  # Bounds password-hash work. OpenSSL::KDF.scrypt holds the GVL for its
+  # whole run, so unbounded sign-ins would stall every other request
+  # (stream stop, transitions, event streams). At most MAX_CONCURRENT
+  # verifications run at once and RATE per second on average (BURST at
+  # once); beyond that a sign-in is refused (429 login_busy) without work.
+  class LoginGate
+    MAX_CONCURRENT = 2
+    RATE = 2.0
+    BURST = 10
+
+    def initialize(rate: RATE, burst: BURST, max_concurrent: MAX_CONCURRENT)
+      @rate = rate
+      @burst = burst
+      @max_concurrent = max_concurrent
+      @mutex = Mutex.new
+      @tokens = burst.to_f
+      @at = nil
+      @active = 0
+    end
+
+    # true when a verification may start now; pair with #leave.
+    def enter(now = clock)
+      @mutex.synchronize do
+        @tokens = [@tokens + ((now - (@at || now)).clamp(0, nil) * @rate), @burst].min
+        @at = now
+        return false if @active >= @max_concurrent || @tokens < 1
+
+        @tokens -= 1
+        @active += 1
+        true
+      end
+    end
+
+    def leave = @mutex.synchronize { @active -= 1 }
+
+    private
+
+    def clock = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 end

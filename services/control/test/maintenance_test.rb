@@ -8,6 +8,7 @@ class MaintenanceTest < Minitest::Test
   include Rack::Test::Methods
 
   TOKEN = "m" * 32
+  ISSUED = "t3b_#{"2e" * 32}"
   PASSWORD = "correct horse battery"
   WINDOW = {"window_id" => "0123456789abcdef", "root" => false, "actor" => "owner", "user" => "maint",
             "opened_at" => 100, "expires_at" => 700, "sessions_end_at" => 3700, "accepting" => true}.freeze
@@ -18,6 +19,7 @@ class MaintenanceTest < Minitest::Test
     Control.configure_storage(":memory:")
     Control.token = TOKEN
     Control.throttle = Accounts::Throttle.new
+    Control.login_gate = Accounts::LoginGate.new
     @maint = FakeEngine.new do |req|
       p = req["params"] || {}
       case req["method"]
@@ -45,7 +47,23 @@ class MaintenanceTest < Minitest::Test
     as_owner
   end
 
-  def teardown = @maint.close
+  def teardown
+    @maint.close
+    FileUtils.remove_entry(@pki) if @pki
+    Control.lan = LanAccess.new(pki_dir: nil, tokens_file: nil)
+  end
+
+  # A LAN client: TLS listener, certified Host, enrolled owner token, from
+  # REMOTE_ADDR (with a forged X-Forwarded-For that must be ignored).
+  def lan_env(addr = "192.168.1.20")
+    @pki ||= Dir.mktmpdir("stephania-maint-lan").tap do |dir|
+      File.write(File.join(dir, "endpoint.json"), JSON.generate(host: "stephania-m.local", ips: ["192.168.1.9"]))
+      File.write(File.join(dir, "tokens.json"), JSON.generate(tokens: [{id: "x", sha256: OpenSSL::Digest::SHA256.hexdigest(ISSUED)}]))
+      Control.lan = LanAccess.new(pki_dir: dir, tokens_file: File.join(dir, "tokens.json"))
+    end
+    header "Authorization", "Bearer #{ISSUED}"
+    {"REMOTE_ADDR" => addr, "HTTPS" => "on", "rack.url_scheme" => "https", "HTTP_HOST" => "stephania-m.local"}
+  end
   def body = JSON.parse(last_response.body)
   def as_owner = header("Authorization", "Bearer #{TOKEN}")
   def requests = Array.new(@maint.requests.size) { @maint.requests.pop }
@@ -65,7 +83,7 @@ class MaintenanceTest < Minitest::Test
   end
 
   def test_owner_opens_a_window_with_the_peer_address_not_forwarded_headers
-    open_window({code: "123456"}, {"REMOTE_ADDR" => "192.168.1.20", "HTTP_X_FORWARDED_FOR" => "10.9.9.9"})
+    open_window({code: "123456"}, lan_env.merge("HTTP_X_FORWARDED_FOR" => "10.9.9.9"))
     assert_equal 201, last_response.status, last_response.body
     assert_equal({"window_id" => "0123456789abcdef", "expires_at" => 700, "sessions_end_at" => 3700, "root" => false, "user" => "maint"}, body)
     req = requests.last
@@ -121,9 +139,9 @@ class MaintenanceTest < Minitest::Test
 
   def test_certificate_names_the_host_the_client_used
     post "/api/v1/maintenance/certificate", JSON.generate(window_id: WINDOW["window_id"], public_key: "ssh-ed25519 AAAA laptop"),
-      {"REMOTE_ADDR" => "192.168.1.20"}
+      lan_env.merge("HTTP_X_FORWARDED_HOST" => "evil.example")
     assert_equal 200, last_response.status, last_response.body
-    assert_equal({"host" => "localhost", "port" => 22, "user" => "maint", "principal" => "maint", "serial" => 3}, body.slice("host", "port", "user", "principal", "serial"))
+    assert_equal({"host" => "stephania-m.local", "port" => 22, "user" => "maint", "principal" => "maint", "serial" => 3}, body.slice("host", "port", "user", "principal", "serial"))
     assert_equal({"window_id" => WINDOW["window_id"], "public_key" => "ssh-ed25519 AAAA laptop", "client_addr" => "192.168.1.20"}, requests.last["params"])
     post "/api/v1/maintenance/certificate", JSON.generate(window_id: "ffffffffffffffff", public_key: "ssh-ed25519 AAAA")
     assert_equal [409, "window_closed"], [last_response.status, body.dig("error", "code")]

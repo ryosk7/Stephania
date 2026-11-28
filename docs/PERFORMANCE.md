@@ -11,7 +11,8 @@ IPC, started inside the §9 cgroup experiment with `systemd-run`
 and once on. Four keep-alive clients run a Studio-like mix for 20 s after
 a 3 s warm-up: status (engine IPC) 40 %, scene list 25 %, audio 10 %,
 capabilities 10 %, scene saves with optimistic revisions 15 %. Throughout,
-the maximum of 8 event streams is held open and a ninth must get 429.
+the maximum of 8 event streams is held open (each with its own enrolled
+token, since one credential may hold only 3) and a ninth must get 429.
 
 The run fails on any error, a dropped stream, a ninth stream that is not
 refused, or p99 above 250 ms. Each run's table (req/s, p50/p95/p99/max,

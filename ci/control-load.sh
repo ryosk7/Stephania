@@ -19,12 +19,17 @@ STEPHANIA_ENGINE_SOCKET="$work/engine.sock" STEPHANIA_OUTPUT="" "$bin" >"$out/en
 for _ in $(seq 100); do [ -S "$work/engine.sock" ] && break; sleep 0.1; done
 [ -S "$work/engine.sock" ] || { echo "engine did not create its IPC socket"; exit 1; }
 
+# Enrolled tokens for the event streams (ci/control_load.py STREAM_TOKENS):
+# one credential may hold only a few streams.
+python3 -c 'import hashlib,json,sys; json.dump({"tokens": [{"id": f"load{i}", "sha256": hashlib.sha256(("t3b_" + f"{i:02x}" * 32).encode()).hexdigest()} for i in range(8)]}, open(sys.argv[1], "w"))' "$work/tokens.json"
+
 results=()
 for yjit in 0 1; do
   rm -f "$work/control.db"*
   sudo systemd-run --scope --quiet --unit=stephania-load-puma -p CPUQuota=50% -p MemoryHigh=96M -p MemoryMax=128M \
     --setenv=RUBY_YJIT_ENABLE=$yjit --setenv=RACK_ENV=production --setenv=STEPHANIA_CONTROL_TOKEN=$token \
     --setenv=STEPHANIA_CONTROL_PORT=$port --setenv=STEPHANIA_ENGINE_SOCKET="$work/engine.sock" --setenv=STEPHANIA_CONTROL_DB="$work/control.db" \
+    --setenv=STEPHANIA_CONTROL_TOKENS_FILE="$work/tokens.json" \
     --setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=GEM_HOME="${GEM_HOME:-}" --setenv=BUNDLE_GEMFILE="$PWD/services/control/Gemfile" \
     --uid="$(id -u)" --gid="$(id -g)" -- bash -c "cd services/control && exec bundle exec puma -C config/puma.rb config.ru" >"$out/puma-yjit$yjit.log" 2>&1 &
   pids+=($!)
