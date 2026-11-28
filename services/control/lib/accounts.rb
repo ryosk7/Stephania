@@ -17,6 +17,11 @@ require "base64"
 module Accounts
   ROLES = %w[admin operator].freeze
   USERNAME = /\A[a-z0-9][a-z0-9_.-]{0,31}\z/
+  # Names the maintenance audit uses for other identities (the enrolled
+  # owner, the device's own services and logins, docs/MAINTENANCE.md):
+  # an account with one of them could not be told apart in the audit log
+  # or in certificate key IDs.
+  RESERVED_USERNAMES = %w[owner root maint maint-root steph stephania stephania-maint stephania-control unknown].freeze
   MIN_PASSWORD = 10
   MAX_PASSWORD = 256
   IDLE_SECONDS = 12 * 3600
@@ -28,6 +33,8 @@ module Accounts
   DUMMY_HASH = "scrypt$16384$8$1$#{Base64.strict_encode64("\0" * 16)}$#{Base64.strict_encode64("\0" * 32)}"
 
   module_function
+
+  def reserved_username?(name) = RESERVED_USERNAMES.include?(name)
 
   def hash_password(password)
     salt = SecureRandom.random_bytes(16)

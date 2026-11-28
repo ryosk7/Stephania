@@ -3,8 +3,15 @@
 # OpenSSH server and client: stephania-maint opens a window for a code,
 # signs a certificate for a fresh key, starts sshd through a stand-in for
 # systemctl, and the client logs in by certificate with host-certificate
-# checking. Also checks what must fail. Runs unprivileged: sshd runs as the
-# current user and maps its principals file to that user.
+# checking. Also checks what must fail. sshd runs unprivileged as the
+# current user, with the device's own sshd_config (os/ssh/sshd_config: the
+# same PAM, revocation and limit settings) rewritten only for paths, port
+# and user, and maps its principals file to that user.
+# stephania-maint refuses loopback and the device's own addresses as
+# clients, so the test needs two LAN addresses on this host: the "device"
+# and the "client". STEPHANIA_E2E_LAN="<device> <client>" names existing
+# ones; otherwise 10.213.0.1 and 10.213.0.2 are added to lo (as root or
+# with passwordless sudo) and removed again on exit.
 # With steph: the broker socket (ops.sock) for its changes, run inside a
 # real session so the actor comes from the session certificate.
 # Usage: ci/maint-ssh-e2e.sh <stephania-maint binary> [<steph binary>]
@@ -20,40 +27,36 @@ me=$(id -un)
 pass=0
 fail() { echo "FAIL $*" >&2; [ -f "$w/sshd.log" ] && tail -20 "$w/sshd.log" >&2; tail -5 "$w/maint.log" >&2; exit 1; }
 ok() { echo "PASS $*"; pass=$((pass + 1)); }
-cleanup() { [ -f "$w/sshd.pid" ] && kill "$(cat "$w/sshd.pid")" 2>/dev/null; [ -n "${maint_pid:-}" ] && kill "$maint_pid" 2>/dev/null; [ -n "${engine_pid:-}" ] && kill "$engine_pid" 2>/dev/null; rm -rf "$w"; }
+read -r dev cli <<<"${STEPHANIA_E2E_LAN:-10.213.0.1 10.213.0.2}"
+lan_added=
+asroot() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n "$@"; fi; }
+cleanup() {
+  [ -f "$w/sshd.pid" ] && kill "$(cat "$w/sshd.pid")" 2>/dev/null; [ -n "${maint_pid:-}" ] && kill "$maint_pid" 2>/dev/null; [ -n "${engine_pid:-}" ] && kill "$engine_pid" 2>/dev/null
+  [ -n "$lan_added" ] && { asroot ip addr del "$dev/32" dev lo; asroot ip addr del "$cli/32" dev lo; } 2>/dev/null
+  rm -rf "$w"
+}
 trap cleanup EXIT
+if [ -z "${STEPHANIA_E2E_LAN:-}" ]; then
+  lan_added=1
+  asroot ip addr replace "$dev/32" dev lo && asroot ip addr replace "$cli/32" dev lo \
+    || { echo "need root or sudo -n to add $dev and $cli to lo (or set STEPHANIA_E2E_LAN)" >&2; exit 1; }
+fi
 
 mkdir -p "$w/pki" "$w/principals"
-printf '{"host":"stephania-e2e.local","port":9443,"ips":["127.0.0.1"],"urls":[],"ca_sha256":"%064d","not_after_unix":4102444800}\n' 0 >"$w/pki/endpoint.json"
+printf '{"host":"stephania-e2e.local","port":9443,"ips":["%s"],"urls":[],"ca_sha256":"%064d","not_after_unix":4102444800}\n' "$dev" 0 >"$w/pki/endpoint.json"
 # The device maps maint → "maint" and root → "maint-root"; here the one
 # local user stands in for whichever the test names.
 principal() { printf '%s\n' "$1" >"$w/principals/$me"; }
 principal maint
 
-# sshd with the device config's authentication settings, on a free port.
-cat >"$w/sshd_config" <<EOF
-Port $port
-ListenAddress 127.0.0.1
-PidFile $w/sshd.pid
-HostKey $w/maint/ssh_host_ed25519_key
-HostCertificate $w/maint/ssh_host_ed25519_key-cert.pub
-TrustedUserCAKeys $w/maint/user_ca.pub
-AuthorizedPrincipalsFile $w/principals/%u
-AuthorizedKeysFile none
-AuthenticationMethods publickey
-PubkeyAcceptedAlgorithms ssh-ed25519-cert-v01@openssh.com
-HostKeyAlgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-AllowUsers $me
-DisableForwarding yes
-PermitUserRC no
-MaxAuthTries 2
-StrictModes no
-UsePAM no
-ExposeAuthInfo yes
-LogLevel VERBOSE
-EOF
+# sshd with the device's config (same authentication, PAM, revocation and
+# limits), on a free port, as this user.
+sed -e "s#/var/lib/stephania/maint/#$w/maint/#g" -e "s#/etc/stephania/ssh_principals/#$w/principals/#" \
+  -e "s#^Port 22\$#Port $port\nListenAddress $dev\nPidFile $w/sshd.pid\nStrictModes no#" -e "s#^AllowUsers .*#AllowUsers $me#" \
+  "$here/../os/ssh/sshd_config" >"$w/sshd_config"
+for want in "UsePAM no" "RevokedKeys $w/maint/revoked.krl" "ListenAddress $dev" "AllowUsers $me" "AuthorizedPrincipalsFile $w/principals/%u"; do
+  grep -qx "$want" "$w/sshd_config" || fail "device sshd_config no longer has the line the test rewrites: $want"
+done
 cat >"$w/systemctl" <<EOF
 #!/bin/sh
 case "\$1" in
@@ -109,40 +112,65 @@ PY
 }
 field() { python3 -I -c 'import json,sys; v=json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else v)' "$1" "$2"; }
 
-# login <window_id> <client_addr> → runs `echo maint-ok` over ssh with a fresh key and its certificate.
-login() {
-  rm -f "$w/id" "$w/id.pub" "$w/id-cert.pub"
-  ssh-keygen -q -t ed25519 -N '' -f "$w/id"
-  r=$(rpc cert.sign "{\"window_id\":\"$1\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"$2\"}")
-  [ -n "$(field "$r" certificate)" ] || { echo "sign: $r" >&2; return 2; }
-  field "$r" certificate >"$w/id-cert.pub"
-  echo "@cert-authority stephania-e2e.local,127.0.0.1 $(field "$r" host_ca)" >"$w/known_hosts"
+# ssh_from <source address> <command…>: ssh to the device from that address
+# with the key and certificate in $w/id*.
+ssh_from() {
+  local from=$1; shift
   ssh -F none -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
     -o IdentityFile="$w/id" -o CertificateFile="$w/id-cert.pub" \
     -o UserKnownHostsFile="$w/known_hosts" -o GlobalKnownHostsFile=/dev/null \
     -o StrictHostKeyChecking=yes -o HostKeyAlias=stephania-e2e.local -o ConnectTimeout=5 \
-    "$me@127.0.0.1" echo maint-ok 2>>"$w/ssh.err"
+    -o BindAddress="$from" "$me@$dev" "$@"
 }
+# sign <window_id> [actor] [client_addr] → certificate for a fresh key in $w/id*.
+sign() {
+  rm -f "$w/id" "$w/id.pub" "$w/id-cert.pub"
+  ssh-keygen -q -t ed25519 -N '' -f "$w/id"
+  r=$(rpc cert.sign "{\"window_id\":\"$1\",\"actor\":\"${2:-alice}\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"${3:-$cli}\"}")
+  [ -n "$(field "$r" certificate)" ] || { echo "sign: $r" >&2; return 2; }
+  field "$r" certificate >"$w/id-cert.pub"
+  echo "@cert-authority stephania-e2e.local,$dev $(field "$r" host_ca)" >"$w/known_hosts"
+}
+# login <window_id> [<source address>] → runs `echo maint-ok` with a fresh key and its certificate.
+login() { sign "$1" && ssh_from "${2:-$cli}" echo maint-ok 2>>"$w/ssh.err"; }
 
 [ "$(field "$(rpc status '{}')" open)" = False ] && ok "no window and no sshd at start" || fail "status at start"
 [ ! -f "$w/sshd.pid" ] || fail "sshd running without a window"
 
-r=$(rpc window.open '{"actor":"alice","client_addr":"127.0.0.1","code":"000000"}')
+r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"$cli\",\"code\":\"000000\"}")
 [ "$(field "$r" error)" = invalid_code ] || [ "$(code)" = 000000 ] && ok "a wrong code is refused" || fail "wrong code: $r"
 
 c=$(code)
-r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"127.0.0.1\",\"code\":\"$c\"}")
+for own in 127.0.0.1 ::1 "$dev"; do
+  r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"$own\",\"code\":\"$c\",\"root\":true}")
+  [ "$(field "$r" error)" = invalid_params ] || fail "window for client $own: $r"
+done
+ok "loopback and the device's own address get no window"
+r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"$cli\",\"code\":\"$c\"}")
 win=$(field "$r" window_id)
 [ -n "$win" ] && ok "a correct code opens a window" || fail "open: $r"
 for _ in $(seq 50); do [ -f "$w/sshd.pid" ] && break; sleep 0.1; done
 [ -f "$w/sshd.pid" ] && ok "sshd started for the window" || fail "sshd not started: $(cat "$w/maint.log")"
 
-[ "$(login "$win" 127.0.0.1)" = maint-ok ] && ok "login with a fresh key and a 5-minute certificate; host certificate checked" || fail "login: $(cat "$w/ssh.err")"
+[ "$(login "$win")" = maint-ok ] && ok "login with a fresh key and a 5-minute certificate; host certificate checked" || fail "login: $(cat "$w/ssh.err")"
 
-r=$(rpc window.open "{\"actor\":\"bob\",\"client_addr\":\"127.0.0.1\",\"code\":\"$(code 1)\"}")
+r=$(rpc window.open "{\"actor\":\"bob\",\"client_addr\":\"$cli\",\"code\":\"$(code 1)\"}")
 [ "$(field "$r" error)" = window_open ] && ok "only one window at a time" || fail "second window: $r"
 
-if login "$win" 10.0.0.9 >/dev/null; then fail "certificate for another address logged in"; else ok "certificate bound to another client address is refused"; fi
+while read -r who from; do
+  r=$(rpc cert.sign "{\"window_id\":\"$win\",\"actor\":\"$who\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"$from\"}")
+  [ "$(field "$r" error)" = not_window_opener ] || fail "certificate for $who from $from: $r"
+done <<<"bob $cli
+alice 10.0.0.9"
+ok "only the opener, from the address it opened from, gets certificates"
+for own in 127.0.0.1 "$dev"; do
+  r=$(rpc cert.sign "{\"window_id\":\"$win\",\"actor\":\"alice\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"$own\"}")
+  [ "$(field "$r" error)" = invalid_params ] || fail "certificate for $own: $r"
+done
+ok "no certificate for loopback or the device's own address"
+
+sign "$win" || fail "sign"
+if ssh_from "$dev" echo maint-ok >/dev/null 2>>"$w/ssh.err"; then fail "certificate used from another address logged in"; else ok "a certificate used from another address is refused (source-address)"; fi
 
 # Expired certificates: sign with the device's own user CA (rebuilt from its
 # seed), once valid now (control: the CA is right) and once expired.
@@ -161,12 +189,8 @@ PY
 signed_login() {
   rm -f "$w/id" "$w/id.pub" "$w/id-cert.pub"
   ssh-keygen -q -t ed25519 -N '' -f "$w/id"
-  ssh-keygen -q -s "$w/ca" -I "e2e@$win" -n maint -V "$1" -O clear -O permit-pty -O source-address=127.0.0.1/32 "$w/id.pub"
-  ssh -F none -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
-    -o IdentityFile="$w/id" -o CertificateFile="$w/id-cert.pub" \
-    -o UserKnownHostsFile="$w/known_hosts" -o GlobalKnownHostsFile=/dev/null \
-    -o StrictHostKeyChecking=yes -o HostKeyAlias=stephania-e2e.local -o ConnectTimeout=5 \
-    "$me@127.0.0.1" echo maint-ok 2>>"$w/ssh.err"
+  ssh-keygen -q -s "$w/ca" -I "e2e@$win" -n maint -V "$1" -O clear -O permit-pty -O source-address="$cli/32" "$w/id.pub"
+  ssh_from "$cli" echo maint-ok 2>>"$w/ssh.err"
 }
 if ca_key; then
   [ "$(signed_login -1m:+5m)" = maint-ok ] && ok "control: a certificate from the device's user CA logs in" || fail "rebuilt CA: $(tail -3 "$w/ssh.err")"
@@ -178,28 +202,40 @@ else
 fi
 
 principal maint-root
-if login "$win" 127.0.0.1 >/dev/null; then fail "maint certificate accepted for a maint-root user"; else ok "a maint certificate cannot log in where only maint-root is allowed"; fi
+if login "$win" >/dev/null; then fail "maint certificate accepted for a maint-root user"; else ok "a maint certificate cannot log in where only maint-root is allowed"; fi
 principal maint
 
-r=$(rpc cert.sign "{\"window_id\":\"$win\",\"public_key\":\"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQ x\",\"client_addr\":\"127.0.0.1\"}")
+sign "$win" || fail "sign"
+kept="$w/id-kept"; cp "$w/id" "$kept"; cp "$w/id-cert.pub" "$kept-cert.pub"
+r=$(rpc cert.sign "{\"window_id\":\"$win\",\"actor\":\"alice\",\"public_key\":\"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQ x\",\"client_addr\":\"$cli\"}")
 [ "$(field "$r" error)" = invalid_params ] && ok "non-Ed25519 keys are refused" || fail "rsa: $r"
 
 r=$(rpc window.close "{\"window_id\":\"$win\",\"actor\":\"alice\"}")
 [ "$(field "$r" closed)" = True ] && ok "window closed" || fail "close: $r"
 sleep 0.5
 [ ! -f "$w/sshd.pid" ] && ok "sshd stopped with the window" || fail "sshd still running"
-r=$(rpc cert.sign "{\"window_id\":\"$win\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"127.0.0.1\"}")
+r=$(rpc cert.sign "{\"window_id\":\"$win\",\"actor\":\"alice\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"$cli\"}")
 [ "$(field "$r" error)" = window_closed ] && ok "a closed window signs nothing" || fail "sign after close: $r"
 
-r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"127.0.0.1\",\"code\":\"$c\"}")
+r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"$cli\",\"code\":\"$c\"}")
 [ "$(field "$r" error)" = invalid_code ] && ok "a used code does not work twice" || fail "replay: $r"
 
-r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"127.0.0.1\",\"code\":\"$(code 1)\",\"root\":true}")
+r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"$cli\",\"code\":\"$(code 1)\",\"root\":true}")
 win=$(field "$r" window_id)
 [ "$(field "$r" user)" = root ] && ok "a root window is opened explicitly" || fail "root window: $r"
+for _ in $(seq 50); do [ -f "$w/sshd.pid" ] && break; sleep 0.1; done
+# The certificate from the previous window is still within its 5 minutes,
+# but revoked: it does not work in this one.
+cp "$kept" "$w/id"; cp "$kept-cert.pub" "$w/id-cert.pub"
+if ssh_from "$cli" echo maint-ok >/dev/null 2>>"$w/ssh.err"; then fail "a certificate from the previous window logged in"
+elif grep -qi "revoked" "$w/sshd.log"; then ok "a certificate from the previous window does not work in the next (KRL)"
+else fail "previous certificate refused, but not as revoked: $(tail -5 "$w/sshd.log")"; fi
 principal maint-root
-[ "$(login "$win" 127.0.0.1)" = maint-ok ] && ok "root window certificate logs in where maint-root is allowed" || fail "root login: $(cat "$w/ssh.err")"
-rpc window.close "{\"actor\":\"alice\"}" >/dev/null
+[ "$(login "$win")" = maint-ok ] && ok "root window certificate logs in where maint-root is allowed" || fail "root login: $(cat "$w/ssh.err")"
+r=$(rpc window.close "{\"actor\":\"owner\",\"opener\":\"bob\"}")
+[ "$(field "$r" closed)" = False ] && [ "$(field "$(rpc status '{}')" open)" = True ] || fail "close for another opener: $r"
+r=$(rpc window.close "{\"actor\":\"owner\",\"opener\":\"alice\"}")
+[ "$(field "$r" closed)" = True ] && ok "closing for an account ends only the window it opened" || fail "close for opener: $r"
 
 # A new Connect enrollment rotates the code secret (otp.rotate, called by
 # stephania-provision): old codes stop working, new ones work at once, and
@@ -209,7 +245,7 @@ old=$(secret)
 r=$(rpc otp.rotate '{}')
 new=$(field "$r" otp_secret)
 [ -n "$new" ] && [ "$new" != "$old" ] && [ "$new" = "$(secret)" ] && ok "otp.rotate returns a new secret and stores it" || fail "rotate: $r"
-r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"::ffff:127.0.0.1\",\"code\":\"$(code)\"}")
+r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"::ffff:$cli\",\"code\":\"$(code)\"}")
 win=$(field "$r" window_id)
 [ -n "$win" ] && ok "a code from the new secret opens a window (IPv4-mapped client address)" || fail "open after rotate: $r"
 for _ in $(seq 50); do [ -f "$w/sshd.pid" ] && break; sleep 0.1; done
@@ -225,22 +261,14 @@ if [ -n "$steph" ]; then
   rc=0; st restart control 2>/dev/null || rc=$?
   [ "$rc" = 7 ] && ok "steph changes nothing without an open window (exit 7)" || fail "no window: exit $rc"
   c=$(code -1)
-  r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"127.0.0.1\",\"code\":\"$c\"}")
+  r=$(rpc window.open "{\"actor\":\"alice\",\"client_addr\":\"$cli\",\"code\":\"$c\"}")
   win=$(field "$r" window_id)
   [ -n "$win" ] || fail "window for steph: $r"
   for _ in $(seq 50); do [ -f "$w/sshd.pid" ] && break; sleep 0.1; done
   # sess <command…>: run in the maintenance session (SSH_USER_AUTH set by sshd).
   sess() {
-    rm -f "$w/id" "$w/id.pub" "$w/id-cert.pub"
-    ssh-keygen -q -t ed25519 -N '' -f "$w/id"
-    r=$(rpc cert.sign "{\"window_id\":\"$win\",\"public_key\":\"$(cat "$w/id.pub")\",\"client_addr\":\"127.0.0.1\"}")
-    field "$r" certificate >"$w/id-cert.pub"
-    echo "@cert-authority stephania-e2e.local,127.0.0.1 $(field "$r" host_ca)" >"$w/known_hosts"
-    ssh -F none -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
-      -o IdentityFile="$w/id" -o CertificateFile="$w/id-cert.pub" \
-      -o UserKnownHostsFile="$w/known_hosts" -o GlobalKnownHostsFile=/dev/null \
-      -o StrictHostKeyChecking=yes -o HostKeyAlias=stephania-e2e.local -o ConnectTimeout=5 \
-      "$me@127.0.0.1" "export STEPHANIA_MAINT_OPS_SOCKET=$w/ops.sock STEPHANIA_MAINT_INBOX=$w/inbox; $*"
+    sign "$win" >/dev/null || return 2
+    ssh_from "$cli" "export STEPHANIA_MAINT_OPS_SOCKET=$w/ops.sock STEPHANIA_MAINT_INBOX=$w/inbox; $*"
   }
   who=$(sess "$steph" whoami --json | python3 -c 'import json,sys; w=json.load(sys.stdin); print(w["account"], w["window_id"])' 2>/dev/null || true)
   [ "$who" = "alice $win" ] && ok "steph whoami names the account and window from the session certificate" || fail "whoami: $who"
@@ -248,6 +276,16 @@ if [ -n "$steph" ]; then
     && ok "steph restart control goes through the broker" || fail "restart control: $(cat "$w/st.err")"
   grep -q "\"event\":\"maintenance.ops_restart\".*\"actor\":\"alice@$win\"\|\"actor\":\"alice@$win\".*\"event\":\"maintenance.ops_restart\"" "$w/maint.log" \
     && ok "the broker audits the change with the certificate's key ID" || fail "ops audit: $(grep ops_ "$w/maint.log")"
+  # The broker audits the window's account, not what the caller claims.
+  python3 -I - "$w/ops.sock" <<'PY' >/dev/null
+import json, socket, struct, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+body = json.dumps({"version": 1, "request_id": "forge", "method": "ops.restart", "params": {"unit": "pki", "actor": "mallory@0000"}}).encode()
+s.sendall(struct.pack(">I", len(body)) + body)
+n = struct.unpack(">I", s.recv(4, socket.MSG_WAITALL))[0]; s.recv(n, socket.MSG_WAITALL)
+PY
+  grep '"claimed_actor":"mallory@0000"' "$w/maint.log" | grep -q "\"actor\":\"alice@$win\"" \
+    && ok "a claimed actor is kept as claimed_actor; the audit names the window's account" || fail "forged actor: $(grep mallory "$w/maint.log")"
   rc=0; sess "$steph" restart sshd 2>"$w/st.err" || rc=$?
   [ "$rc" = 4 ] && grep -q "steph cannot restart sshd" "$w/st.err" && ok "units outside the allowlist are refused (exit 4)" || fail "allowlist: exit $rc $(cat "$w/st.err")"
   engine streaming

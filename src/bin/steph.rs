@@ -207,9 +207,14 @@ services: engine control phone ble provision pki update maint";
         };
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let name = format!("stephania-diag-{stamp}");
-        let base = std::env::temp_dir().join(format!("steph-{}", std::process::id()));
+        // /tmp is shared by maint and root sessions: work in a fresh 0700
+        // directory with an unguessable name, never in an existing one.
+        let base = match steph::private_dir(&std::env::temp_dir(), "steph-diag") {
+            Ok(b) => b,
+            Err(e) => { eprintln!("steph: {}: {e}", std::env::temp_dir().display()); return ExitCode::from(1) }
+        };
         let dir = base.join(&name);
-        if let Err(e) = std::fs::create_dir_all(&dir) { eprintln!("steph: {}: {e}", dir.display()); return ExitCode::from(1) }
+        if let Err(e) = std::fs::create_dir(&dir) { eprintln!("steph: {}: {e}", dir.display()); let _ = std::fs::remove_dir_all(&base); return ExitCode::from(1) }
         let put = |file: &str, v: &Value| { let _ = std::fs::write(dir.join(file), serde_json::to_string_pretty(v).unwrap_or_default()); };
         put("status.json", &steph::status());
         put("services.json", &steph::services());
@@ -246,7 +251,13 @@ services: engine control phone ble provision pki update maint";
                 },
                 target => {
                     let dest = target.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(format!("{name}.tar.gz")));
-                    match std::fs::copy(&archive, &dest) {
+                    // The default name is never written through an existing
+                    // file or link; -o <file> is the caller's explicit choice.
+                    let copied = if target.is_some() { std::fs::copy(&archive, &dest).map(|_| ()) } else {
+                        std::fs::OpenOptions::new().write(true).create_new(true).open(&dest)
+                            .and_then(|mut f| std::fs::File::open(&archive).and_then(|mut a| std::io::copy(&mut a, &mut f)).map(|_| ()))
+                    };
+                    match copied {
                         Ok(_) => { eprintln!("{}", dest.display()); ExitCode::SUCCESS }
                         Err(e) => { eprintln!("steph: {}: {e}", dest.display()); ExitCode::from(1) }
                     }

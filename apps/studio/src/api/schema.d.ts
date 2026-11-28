@@ -408,8 +408,10 @@ export interface paths {
          *     audio.configured ({inputs}), scene.updated
          *     ({id, revision}), scene.deleted ({id}),
          *     maintenance.window_opened / maintenance.root_window_opened
-         *     ({actor, window_id, expires_at, root}), maintenance.window_closed
-         *     ({actor}, when closed through the API), output.changed
+         *     ({actor, expires_at, root}), maintenance.certificate_issued /
+         *     maintenance.root_certificate_issued ({actor, serial, valid_before,
+         *     client_addr}), maintenance.window_closed ({actor}, when closed
+         *     through the API or by an account change), output.changed
          *     ({configured}; never the URL or key). Comment lines are
          *     keepalives (every 15 s). Slow consumers are disconnected. Unknown
          *     event names must be ignored.
@@ -1305,7 +1307,8 @@ export interface paths {
          * @description The 6-digit code (RFC 6238, 30 s) works once. One window at a time;
          *     a window accepts certificate requests for 10 minutes (root: 5) and
          *     its sessions end after 60 minutes (root: 30). Opening it starts sshd
-         *     on port 22, reachable from private and link-local addresses only.
+         *     on port 22, reachable from private addresses only. Loopback, IPv6
+         *     link-local and the device's own addresses are refused (422).
          *     Five wrong codes lock code entry (429 with Retry-After).
          */
         post: {
@@ -1385,9 +1388,11 @@ export interface paths {
         put?: never;
         /**
          * Sign a 5-minute SSH user certificate for a fresh Ed25519 key
-         * @description The certificate is bound to the requesting address
-         *     (source-address), allows only a PTY, and names the account in its
-         *     key ID. Trust the device with `@cert-authority <host> <host_ca>`.
+         * @description Only for the account that opened the window, from the address it
+         *     was opened from (403 not_window_opener otherwise). The certificate
+         *     is bound to that address (source-address), allows only a PTY, and
+         *     names the account in its key ID. Trust the device with
+         *     `@cert-authority <host> <host_ca>`.
          */
         post: {
             parameters: {
@@ -1904,10 +1909,13 @@ export interface components {
             document: components["schemas"]["scene.schema"];
         };
         MaintenanceWindow: {
-            window_id: string;
+            /** @description Only for the account that opened the window */
+            window_id?: string;
             root: boolean;
             /** @description Account name */
             actor: string;
+            /** @description Address the window was opened from */
+            client_addr?: string;
             /** @enum {string} */
             user: "maint" | "root";
             opened_at: number;
@@ -1928,7 +1936,7 @@ export interface components {
                  *     weak_password(422) user_exists(409) last_admin(409)
                  *     unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
                  *     invalid_code(401, maintenance) code_throttled(429) window_open(409) window_closed(409)
-                 *     maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
+                 *     not_window_opener(403) reserved_username(422 on create, 409 on maintenance) maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
                  *     invalid_output(422) storage_failed(503)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.

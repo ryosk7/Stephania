@@ -48,6 +48,12 @@ done
 
 # Users, units and configuration from the repository.
 install -m 0644 "$repo/systemd/stephania.sysusers.conf" "$r/usr/lib/sysusers.d/stephania.conf"
+# The maintenance sshd runs without PAM (os/ssh/sshd_config), and then
+# refuses locked accounts ("!" in /etc/shadow, as sysusers creates them).
+# "*" is not locked and still matches no password: certificates only.
+in_root systemd-sysusers
+sed -i -E 's/^(maint|root):![^:]*:/\1:*:/' "$r/etc/shadow"
+grep -q '^maint:\*:' "$r/etc/shadow" && ! grep -qE '^(maint|root):!' "$r/etc/shadow" || { echo "maint and root must not be locked for maintenance SSH" >&2; exit 1; }
 install -m 0644 "$repo/systemd/stephania.tmpfiles.conf" "$r/usr/lib/tmpfiles.d/stephania.conf"
 for u in "$repo"/systemd/*.service "$repo"/systemd/*.timer; do install -m 0644 "$u" "$r/etc/systemd/system/"; done
 install -d "$r/etc/systemd/system.conf.d" "$r/etc/rauc" "$r/etc/dbus-1/system.d" "$r/etc/polkit-1/rules.d" "$r/etc/bluetooth"

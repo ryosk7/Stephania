@@ -447,6 +447,36 @@ struct Access {
     host_ca: String,
 }
 
+impl Access {
+    /// What the device sent ends up in the ssh/scp command line and in
+    /// known_hosts: accept only the expected shapes, so a compromised
+    /// device cannot pass options to the local OpenSSH client.
+    fn checked(self, user_from_env: bool) -> Result<Self> {
+        if !user_from_env && !matches!(self.user.as_str(), "maint" | "root") {
+            return Err(Fail::general("the device named an unexpected login user; refusing to connect"));
+        }
+        if !key_line(&self.host_ca, "ssh-ed25519") || !key_line(&self.certificate, "ssh-ed25519-cert-v01@openssh.com") {
+            return Err(Fail::general("the device sent a malformed certificate or host CA; refusing to connect"));
+        }
+        Ok(self)
+    }
+}
+
+/// A POSIX-style login name (also what STEPHCTL_SSH_USER may name).
+fn login_name(u: &str) -> bool {
+    let mut b = u.bytes();
+    (1..=32).contains(&u.len()) && b.next().is_some_and(|c| c.is_ascii_lowercase() || c == b'_')
+        && b.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
+}
+
+/// `<kind> <base64> [comment]` on one line, comment without control characters.
+fn key_line(line: &str, kind: &str) -> bool {
+    let Some(rest) = line.strip_prefix(kind).and_then(|r| r.strip_prefix(' ')) else { return false };
+    let (blob, comment) = rest.split_once(' ').unwrap_or((rest, ""));
+    !blob.is_empty() && blob.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'='))
+        && comment.chars().all(|c| !c.is_control())
+}
+
 /// Uses the open window of the requested level, or opens one with a code
 /// from Stephania Connect; then has `key` certified.
 fn access(client: &api::Client, device: &Device, o: &Opts, s: &mut Session, key: &sshkey::Key) -> Result<Access> {
@@ -457,6 +487,11 @@ fn access(client: &api::Client, device: &Device, o: &Opts, s: &mut Session, key:
         }
         let open = status.body.get("window").filter(|w| !w.is_null() && status.body["open"] == json!(true)).cloned();
         let (window_id, opened) = match open {
+            // The device shows the window id only to the account that opened it.
+            Some(w) if w["window_id"].as_str().is_none() => {
+                return Err(Fail::general(format!("a maintenance window opened by {} is open; only that account can use it",
+                    w["actor"].as_str().unwrap_or("another account"))));
+            }
             Some(w) if (w["root"] == json!(true)) == o.root && w["accepting"] != json!(false) => (w["window_id"].as_str().unwrap_or_default().to_string(), false),
             Some(w) => {
                 let level = if w["root"] == json!(true) { "root" } else { "maintenance" };
@@ -469,15 +504,19 @@ fn access(client: &api::Client, device: &Device, o: &Opts, s: &mut Session, key:
         match r.status {
             200 => {
                 let port = std::env::var("STEPHCTL_SSH_PORT").ok().and_then(|p| p.parse().ok()).or_else(|| r.body["port"].as_u64().map(|p| p as u16)).unwrap_or(22);
-                return Ok(Access {
+                let user = match std::env::var("STEPHCTL_SSH_USER").ok().filter(|u| !u.is_empty()) {
+                    Some(u) if login_name(&u) => u,
+                    Some(_) => return Err(Fail::general("STEPHCTL_SSH_USER is not a valid login name")),
+                    None => r.body["user"].as_str().unwrap_or("maint").to_string(),
+                };
+                return Access {
                     window_id,
                     opened,
-                    user: std::env::var("STEPHCTL_SSH_USER").ok().filter(|u| !u.is_empty())
-                        .unwrap_or_else(|| r.body["user"].as_str().unwrap_or("maint").to_string()),
+                    user,
                     port,
                     certificate: r.body["certificate"].as_str().unwrap_or_default().to_string(),
                     host_ca: r.body["host_ca"].as_str().unwrap_or_default().to_string(),
-                });
+                }.checked(std::env::var("STEPHCTL_SSH_USER").is_ok_and(|u| !u.is_empty()));
             }
             409 => eprintln!("The maintenance window closed meanwhile."),
             s => return Err(Fail::general(format!("certificate request failed ({s}: {})", r.error_code()))),
@@ -626,11 +665,9 @@ fn ssh(target: Option<&str>, o: &Opts) -> Result<ExitCode> {
     let mut device = known(target)?;
     let remote = o.remote.clone();
     with_access(&mut device, o, "ssh", "-p", move |user, address| {
-        let mut tail = vec![format!("{user}@{}", address)];
-        if !remote.is_empty() {
-            tail.push("--".into());
-            tail.extend(remote);
-        }
+        // "--" before the destination: nothing after it is an option.
+        let mut tail = vec!["-l".to_string(), user.to_string(), "--".into(), address.to_string()];
+        tail.extend(remote);
         tail
     })
 }
@@ -666,7 +703,8 @@ fn cp(o: &Opts) -> Result<ExitCode> {
     with_access(&mut device, o, "scp", "-P", move |user, address| {
         let host = host_for_ssh(address);
         // Legacy SCP protocol: the device's sshd has no SFTP subsystem.
-        let mut tail = vec!["-O".to_string()];
+        // "--": no local or remote name is read as an option.
+        let mut tail = vec!["-O".to_string(), "--".to_string()];
         for (i, (arg, part)) in positional.iter().zip(parts).enumerate() {
             tail.push(match part {
                 Some((_, path)) => {
@@ -692,6 +730,24 @@ mod tests {
         assert!(o.root);
         assert_eq!(o.code.as_deref(), Some("123456"));
         assert_eq!(o.remote, ["steph", "status"]);
+    }
+
+    #[test]
+    fn device_supplied_fields_are_checked() {
+        let a = |user: &str, cert: &str, ca: &str| Access { window_id: "w".into(), opened: false, user: user.into(), port: 22,
+            certificate: cert.into(), host_ca: ca.into() };
+        let cert = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaA== stephania";
+        let ca = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 stephania-host-ca";
+        assert!(a("maint", cert, ca).checked(false).is_ok());
+        assert!(a("root", cert, ca).checked(false).is_ok());
+        for user in ["-oProxyCommand=sh -c 'x' #", "maint@evil", "admin", ""] {
+            assert!(a(user, cert, ca).checked(false).is_err(), "{user:?}");
+        }
+        assert!(a("runner", cert, ca).checked(true).is_ok(), "a local override for tests");
+        assert!(a("maint", cert, "ssh-ed25519 AAAA\n@cert-authority * ssh-ed25519 BBBB").checked(false).is_err());
+        assert!(a("maint", cert, "ssh-rsa AAAA").checked(false).is_err());
+        assert!(a("maint", "ssh-ed25519-cert-v01@openssh.com AA AA\rx", ca).checked(false).is_err());
+        assert!(login_name("maint") && login_name("_ci-runner1") && !login_name("-o") && !login_name("Maint") && !login_name("a b"));
     }
 
     #[test]

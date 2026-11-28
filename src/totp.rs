@@ -22,21 +22,38 @@ pub fn step(unix_seconds: u64) -> u64 { unix_seconds / STEP_SECONDS }
 /// The 6-digit code for a Unix time.
 pub fn code(secret: &[u8], unix_seconds: u64) -> u32 { hotp(secret, step(unix_seconds), DIGITS) }
 
-/// Checks `input` against the current step and one step either side,
-/// refusing any step at or before `last_used` (each code works once).
-/// Returns the matching step, which the caller records as used.
-pub fn verify(secret: &[u8], input: &str, unix_seconds: u64, last_used: Option<u64>) -> Option<u64> {
+/// How many used steps the caller keeps (`verify`'s `used`).
+pub const USED_STEPS_KEPT: usize = 32;
+
+/// Checks `input` against the current step and one step either side.
+/// `used` lists the steps already used, oldest first (the caller keeps the
+/// last `USED_STEPS_KEPT`). Each code works once: a step in `used` is
+/// always refused, and while the clock is at or past the most recent use,
+/// so is any step before it. If the most recent use lies ahead of the
+/// clock, the clock went back (a cold boot without a real-time clock or
+/// network time); codes for the current steps are then accepted unless
+/// they are in `used`, instead of refusing every code until the clock
+/// catches up. Returns the matching step, which the caller records.
+pub fn verify(secret: &[u8], input: &str, unix_seconds: u64, used: &[u64]) -> Option<u64> {
     let input = input.trim();
     if input.len() != DIGITS as usize || !input.bytes().all(|b| b.is_ascii_digit()) { return None; }
     let wanted: u32 = input.parse().ok()?;
     let now = step(unix_seconds);
+    let clock_behind = used.last().is_some_and(|&last| last > now + 1);
     let mut matched = None;
     // Compare every candidate so timing does not reveal which step matched.
     for s in [now.saturating_sub(1), now, now + 1] {
-        let fresh = last_used.is_none_or(|used| s > used);
+        let fresh = !used.contains(&s) && (clock_behind || used.last().is_none_or(|&last| s > last));
         if fresh && hotp(secret, s, DIGITS) == wanted && matched.is_none() { matched = Some(s); }
     }
     matched
+}
+
+/// `used` after `step` was accepted: appended, oldest dropped.
+pub fn record_used(used: &mut Vec<u64>, step: u64) {
+    used.retain(|&s| s != step);
+    used.push(step);
+    if used.len() > USED_STEPS_KEPT { used.drain(..used.len() - USED_STEPS_KEPT); }
 }
 
 #[cfg(test)]
@@ -66,28 +83,62 @@ mod tests {
     fn accepts_one_step_of_drift_and_rejects_more() {
         let t = 1_700_000_000;
         let now = format!("{:06}", code(RFC_SECRET, t));
-        assert_eq!(verify(RFC_SECRET, &now, t, None), Some(step(t)));
-        assert_eq!(verify(RFC_SECRET, &now, t + 30, None), Some(step(t)));
-        assert_eq!(verify(RFC_SECRET, &now, t - 30, None), Some(step(t)));
-        assert_eq!(verify(RFC_SECRET, &now, t + 61, None), None);
+        assert_eq!(verify(RFC_SECRET, &now, t, &[]), Some(step(t)));
+        assert_eq!(verify(RFC_SECRET, &now, t + 30, &[]), Some(step(t)));
+        assert_eq!(verify(RFC_SECRET, &now, t - 30, &[]), Some(step(t)));
+        assert_eq!(verify(RFC_SECRET, &now, t + 61, &[]), None);
     }
 
     #[test]
     fn a_used_step_and_earlier_ones_are_refused() {
         let t = 1_700_000_000;
         let c = format!("{:06}", code(RFC_SECRET, t));
-        let used = verify(RFC_SECRET, &c, t, None).unwrap();
-        assert_eq!(verify(RFC_SECRET, &c, t, Some(used)), None);
+        let used = verify(RFC_SECRET, &c, t, &[]).unwrap();
+        assert_eq!(verify(RFC_SECRET, &c, t, &[used]), None);
         let earlier = format!("{:06}", code(RFC_SECRET, t - 30));
-        assert_eq!(verify(RFC_SECRET, &earlier, t, Some(used)), None);
+        assert_eq!(verify(RFC_SECRET, &earlier, t, &[used]), None);
         let later = format!("{:06}", code(RFC_SECRET, t + 30));
-        assert_eq!(verify(RFC_SECRET, &later, t, Some(used)), Some(used + 1));
+        assert_eq!(verify(RFC_SECRET, &later, t, &[used]), Some(used + 1));
+    }
+
+    #[test]
+    fn a_clock_that_went_back_still_accepts_fresh_codes_but_no_replays() {
+        // Used yesterday at real time; today the device booted at an
+        // earlier time (no RTC battery, no network time).
+        let real = 1_800_000_000;
+        let boot = 1_700_000_000;
+        let mut used = vec![];
+        record_used(&mut used, step(real));
+        let fresh = format!("{:06}", code(RFC_SECRET, boot));
+        let s = verify(RFC_SECRET, &fresh, boot, &used).expect("a current code works after the clock went back");
+        record_used(&mut used, s);
+        assert_eq!(verify(RFC_SECRET, &fresh, boot, &used), None, "still once only");
+        let before = format!("{:06}", code(RFC_SECRET, boot - 30));
+        assert_eq!(verify(RFC_SECRET, &before, boot, &used), None, "steps before the latest use stay refused");
+        // The next cold boot lands on the same steps again: a code used
+        // there in an earlier boot is still refused.
+        let mut again = used.clone();
+        record_used(&mut again, step(real) + 10);
+        assert_eq!(verify(RFC_SECRET, &fresh, boot, &again), None);
+        let next = format!("{:06}", code(RFC_SECRET, boot + 30));
+        assert_eq!(verify(RFC_SECRET, &next, boot + 30, &again), Some(step(boot + 30)));
+        // The used-step code at the real time is never accepted again.
+        let old = format!("{:06}", code(RFC_SECRET, real));
+        assert_eq!(verify(RFC_SECRET, &old, real, &used), None);
+    }
+
+    #[test]
+    fn used_steps_are_bounded() {
+        let mut used = vec![];
+        for s in 0..(USED_STEPS_KEPT as u64 + 5) { record_used(&mut used, s); }
+        assert_eq!(used.len(), USED_STEPS_KEPT);
+        assert_eq!((used[0], *used.last().unwrap()), (5, USED_STEPS_KEPT as u64 + 4));
     }
 
     #[test]
     fn malformed_input_is_refused() {
         for bad in ["", "12345", "1234567", "12a456", "-12345", "１２３４５６"] {
-            assert_eq!(verify(RFC_SECRET, bad, 1_700_000_000, None), None, "{bad:?}");
+            assert_eq!(verify(RFC_SECRET, bad, 1_700_000_000, &[]), None, "{bad:?}");
         }
     }
 }

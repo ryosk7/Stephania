@@ -149,7 +149,7 @@ describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () 
       expect(e.otpSecret).toBe(Buffer.from(secret, 'hex').toString('base64'));
       // A code computed here (as Connect shows it) opens a window on the device.
       const code = totpCode(otpSecretBytes(e.otpSecret!), Date.now() / 1000);
-      const opened = await maintRpc(join(dir, 'm.sock'), 'window.open', {actor: 'connect', client_addr: '127.0.0.1', code});
+      const opened = await maintRpc(join(dir, 'm.sock'), 'window.open', {actor: 'connect', client_addr: '192.168.1.20', code});
       expect(opened).toMatchObject({ok: true, result: {user: 'maint'}});
     } else {
       expect(e.otpSecret).toBeUndefined();

@@ -12,8 +12,9 @@ The control plane (services/control) accepts three kinds of credentials.
 ## Accounts
 
 - Created by an admin (`POST /api/v1/users`), or with the owner token for
-  the first account. Username `^[a-z0-9][a-z0-9_.-]{0,31}$`, password
-  10–256 characters.
+  the first account. Username `^[a-z0-9][a-z0-9_.-]{0,31}$`, except the
+  names the maintenance audit uses for other identities (`owner`, `root`,
+  `maint`, …; docs/MAINTENANCE.md), password 10–256 characters.
 - Passwords are stored as scrypt (N=2^14, r=8, p=1, 16-byte random salt),
   encoded as `scrypt$N$r$p$salt$hash` so the cost can be raised later.
 - At least one enabled admin account always remains (`409 last_admin`).

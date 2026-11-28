@@ -8,8 +8,10 @@
 //! Socket `STEPHANIA_MAINT_SOCKET` (default `/run/stephania-maint/maint.sock`,
 //! docs/IPC.md framing). The control plane (`STEPHANIA_IPC_ALLOWED_UIDS`) may call
 //! `window.open {actor, client_addr, code, root?}` → window;
-//! `cert.sign {window_id, public_key, client_addr}` → `{certificate, …}`;
-//! `window.close {window_id?, actor}`; `status {}`.
+//! `cert.sign {window_id, public_key, actor, client_addr}` → `{certificate, …}`
+//! (only for the window's opener, from the address it was opened from);
+//! `window.close {window_id?, actor, opener?}` (with `opener`, only a
+//! window that account opened); `status {}`.
 //! The provisioning core (`STEPHANIA_MAINT_ENROLL_UIDS`) may call only
 //! `otp.rotate {}` → `{otp_secret}` (hex), for `management.enroll`.
 //! Root and the service's own uid may call everything.
@@ -22,7 +24,9 @@
 //! `ops.update_apply {path, actor, force}` (a bundle in the inbox) and
 //! `ops.window_close {actor}`, only while a window is open. Changes that
 //! would interrupt a stream are refused while the engine streams unless
-//! `force` is set.
+//! `force` is set. The `actor` steph sends is only a claim: the audit
+//! names the open window's account and id and the caller's uid, and keeps
+//! the claim as `claimed_actor`.
 #[cfg(unix)]
 fn main() {
     if let Err(e) = unix::run() {
@@ -161,8 +165,8 @@ mod unix {
 
     /// The bundle path must be a regular file directly in the inbox, where
     /// `stephctl cp <file> device:` puts uploads.
-    fn update_target(config: &Config, m: &mut Maintenance, params: Option<&Map<String, Value>>) -> Result<(PathBuf, String), MaintError> {
-        let actor = str_param(params, "actor")?.to_string();
+    fn update_target(config: &Config, m: &mut Maintenance, params: Option<&Map<String, Value>>, uid: Option<u32>) -> Result<(PathBuf, String), MaintError> {
+        let (actor, identity) = ops_actor(m, params, uid)?;
         let force = params.and_then(|p| p.get("force")).and_then(Value::as_bool).unwrap_or(false);
         let given = PathBuf::from(str_param(params, "path")?);
         let inbox = config.inbox.canonicalize().map_err(|e| MaintError::Internal(format!("inbox: {e}")))?;
@@ -172,10 +176,10 @@ mod unix {
             return Err(MaintError::InvalidParams(format!("the bundle must be a file in {} (stephctl cp <file> device:)", inbox.display())));
         }
         if !force && on_air(config) {
-            m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: json!({"actor": actor, "op": "ops.update_apply", "reason": "on_air"}) });
+            m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: with_identity(&identity, json!({"op": "ops.update_apply", "reason": "on_air"})) });
             return Err(MaintError::OnAir);
         }
-        m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_update_apply", fields: json!({"actor": actor, "bundle": path.display().to_string(), "force": force}) });
+        m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_update_apply", fields: with_identity(&identity, json!({"bundle": path.display().to_string(), "force": force})) });
         Ok((path, actor))
     }
 
@@ -236,7 +240,33 @@ mod unix {
         p.and_then(|p| p.get(k)).and_then(Value::as_str).ok_or_else(|| MaintError::InvalidParams(format!("{k} required")))
     }
 
-    fn dispatch(config: &Config, m: &mut Maintenance, method: &str, params: Option<&Map<String, Value>>) -> Result<Value, MaintError> {
+    /// The device's own addresses (refused as clients), from the PKI endpoint.
+    fn refresh_device_addrs(config: &Config, m: &mut Maintenance) {
+        if let Some(e) = Endpoint::load(&config.pki_dir) { m.set_device_addrs(&e.ips); }
+    }
+
+    /// Who a broker change is audited as: the open window's account and id
+    /// (`<account>@<window>`, what the session certificate's key ID says),
+    /// the caller's uid, and what steph claimed, kept only if well formed.
+    fn ops_actor(m: &Maintenance, params: Option<&Map<String, Value>>, uid: Option<u32>) -> Result<(String, Value), MaintError> {
+        let claimed = str_param(params, "actor")?;
+        let claimed = if (1..=128).contains(&claimed.len()) && claimed.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'@')) {
+            json!(claimed)
+        } else {
+            json!("(malformed)")
+        };
+        let actor = m.window().map(|w| format!("{}@{}", w.actor, w.id)).unwrap_or_else(|| "(no window)".into());
+        Ok((actor.clone(), json!({"actor": actor, "claimed_actor": claimed, "peer_uid": uid})))
+    }
+
+    /// Adds the audit identity to an event's fields.
+    fn with_identity(identity: &Value, fields: Value) -> Value {
+        let mut out = identity.as_object().cloned().unwrap_or_default();
+        if let Value::Object(f) = fields { out.extend(f); }
+        Value::Object(out)
+    }
+
+    fn dispatch(config: &Config, m: &mut Maintenance, method: &str, params: Option<&Map<String, Value>>, uid: Option<u32>) -> Result<Value, MaintError> {
         let t = now();
         match method {
             "otp.rotate" => {
@@ -247,6 +277,7 @@ mod unix {
             "status" => Ok(m.status(t)),
             "window.open" => {
                 let root = params.and_then(|p| p.get("root")).and_then(Value::as_bool).unwrap_or(false);
+                refresh_device_addrs(config, m);
                 let w = m.open_window(str_param(params, "actor")?, str_param(params, "client_addr")?, str_param(params, "code")?, root, t)?;
                 let started = host_names(&config.pki_dir).and_then(|names| m.write_host_certificate(&names, t)).map_err(MaintError::Internal)
                     .and_then(|_| if sshd(config, "start") { Ok(()) } else { Err(MaintError::Internal("could not start sshd".into())) });
@@ -257,11 +288,17 @@ mod unix {
                 }
                 Ok(w.to_json(t))
             }
-            "cert.sign" => m.sign(str_param(params, "window_id")?, str_param(params, "public_key")?, str_param(params, "client_addr")?, t),
+            "cert.sign" => {
+                refresh_device_addrs(config, m);
+                m.sign(str_param(params, "window_id")?, str_param(params, "public_key")?, str_param(params, "actor")?, str_param(params, "client_addr")?, t)
+            }
             "window.close" => {
                 let id = params.and_then(|p| p.get("window_id")).and_then(Value::as_str);
                 let actor = str_param(params, "actor")?;
-                let closed = m.close(id, actor, "closed")?;
+                let closed = match params.and_then(|p| p.get("opener")).and_then(Value::as_str) {
+                    Some(opener) => m.close_opened_by(opener, actor, "account_changed"),
+                    None => m.close(id, actor, "closed")?,
+                };
                 if closed.is_some() { window_ended(config); }
                 Ok(json!({"closed": closed.is_some()}))
             }
@@ -271,28 +308,28 @@ mod unix {
                 Ok(st)
             }
             "ops.window_close" => {
-                let actor = str_param(params, "actor")?;
-                let closed = m.close(None, actor, "closed_by_steph")?;
+                let (actor, _) = ops_actor(m, params, uid)?;
+                let closed = m.close(None, &actor, "closed_by_steph")?;
                 if closed.is_some() { window_ended(config); }
                 Ok(json!({"closed": closed.is_some()}))
             }
             "ops.restart" | "ops.reboot" => {
-                let actor = str_param(params, "actor")?.to_string();
+                let (_, identity) = ops_actor(m, params, uid)?;
                 let force = params.and_then(|p| p.get("force")).and_then(Value::as_bool).unwrap_or(false);
                 let (target, live) = if method == "ops.reboot" { ("reboot", true) } else {
                     let unit = str_param(params, "unit")?;
                     let Some((_, u, live)) = RESTARTABLE.iter().find(|(n, _, _)| *n == unit) else {
-                        m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: json!({"actor": actor, "op": method, "unit": unit, "reason": "not_allowed"}) });
+                        m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: with_identity(&identity, json!({"op": method, "unit": unit, "reason": "not_allowed"})) });
                         return Err(MaintError::NotAllowed(unit.to_string()));
                     };
                     (*u, *live)
                 };
                 if live && !force && on_air(config) {
-                    m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: json!({"actor": actor, "op": method, "target": target, "reason": "on_air"}) });
+                    m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: with_identity(&identity, json!({"op": method, "target": target, "reason": "on_air"})) });
                     return Err(MaintError::OnAir);
                 }
                 m.audit.push(stephania::maint::AuditEvent { kind: if method == "ops.reboot" { "maintenance.ops_reboot" } else { "maintenance.ops_restart" },
-                    fields: json!({"actor": actor, "target": target, "force": force}) });
+                    fields: with_identity(&identity, json!({"target": target, "force": force})) });
                 flush_audit(m);
                 let r = if method == "ops.reboot" { systemctl(config, &["reboot"]) } else { systemctl(config, &["restart", target]) };
                 r.map_err(|e| MaintError::Failed(e.message()))?;
@@ -302,7 +339,7 @@ mod unix {
         }
     }
 
-    fn handle(config: &Config, state: &Mutex<Maintenance>, role: Role, frame: &[u8]) -> Value {
+    fn handle(config: &Config, state: &Mutex<Maintenance>, role: Role, uid: Option<u32>, frame: &[u8]) -> Value {
         let err = |id: Option<&str>, code: &str, msg: &str, extra: Value| {
             let mut e = json!({"code": code, "message": msg});
             if let (Value::Object(o), Value::Object(x)) = (&mut e, extra) { o.extend(x); }
@@ -327,14 +364,14 @@ mod unix {
             Err(MaintError::WindowClosed)
         } else if method == "ops.update_apply" {
             // Checked under the lock, installed without it: RAUC takes minutes.
-            let checked = update_target(config, &mut m, params);
+            let checked = update_target(config, &mut m, params, uid);
             flush_audit(&mut m);
             drop(m);
             let result = checked.and_then(|(path, actor)| run_update(config, &path, &actor));
             m = state.lock().unwrap_or_else(|p| p.into_inner());
             result
         } else {
-            dispatch(config, &mut m, method, params)
+            dispatch(config, &mut m, method, params, uid)
         };
         flush_audit(&mut m);
         match result {
@@ -362,7 +399,8 @@ mod unix {
             let _ = stream.set_write_timeout(Some(ipc::IO_TIMEOUT));
             // Fail closed on Linux if credentials cannot be read; elsewhere
             // (development) the socket's file mode is the only guard.
-            let role = match ipc::peer_uid(&stream) {
+            let peer = ipc::peer_uid(&stream);
+            let role = match peer {
                 Some(uid) if uid == 0 || uid == own => Some(Role::Full),
                 Some(uid) => extra(uid, config).or_else(|| policy.filter(|p| p.allows(uid, own)).map(|_| Role::Control)),
                 None if cfg!(target_os = "linux") => None,
@@ -380,7 +418,7 @@ mod unix {
             let (config, state, active) = (Arc::clone(config), Arc::clone(state), Arc::clone(&active));
             std::thread::spawn(move || {
                 while let Ok(Some(frame)) = ipc::read_frame(&mut stream) {
-                    let body = serde_json::to_vec(&handle(&config, &state, role, &frame)).unwrap_or_default();
+                    let body = serde_json::to_vec(&handle(&config, &state, role, peer, &frame)).unwrap_or_default();
                     if ipc::write_frame(&mut stream, &body).is_err() { break; }
                 }
                 active.fetch_sub(1, Ordering::SeqCst);

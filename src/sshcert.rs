@@ -167,6 +167,35 @@ pub fn sign_certificate(ca: &Key, public: &[u8; 32], spec: &CertSpec, comment: &
     Ok(if comment.is_empty() { line } else { format!("{line} {comment}") })
 }
 
+/// An OpenSSH key revocation list (PROTOCOL.krl, sshd's `RevokedKeys`)
+/// revoking the certificates `ca` issued with serials in `revoked`
+/// (inclusive; `None` revokes nothing). `version` and `generated` are
+/// informational.
+pub fn revocation_list(ca: &Key, revoked: Option<(u64, u64)>, version: u64, generated: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"SSHKRL\n\0");
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(&generated.to_be_bytes());
+    out.extend_from_slice(&0u64.to_be_bytes());
+    put_string(&mut out, b"");
+    put_string(&mut out, b"stephania-maint");
+    // OpenSSH refuses a range starting at 0; no certificate has serial 0.
+    if let Some((min, max)) = revoked.map(|(min, max)| (min.max(1), max)).filter(|(min, max)| min <= max) {
+        let mut section = Vec::new();
+        put_string(&mut section, &ca.public_blob());
+        put_string(&mut section, b"");
+        let mut range = Vec::new();
+        range.extend_from_slice(&min.to_be_bytes());
+        range.extend_from_slice(&max.to_be_bytes());
+        section.push(0x21); // KRL_SECTION_CERT_SERIAL_RANGE
+        put_string(&mut section, &range);
+        out.push(1); // KRL_SECTION_CERTIFICATES
+        put_string(&mut out, &section);
+    }
+    out
+}
+
 /// Fields of a certificate, read back and with its signature checked
 /// against the embedded signer. For tests and `steph whoami`.
 #[derive(Debug, PartialEq, Eq)]
@@ -376,6 +405,35 @@ mod tests {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert!(text.contains("user certificate") && text.contains("Key ID: \"alice@w1\"") && text.contains("Serial: 7"), "{text}");
         assert!(text.contains("source-address 10.0.0.5/32") && text.contains("permit-pty"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ssh-keygen -Q checks certificates against the revocation list.
+    #[test]
+    fn ssh_keygen_honours_our_revocation_list() {
+        if std::process::Command::new("ssh-keygen").arg("-?").output().is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stephania-krl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca = Key::generate().unwrap();
+        let user = Key::generate().unwrap();
+        let principals = vec!["maint".to_string()];
+        let krl = dir.join("revoked.krl");
+        let revoked = |serial: u64, list: &[u8]| {
+            std::fs::write(&krl, list).unwrap();
+            let cert = dir.join(format!("c{serial}-cert.pub"));
+            std::fs::write(&cert, sign_certificate(&ca, user.public(), &CertSpec { serial, ..spec(&principals, &[]) }, "").unwrap() + "\n").unwrap();
+            let out = std::process::Command::new("ssh-keygen").arg("-Q").arg("-f").arg(&krl).arg(&cert).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+            assert!(text.contains(": ok") || text.contains("REVOKED"), "{text}");
+            text.contains("REVOKED")
+        };
+        let list = revocation_list(&ca, Some((0, 5)), 2, 1_000);
+        assert!(revoked(1, &list) && revoked(5, &list));
+        assert!(!revoked(6, &list));
+        let empty = revocation_list(&ca, None, 3, 1_000);
+        assert!(!revoked(1, &empty));
+        // Another CA's list does not touch this CA's certificates.
+        assert!(!revoked(1, &revocation_list(&Key::generate().unwrap(), Some((1, 9)), 4, 1_000)));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

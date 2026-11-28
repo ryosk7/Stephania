@@ -1,17 +1,18 @@
 #!/usr/sbin/nft -f
 # Installed as /etc/nftables.conf (nftables.service). SSH (maintenance
-# windows, docs/MAINTENANCE.md) only from private and link-local
-# addresses; everything else keeps the default accept policy.
+# windows, docs/MAINTENANCE.md) only from private addresses (and IPv4
+# link-local), never from loopback: only the device itself can connect
+# from there. Everything else keeps the default accept policy.
 flush ruleset
 
 table inet stephania {
   set lan4 {
     type ipv4_addr; flags interval
-    elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8 }
+    elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
   }
   set lan6 {
     type ipv6_addr; flags interval
-    elements = { fc00::/7, fe80::/10, ::1/128 }
+    elements = { fc00::/7 }
   }
   chain input {
     type filter hook input priority filter; policy accept;
