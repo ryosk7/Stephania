@@ -21,6 +21,9 @@ Environment=STEPHANIA_PHONE_SOCKET=/run/stephania-phone/phone.sock
 Environment=STEPHANIA_MAINT_SOCKET=/run/stephania-maint/maint.sock
 Environment=STEPHANIA_STUDIO_DIST=/opt/stephania/studio
 Environment=STEPHANIA_CONTROL_DB=/var/lib/stephania/control/control.db
+# Stream destination (RTMPS URL + key), 0600 in the 0700 state directory;
+# kept out of control.db so update snapshots never contain it.
+Environment=STEPHANIA_CONTROL_OUTPUT_FILE=/var/lib/stephania/control/output.json
 # Trusted LAN: TLS on 9443 with the device-CA certificate (stephania-pki);
 # accepts only owner-issued tokens. Plain HTTP stays on loopback.
 Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki

@@ -31,7 +31,7 @@ impl EngineControl for IpcEngine {
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64),
         }
     }
-    fn start(&self) -> Result<(), String> { self.0.start() }
+    fn start(&self, output: Option<&str>) -> Result<(), String> { self.0.start(output) }
     fn stop(&self) { self.0.stop() }
 
     fn apply_scene(&self, scene_id: &str, revision: u64, scene: &serde_json::Value, transition: stephania::compositor::Transition) -> Result<serde_json::Value, stephania::ipc::IpcError> {
@@ -310,7 +310,7 @@ fn handle(mut stream: TcpStream, controller: Arc<Controller>) {
             }
         }
         "POST /stream/start HTTP/1.1" | "POST /stream/start HTTP/1.0" =>
-            match controller.start() {
+            match controller.start(None) {
                 Ok(()) => ("202 Accepted","application/json","{\"streaming_requested\":true,\"youtube_ingest_confirmed\":false}".into()),
                 Err(e) => ("503 Service Unavailable","application/json",format!("{{\"error\":\"{}\"}}",escape_json(&e)))
             },

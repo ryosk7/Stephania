@@ -15,6 +15,7 @@ require_relative "lib/audio_settings"
 require_relative "lib/accounts"
 require_relative "lib/asset_store"
 require_relative "lib/template_validator"
+require_relative "lib/output_store"
 
 # Stephania management plane. Contract: contracts/openapi.yaml.
 #
@@ -65,6 +66,8 @@ class Control < Sinatra::Base
   class << self
     attr_accessor :db, :token, :engine, :events, :poller, :levels, :lan, :phone, :maint, :assets_dir
     attr_writer :throttle
+    # Stream destination (OutputStore); see the /api/v1/output routes.
+    attr_accessor :stream_output
 
     def throttle = (@throttle ||= Accounts::Throttle.new)
     # Camera credential id that opened the current phone session (nil when
@@ -104,6 +107,7 @@ class Control < Sinatra::Base
       self.maint = EngineClient.new(socket_path: env.fetch("STEPHANIA_MAINT_SOCKET", "/run/stephania-maint/maint.sock"), timeout: 15.0, max_connections: 2)
       self.assets_dir = env.fetch("STEPHANIA_ASSETS_DIR") { File.join(Dir.tmpdir, "stephania-assets-#{Process.pid}") }
       configure_storage(env.fetch("STEPHANIA_CONTROL_DB", ":memory:"))
+      self.stream_output = OutputStore.new(OutputStore.path_from_env(env))
       configure_events(interval: Float(env.fetch("STEPHANIA_CONTROL_POLL_SECONDS", "1.0")))
     end
 
@@ -504,7 +508,46 @@ class Control < Sinatra::Base
   end
 
   post "/api/v1/stream/start" do
-    json_reply(engine_call("stream.start"), 202)
+    # The stored destination travels only over the engine socket; without
+    # one the engine falls back to STEPHANIA_OUTPUT (development).
+    output = settings.stream_output.output_url
+    json_reply(engine_call("stream.start", output && {output: output}), 202)
+  end
+
+  # --- Stream destination (docs/AUTH.md) -----------------------------------
+  # Admins set, replace or clear the RTMPS URL and stream key; the key is
+  # never returned (admins see its last 4 characters, operators only
+  # whether one is configured). Applies at the next stream start.
+
+  get "/api/v1/output" do
+    json_reply(settings.stream_output.public_json(admin: @principal[:role] == "admin"))
+  end
+
+  put "/api/v1/output" do
+    input = read_json
+    unless input.is_a?(Hash) && input.keys.sort == %w[stream_key url] && input["url"].is_a?(String) && input["stream_key"].is_a?(String)
+      fail_with 422, "invalid_request", "body must be {url, stream_key}"
+    end
+    begin
+      settings.stream_output.save(input["url"].strip, input["stream_key"].strip)
+    rescue OutputStore::Invalid => e
+      fail_with 422, "invalid_output", e.message
+    rescue SystemCallError
+      fail_with 503, "storage_failed", "could not store the stream output"
+    end
+    settings.events.publish("output.changed", {configured: true})
+    json_reply(settings.stream_output.public_json(admin: true))
+  end
+
+  delete "/api/v1/output" do
+    begin
+      settings.stream_output.clear
+    rescue SystemCallError
+      fail_with 503, "storage_failed", "could not remove the stream output"
+    end
+    settings.events.publish("output.changed", {configured: false})
+    status 204
+    ""
   end
 
   post "/api/v1/stream/stop" do

@@ -161,9 +161,25 @@ test('accounts: admin edits scenes with undo/redo and resize, operator cannot, s
   await expect(o.getByRole('button', {name: 'Add layer', exact: true})).toHaveCount(0);
   await o.goto(stack.url + '#/settings');
   await expect(o.getByRole('region', {name: 'users'})).toHaveCount(0);
+  await expect(o.getByTestId('output-status')).toHaveText(/^Not configured/);
+
+  // The admin sets the stream destination; the key is never shown again,
+  // and the operator only learns that one is configured.
+  await a.goto(stack.url + '#/settings');
+  const key = 'e2e0-test-key0-wxyz';
+  await a.getByLabel('Stream key').fill(key);
+  await a.getByRole('button', {name: 'Save', exact: true}).click();
+  await expect(status(a)).toHaveText(/^Stream destination saved/);
+  await expect(a.getByTestId('output-status')).toHaveText('Configured: rtmps://a.rtmps.youtube.com/live2 · key ending wxyz');
+  await expect(a.getByLabel('Stream key')).toHaveValue('');
+  expect(await (await a.request.get(stack.url + 'api/v1/output')).text()).not.toContain(key);
+  await o.reload();
+  await expect(o.getByTestId('output-status')).toHaveText('Configured');
+  await expect(o.getByLabel('Stream key')).toHaveCount(0);
+  await a.getByRole('button', {name: 'Remove'}).click();
+  await expect(a.getByTestId('output-status')).toHaveText(/^Not configured/);
 
   // The admin disables the operator: her session ends immediately.
-  await a.goto(stack.url + '#/settings');
   await a.getByTestId('user-olga').getByLabel('Disabled').check();
   await expect(status(a)).toHaveText('Disabled');
   const me = await o.request.get(stack.url + 'api/v1/auth/me');

@@ -76,6 +76,10 @@ class EngineIntegrationTest < Minitest::Test
     assert_equal true, caps["compositor"]
     error = assert_raises(EngineClient::RemoteError) { @client.call("stream.start") }
     assert_equal "engine_start_failed", error.code
+    # The engine checks an output from control again and never echoes it.
+    error = assert_raises(EngineClient::RemoteError) { @client.call("stream.start", {output: "rtmp://a.rtmp.youtube.com/live2/SECRETKEY1"}) }
+    assert_equal "invalid_params", error.code
+    refute_includes error.message, "SECRETKEY1"
     assert_equal false, @client.call("stream.stop")["streaming_requested"]
   end
 
