@@ -2,7 +2,8 @@
 //! maintenance window (docs/MAINTENANCE.md). Read commands read the system
 //! directly (`stephania::steph`); every one takes `--json`, with the shapes
 //! in contracts/steph.schema.json. Commands that change the device go
-//! through stephania-maint and are not part of this build yet.
+//! through stephania-maint's broker socket, which checks, performs and
+//! audits them.
 #[cfg(unix)]
 fn main() -> std::process::ExitCode { unix::main() }
 
@@ -14,7 +15,7 @@ fn main() {
 
 #[cfg(unix)]
 mod unix {
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use std::io::{IsTerminal, Write};
     use std::os::unix::process::CommandExt;
     use std::process::{Command, ExitCode};
@@ -32,6 +33,10 @@ mod unix {
   time                      clock, NTP, RTC
   disk                      data partition and overlay use
   diag [-o <file>|-]        evidence bundle (tar.gz), secrets excluded
+  restart <service> [--while-live]     restart one service (control ble provision pki engine phone)
+  reboot [--while-live]                reboot into the committed slot
+  update apply <bundle> [--while-live] verify and install a .raucb from the inbox, then trial boot
+  window close                         end this window and its sessions now
 
 services: engine control phone ble provision pki update maint";
 
@@ -52,10 +57,15 @@ services: engine control phone ble provision pki update maint";
             ["disk"] => Ok(steph::disk()),
             ["logs", more @ ..] => return logs(more),
             ["diag", more @ ..] => return diag(more),
-            ["restart", ..] | ["reboot"] | ["update", "apply", ..] | ["window", "close"] => {
-                eprintln!("steph: changes go through stephania-maint, which this build does not offer yet");
-                return ExitCode::from(6);
+            ["restart", unit, more @ ..] => return change("ops.restart", json!({"unit": unit}), more, &format!("restart {unit}")),
+            ["reboot", more @ ..] => return change("ops.reboot", json!({}), more, "reboot"),
+            ["update", "apply", bundle, more @ ..] => {
+                let path = std::path::Path::new(bundle);
+                let inbox = std::env::var("STEPHANIA_MAINT_INBOX").unwrap_or_else(|_| INBOX.to_string());
+                let path = if path.is_absolute() || path.exists() { path.to_path_buf() } else { std::path::Path::new(&inbox).join(path) };
+                return change("ops.update_apply", json!({"path": path.display().to_string()}), more, "install the update");
             }
+            ["window", "close"] => return change("ops.window_close", json!({}), &[], "close the window"),
             _ => Err(format!("unknown command\n{USAGE}")),
         };
         match result {
@@ -101,6 +111,61 @@ services: engine control phone ble provision pki update maint";
             Value::String(s) => s.trim_end().replace('\n', "\n    "),
             Value::Array(a) => a.iter().map(scalar).collect::<Vec<_>>().join(", "),
             other => other.to_string(),
+        }
+    }
+
+    /// Where `stephctl cp <file> device:` puts uploads.
+    const INBOX: &str = "/var/lib/stephania/inbox";
+
+    /// A change through stephania-maint. `--while-live` overrides the on-air
+    /// refusal after the device name is typed back.
+    fn change(method: &str, mut params: Value, rest: &[&str], what: &str) -> ExitCode {
+        let mut force = false;
+        for a in rest {
+            match *a {
+                "--while-live" => force = true,
+                other => { eprintln!("steph: unknown option {other}"); return ExitCode::from(1) }
+            }
+        }
+        if force {
+            let host = std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
+            eprint!("This may interrupt the stream. Type the device name ({host}) to {what} anyway: ");
+            let _ = std::io::stderr().flush();
+            let mut typed = String::new();
+            let _ = std::io::stdin().read_line(&mut typed);
+            if typed.trim() != host || host.is_empty() {
+                eprintln!("steph: name did not match; nothing changed");
+                return ExitCode::from(3);
+            }
+        }
+        if let Value::Object(o) = &mut params {
+            o.insert("actor".into(), json!(steph::actor()));
+            o.insert("force".into(), json!(force));
+            if method == "ops.window_close" { o.remove("force"); }
+        }
+        let timeout = if method == "ops.update_apply" { std::time::Duration::from_secs(30 * 60) } else { std::time::Duration::from_secs(120) };
+        match steph::ops_call(method, params, timeout) {
+            Ok(v) => {
+                match method {
+                    "ops.update_apply" => eprintln!("Installed. The device reboots into the new slot and commits it if it comes up healthy."),
+                    "ops.reboot" => eprintln!("Rebooting."),
+                    "ops.window_close" => eprintln!("Window closed."),
+                    _ => eprintln!("Restarted {}.", v["target"].as_str().unwrap_or("")),
+                }
+                ExitCode::SUCCESS
+            }
+            Err((code, msg)) => {
+                let (exit, text) = match code.as_str() {
+                    "on_air" => (3, "on air: this would interrupt the stream (use --while-live)".to_string()),
+                    "not_allowed" => (4, msg),
+                    "failed" => (5, msg),
+                    "unreachable" => (6, format!("stephania-maint is not running ({msg})")),
+                    "window_closed" => (7, "maintenance window closed".to_string()),
+                    _ => (1, if msg.is_empty() { code } else { msg }),
+                };
+                eprintln!("steph: {text}");
+                ExitCode::from(exit)
+            }
         }
     }
 

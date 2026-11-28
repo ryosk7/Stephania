@@ -13,6 +13,16 @@
 //! The provisioning core (`STEPHANIA_MAINT_ENROLL_UIDS`) may call only
 //! `otp.rotate {}` → `{otp_secret}` (hex), for `management.enroll`.
 //! Root and the service's own uid may call everything.
+//!
+//! A second socket, `STEPHANIA_MAINT_OPS_SOCKET` (default `ops.sock` next
+//! to the main socket, group `STEPHANIA_MAINT_OPS_GID`), is the
+//! broker for `steph`: the maintenance login (`STEPHANIA_MAINT_OPS_UIDS`)
+//! and root may call `ops.status {}`, `ops.restart {unit, actor, force}`
+//! (short names, allowlist), `ops.reboot {actor, force}`,
+//! `ops.update_apply {path, actor, force}` (a bundle in the inbox) and
+//! `ops.window_close {actor}`, only while a window is open. Changes that
+//! would interrupt a stream are refused while the engine streams unless
+//! `force` is set.
 #[cfg(unix)]
 fn main() {
     if let Err(e) = unix::run() {
@@ -44,11 +54,30 @@ mod unix {
         systemctl: String,
         sshd_unit: String,
         enroll_uids: Vec<u32>,
+        ops_socket: Option<PathBuf>,
+        ops_gid: Option<u32>,
+        ops_uids: Vec<u32>,
+        engine_socket: PathBuf,
+        update: String,
+        inbox: PathBuf,
     }
 
     /// What a peer may call.
     #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Role { Full, Control, Enroll }
+    enum Role { Full, Control, Enroll, Ops }
+
+    const OPS_METHODS: [&str; 5] = ["ops.status", "ops.restart", "ops.reboot", "ops.update_apply", "ops.window_close"];
+
+    /// steph's allowlist (docs/MAINTENANCE.md "What steph may change"):
+    /// short name → unit, and whether restarting it interrupts a stream.
+    const RESTARTABLE: [(&str, &str, bool); 6] = [
+        ("engine", "stephania.service", true),
+        ("phone", "stephania-phone.service", true),
+        ("control", "stephania-control.service", false),
+        ("ble", "stephania-ble.service", false),
+        ("provision", "stephania-provision.service", false),
+        ("pki", "stephania-pki.service", false),
+    ];
 
     const CONTROL_METHODS: [&str; 4] = ["status", "window.open", "cert.sign", "window.close"];
     const ENROLL_METHODS: [&str; 1] = ["otp.rotate"];
@@ -73,21 +102,107 @@ mod unix {
             systemctl: env_or("STEPHANIA_MAINT_SYSTEMCTL", "systemctl"),
             sshd_unit: env_or("STEPHANIA_MAINT_SSHD_UNIT", "stephania-sshd.service"),
             enroll_uids: uid_list("STEPHANIA_MAINT_ENROLL_UIDS")?,
+            // Next to maint.sock unless set; "none" turns the broker off.
+            ops_socket: match std::env::var("STEPHANIA_MAINT_OPS_SOCKET").ok().filter(|v| !v.is_empty()) {
+                Some(v) if v == "none" => None,
+                Some(v) => Some(PathBuf::from(v)),
+                None => Some(PathBuf::from(env_or("STEPHANIA_MAINT_SOCKET", "/run/stephania-maint/maint.sock")).with_file_name("ops.sock")),
+            },
+            ops_gid: std::env::var("STEPHANIA_MAINT_OPS_GID").ok().filter(|v| !v.is_empty())
+                .map(|v| v.parse::<u32>().map_err(|_| format!("invalid STEPHANIA_MAINT_OPS_GID: {v}"))).transpose()?,
+            ops_uids: uid_list("STEPHANIA_MAINT_OPS_UIDS")?,
+            engine_socket: PathBuf::from(env_or("STEPHANIA_ENGINE_SOCKET", "/run/stephania/engine.sock")),
+            update: env_or("STEPHANIA_MAINT_UPDATE", "/usr/local/bin/stephania-update"),
+            inbox: PathBuf::from(env_or("STEPHANIA_MAINT_INBOX", "/var/lib/stephania/inbox")),
         };
         let policy = PeerPolicy::from_env()?;
         let maint = Maintenance::open(&dir)?;
         let state = Arc::new(Mutex::new(maint));
         let config = Arc::new(config);
         // A restart forgets any window, so sshd must not outlive it.
-        sshd(&config, "stop");
+        window_ended(&config);
         let ticker = (Arc::clone(&state), Arc::clone(&config));
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(5));
             let mut m = ticker.0.lock().unwrap_or_else(|p| p.into_inner());
-            if m.expire(now()).is_some() { sshd(&ticker.1, "stop"); }
+            if m.expire(now()).is_some() { window_ended(&ticker.1); }
             flush_audit(&mut m);
         });
-        serve(&config, &policy, &state)
+        if let Some(ops) = config.ops_socket.clone() {
+            let listener = ipc::bind(&ops).map_err(|e| format!("bind {}: {e}", ops.display()))?;
+            if let Some(gid) = config.ops_gid {
+                let c = std::ffi::CString::new(ops.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+                // SAFETY: chown with a NUL-terminated path; -1 keeps the owner.
+                if unsafe { libc::chown(c.as_ptr(), u32::MAX, gid) } != 0 {
+                    return Err(format!("chown {}: {}", ops.display(), std::io::Error::last_os_error()));
+                }
+            }
+            let (config, state) = (Arc::clone(&config), Arc::clone(&state));
+            std::thread::spawn(move || serve_on(listener, &config, None, &state, |uid, c| c.ops_uids.contains(&uid).then_some(Role::Ops)));
+        }
+        let listener = ipc::bind(&config.socket).map_err(|e| format!("bind {}: {e}", config.socket.display()))?;
+        log("maintenance.listening", json!({"socket": config.socket.display().to_string()}));
+        serve_on(listener, &config, Some(&policy), &state, |uid, c| {
+            if c.enroll_uids.contains(&uid) { Some(Role::Enroll) } else { None }
+        });
+        Ok(())
+    }
+
+    /// After any window ends: stop sshd and empty the upload inbox.
+    fn window_ended(config: &Config) {
+        sshd(config, "stop");
+        if let Ok(entries) = std::fs::read_dir(&config.inbox) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+            }
+        }
+    }
+
+    /// The bundle path must be a regular file directly in the inbox, where
+    /// `stephctl cp <file> device:` puts uploads.
+    fn update_target(config: &Config, m: &mut Maintenance, params: Option<&Map<String, Value>>) -> Result<(PathBuf, String), MaintError> {
+        let actor = str_param(params, "actor")?.to_string();
+        let force = params.and_then(|p| p.get("force")).and_then(Value::as_bool).unwrap_or(false);
+        let given = PathBuf::from(str_param(params, "path")?);
+        let inbox = config.inbox.canonicalize().map_err(|e| MaintError::Internal(format!("inbox: {e}")))?;
+        let path = given.canonicalize().map_err(|_| MaintError::InvalidParams("no such bundle".into()))?;
+        let meta = std::fs::symlink_metadata(&path).map_err(|_| MaintError::InvalidParams("no such bundle".into()))?;
+        if path.parent() != Some(inbox.as_path()) || !meta.is_file() {
+            return Err(MaintError::InvalidParams(format!("the bundle must be a file in {} (stephctl cp <file> device:)", inbox.display())));
+        }
+        if !force && on_air(config) {
+            m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: json!({"actor": actor, "op": "ops.update_apply", "reason": "on_air"}) });
+            return Err(MaintError::OnAir);
+        }
+        m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_update_apply", fields: json!({"actor": actor, "bundle": path.display().to_string(), "force": force}) });
+        Ok((path, actor))
+    }
+
+    /// `stephania-update <bundle>`: RAUC installs into the other slot, then
+    /// the device reboots into it once (tryboot). RAUC's message on refusal.
+    fn run_update(config: &Config, path: &Path, actor: &str) -> Result<Value, MaintError> {
+        match std::process::Command::new(&config.update).arg(path).output() {
+            Ok(o) if o.status.success() => Ok(json!({"installed": true, "rebooting": true})),
+            Ok(o) => {
+                let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                log("maintenance.ops_update_failed", json!({"actor": actor, "status": o.status.code(), "message": msg}));
+                Err(MaintError::Failed(if msg.is_empty() { "update failed".into() } else { msg }))
+            }
+            Err(e) => Err(MaintError::Internal(format!("{}: {e}", config.update))),
+        }
+    }
+
+    fn on_air(config: &Config) -> bool {
+        matches!(stephania::bootctl::engine_status(&config.engine_socket), Ok(st) if st.get("streaming_requested") == Some(&Value::Bool(true)))
+    }
+
+    fn systemctl(config: &Config, args: &[&str]) -> Result<(), MaintError> {
+        match std::process::Command::new(&config.systemctl).args(args).output() {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(MaintError::Internal(format!("systemctl {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))),
+            Err(e) => Err(MaintError::Internal(format!("systemctl: {e}"))),
+        }
     }
 
     fn sshd(config: &Config, verb: &str) -> bool {
@@ -126,7 +241,7 @@ mod unix {
         match method {
             "otp.rotate" => {
                 let (secret, closed) = m.rotate_otp_secret().map_err(MaintError::Internal)?;
-                if closed.is_some() { sshd(config, "stop"); }
+                if closed.is_some() { window_ended(config); }
                 Ok(json!({"otp_secret": secret.iter().map(|b| format!("{b:02x}")).collect::<String>()}))
             }
             "status" => Ok(m.status(t)),
@@ -147,8 +262,41 @@ mod unix {
                 let id = params.and_then(|p| p.get("window_id")).and_then(Value::as_str);
                 let actor = str_param(params, "actor")?;
                 let closed = m.close(id, actor, "closed")?;
-                if closed.is_some() { sshd(config, "stop"); }
+                if closed.is_some() { window_ended(config); }
                 Ok(json!({"closed": closed.is_some()}))
+            }
+            "ops.status" => {
+                let mut st = m.status(t);
+                if let Value::Object(o) = &mut st { o.insert("on_air".into(), json!(on_air(config))); }
+                Ok(st)
+            }
+            "ops.window_close" => {
+                let actor = str_param(params, "actor")?;
+                let closed = m.close(None, actor, "closed_by_steph")?;
+                if closed.is_some() { window_ended(config); }
+                Ok(json!({"closed": closed.is_some()}))
+            }
+            "ops.restart" | "ops.reboot" => {
+                let actor = str_param(params, "actor")?.to_string();
+                let force = params.and_then(|p| p.get("force")).and_then(Value::as_bool).unwrap_or(false);
+                let (target, live) = if method == "ops.reboot" { ("reboot", true) } else {
+                    let unit = str_param(params, "unit")?;
+                    let Some((_, u, live)) = RESTARTABLE.iter().find(|(n, _, _)| *n == unit) else {
+                        m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: json!({"actor": actor, "op": method, "unit": unit, "reason": "not_allowed"}) });
+                        return Err(MaintError::NotAllowed(unit.to_string()));
+                    };
+                    (*u, *live)
+                };
+                if live && !force && on_air(config) {
+                    m.audit.push(stephania::maint::AuditEvent { kind: "maintenance.ops_refused", fields: json!({"actor": actor, "op": method, "target": target, "reason": "on_air"}) });
+                    return Err(MaintError::OnAir);
+                }
+                m.audit.push(stephania::maint::AuditEvent { kind: if method == "ops.reboot" { "maintenance.ops_reboot" } else { "maintenance.ops_restart" },
+                    fields: json!({"actor": actor, "target": target, "force": force}) });
+                flush_audit(m);
+                let r = if method == "ops.reboot" { systemctl(config, &["reboot"]) } else { systemctl(config, &["restart", target]) };
+                r.map_err(|e| MaintError::Failed(e.message()))?;
+                Ok(json!({"done": true, "target": target}))
             }
             _ => Err(MaintError::InvalidParams("unknown method".into())),
         }
@@ -170,10 +318,24 @@ mod unix {
             Role::Full => true,
             Role::Control => CONTROL_METHODS.contains(&method),
             Role::Enroll => ENROLL_METHODS.contains(&method),
+            Role::Ops => OPS_METHODS.contains(&method),
         };
         if !permitted { return err(Some(id), "forbidden", "method not permitted for this peer", json!({})) }
+        let params = req.get("params").and_then(Value::as_object);
         let mut m = state.lock().unwrap_or_else(|p| p.into_inner());
-        let result = dispatch(config, &mut m, method, req.get("params").and_then(Value::as_object));
+        let result = if method.starts_with("ops.") && method != "ops.status" && m.window().is_none() {
+            Err(MaintError::WindowClosed)
+        } else if method == "ops.update_apply" {
+            // Checked under the lock, installed without it: RAUC takes minutes.
+            let checked = update_target(config, &mut m, params);
+            flush_audit(&mut m);
+            drop(m);
+            let result = checked.and_then(|(path, actor)| run_update(config, &path, &actor));
+            m = state.lock().unwrap_or_else(|p| p.into_inner());
+            result
+        } else {
+            dispatch(config, &mut m, method, params)
+        };
         flush_audit(&mut m);
         match result {
             Ok(v) => json!({"version": 1, "request_id": id, "ok": true, "result": v}),
@@ -184,12 +346,13 @@ mod unix {
         }
     }
 
-    /// A thread per connection (at most MAX_CONNECTIONS): the control plane
-    /// keeps pooled connections open, which must not shut out the
-    /// provisioning core. Requests are serialized by the state lock.
-    fn serve(config: &Arc<Config>, policy: &PeerPolicy, state: &Arc<Mutex<Maintenance>>) -> Result<(), String> {
-        let listener = ipc::bind(&config.socket).map_err(|e| format!("bind {}: {e}", config.socket.display()))?;
-        log("maintenance.listening", json!({"socket": config.socket.display().to_string()}));
+    /// A thread per connection (at most MAX_CONNECTIONS per socket): the
+    /// control plane keeps pooled connections open, which must not shut out
+    /// the provisioning core. Requests are serialized by the state lock.
+    /// Root and the service itself get every method; `extra` names other
+    /// roles by uid; `policy` (main socket only) admits the control plane.
+    fn serve_on(listener: std::os::unix::net::UnixListener, config: &Arc<Config>, policy: Option<&PeerPolicy>,
+                state: &Arc<Mutex<Maintenance>>, extra: impl Fn(u32, &Config) -> Option<Role>) {
         // SAFETY: getuid has no preconditions and cannot fail.
         let own = unsafe { libc::getuid() };
         let active = Arc::new(AtomicUsize::new(0));
@@ -201,9 +364,7 @@ mod unix {
             // (development) the socket's file mode is the only guard.
             let role = match ipc::peer_uid(&stream) {
                 Some(uid) if uid == 0 || uid == own => Some(Role::Full),
-                Some(uid) if config.enroll_uids.contains(&uid) => Some(Role::Enroll),
-                Some(uid) if policy.allows(uid, own) => Some(Role::Control),
-                Some(_) => None,
+                Some(uid) => extra(uid, config).or_else(|| policy.filter(|p| p.allows(uid, own)).map(|_| Role::Control)),
                 None if cfg!(target_os = "linux") => None,
                 None => Some(Role::Full),
             };
@@ -225,6 +386,5 @@ mod unix {
                 active.fetch_sub(1, Ordering::SeqCst);
             });
         }
-        Ok(())
     }
 }

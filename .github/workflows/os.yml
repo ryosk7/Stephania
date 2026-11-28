@@ -96,8 +96,8 @@ jobs:
           shared-key: maint-2404
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || { sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server >/dev/null; }
-      - run: cargo build --locked --no-default-features --bin stephania-maint
-      - run: ci/maint-ssh-e2e.sh target/debug/stephania-maint
+      - run: cargo build --locked --no-default-features --bin stephania-maint --bin steph
+      - run: ci/maint-ssh-e2e.sh target/debug/stephania-maint target/debug/steph
 
   # PR image check: the same image recipe for x86_64, booted with KVM
   # (seconds instead of minutes of arm64 emulation), with binaries built

@@ -8,8 +8,10 @@ User=stephania
 Group=stephania
 ExecStart=/usr/local/bin/stephania
 Environment=STEPHANIA_ENGINE_SOCKET=/run/stephania/engine.sock
-# Control service uid (see stephania.sysusers.conf); root and stephania are implicit.
-Environment=STEPHANIA_IPC_ALLOWED_UIDS=852
+# Control service uid, and stephania-maint (856) for the on-air check before
+# steph restarts or updates (see stephania.sysusers.conf); root and
+# stephania are implicit.
+Environment=STEPHANIA_IPC_ALLOWED_UIDS=852,856
 # Phone ingest (crate::phone_ingest): only stephania-phone (uid 855).
 Environment=STEPHANIA_MEDIA_SOCKET=/run/stephania/media.sock
 Environment=STEPHANIA_MEDIA_ALLOWED_UIDS=855
