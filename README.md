@@ -77,6 +77,12 @@ failure never stops a healthy HDMI broadcast.
 
 ## Development
 
+Enable the repository hooks once per clone. The pre-commit hook compresses staged PNG and JPEG files (needs `pngquant optipng jpegoptim`), and CI rejects uncompressed images:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 **Engine** (Linux; native media needs `libasound2-dev libclang-dev libx264-dev libavcodec-dev libavutil-dev pkg-config`):
 
 ```bash
