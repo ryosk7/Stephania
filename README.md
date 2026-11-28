@@ -102,9 +102,15 @@ Configuration is by environment variables, for example:
 ```bash
 export STEPHANIA_VIDEO=/dev/video0 STEPHANIA_AUDIO=plughw:1,0
 export STEPHANIA_WIDTH=1920 STEPHANIA_HEIGHT=1080 STEPHANIA_FPS=30 STEPHANIA_BITRATE_KBPS=6000
-export STEPHANIA_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'   # never commit stream keys
+export STEPHANIA_OUTPUT='rtmps://a.rtmps.youtube.com/live2/YOUR_STREAM_KEY'   # development only; never commit stream keys
 ./target/release/stephania
 ```
+
+On a device the stream destination is set by an admin in the Studio
+(Settings → Stream destination, `PUT /api/v1/output`). Control keeps it in
+a 0600 file on /data and passes it to the engine with each stream start;
+`STEPHANIA_OUTPUT` is only the fallback when none is stored
+([docs/AUTH.md](docs/AUTH.md#stream-destination)).
 
 The engine is controlled over its Unix socket (`STEPHANIA_ENGINE_SOCKET`,
 [docs/IPC.md](docs/IPC.md)), normally through the control service.

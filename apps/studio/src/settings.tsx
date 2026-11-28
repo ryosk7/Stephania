@@ -1,8 +1,10 @@
-// Account settings: own password (signed-in users) and user management
+// Settings: the stream destination (admins set it; everyone sees whether
+// one is configured), own password (signed-in users) and user management
 // (admins). Roles: admin = everything; operator = run the show (start/stop,
 // Program, audio), no scene editing or account management.
 import React, {useEffect, useState} from 'react';
-import type {createClient, Me, Role, User} from './api/client';
+import type {createClient, Me, OutputView, Role, User} from './api/client';
+import {outputProblem, outputSummary, YOUTUBE_URL} from './output';
 
 type Api = ReturnType<typeof createClient>;
 const ROLE_NAMES: Record<Role, string> = {admin: 'Admin', operator: 'Operator'};
@@ -12,6 +14,8 @@ export function Settings({api, me, onMessage}: {api: Api; me: Me; onMessage: (m:
   const [form, setForm] = useState({username: '', password: '', role: 'operator' as Role});
   const [pw, setPw] = useState({current: '', next: ''});
   const admin = me.role === 'admin';
+  const [output, setOutput] = useState<OutputView>();
+  const [dest, setDest] = useState({url: YOUTUBE_URL, key: ''});
 
   async function run(f: () => Promise<void>) { try { await f(); } catch (e) { onMessage(String(e)); } }
   const load = async () => { if (admin) setUsers(await api.users()); };
@@ -22,10 +26,36 @@ export function Settings({api, me, onMessage}: {api: Api; me: Me; onMessage: (m:
       try { await api.updateUser(u.id, patch); onMessage(done); } finally { await load(); }
     });
   }
-  useEffect(() => { void run(load); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadOutput = async () => { setOutput(await api.output()); };
+  useEffect(() => { void run(load); void run(loadOutput); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  function saveOutput() {
+    const problem = outputProblem(dest.url, dest.key);
+    if (problem) { onMessage(problem); return; }
+    void run(async () => {
+      // The key is kept only in this form until it is sent; the answer has its last 4 characters.
+      setOutput(await api.saveOutput(dest.url.trim(), dest.key.trim()));
+      setDest({...dest, key: ''});
+      onMessage('Stream destination saved; it applies at the next stream start');
+    });
+  }
 
   return (
     <div data-testid="settings">
+      <section aria-label="stream destination">
+        <h2>Stream destination</h2>
+        <p data-testid="output-status">{outputSummary(output)}</p>
+        {admin && (
+          <form onSubmit={e => { e.preventDefault(); saveOutput(); }}>
+            <label>Server URL <input value={dest.url} autoComplete="off" spellCheck={false} onChange={e => setDest({...dest, url: e.target.value})}/></label>
+            <label>Stream key <input type="password" value={dest.key} autoComplete="off" spellCheck={false}
+              placeholder={output?.configured ? 'Enter a new key to replace it' : 'From YouTube Studio → Go live → Stream'} onChange={e => setDest({...dest, key: e.target.value})}/></label>
+            <button type="submit">{output?.configured ? 'Replace' : 'Save'}</button>
+            {output?.configured && (
+              <button type="button" onClick={() => void run(async () => { await api.clearOutput(); await loadOutput(); onMessage('Stream destination removed'); })}>Remove</button>
+            )}
+          </form>
+        )}
+      </section>
       {me.kind === 'user' && (
         <section aria-label="password">
           <h2>Change password</h2>

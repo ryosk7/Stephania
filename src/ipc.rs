@@ -120,7 +120,11 @@ impl EngineStatus {
 pub trait EngineControl: Send + Sync {
     fn instance(&self) -> &EngineInstance;
     fn status(&self) -> EngineStatus;
-    fn start(&self) -> Result<(), String>;
+    /// Start streaming. `output` is the RTMPS destination (URL with the
+    /// stream key) sent by control; None falls back to the engine's own
+    /// configuration (`STEPHANIA_OUTPUT`, development). Implementations
+    /// must never log or report the output.
+    fn start(&self, output: Option<&str>) -> Result<(), String>;
     fn stop(&self);
     /// Apply a validated scene to Program and return only after the media
     /// thread acknowledged frame-boundary application. Default: fail closed.
@@ -264,6 +268,21 @@ pub fn parse_transition(v: Option<&Value>) -> Result<crate::compositor::Transiti
     }
 }
 
+/// `stream.start` params: none, `{}` or `{output}`. `output` is an RTMPS
+/// URL `rtmps://host[:port]/app/stream_key` (crate::rtmps_tls::Target). The
+/// error never echoes the value: it carries the stream key.
+fn stream_start_output(params: Option<&Value>) -> Result<Option<&str>, IpcError> {
+    let bad = || ipc_err(code::INVALID_PARAMS, "params.output must be an RTMPS URL rtmps://host[:port]/app/stream_key");
+    let Some(m) = params_object(params)? else { return Ok(None) };
+    if m.keys().any(|k| k != "output") {
+        return Err(ipc_err(code::INVALID_PARAMS, "only params.output is accepted"));
+    }
+    let Some(output) = m.get("output") else { return Ok(None) };
+    let output = output.as_str().ok_or_else(bad)?;
+    crate::rtmps_tls::Target::parse(output).map_err(|_| bad())?;
+    Ok(Some(output))
+}
+
 fn scene_param(params: Option<&Value>) -> Result<&Value, IpcError> {
     let m = params_object(params)?.ok_or_else(|| ipc_err(code::INVALID_PARAMS, "params.scene required"))?;
     if m.len() != 1 {
@@ -290,8 +309,8 @@ pub fn dispatch(engine: &dyn EngineControl, method: &str, params: Option<&Value>
             Ok(caps)
         }
         "stream.start" => {
-            no_params(params)?;
-            engine.start().map_err(|e| ipc_err(code::ENGINE_START_FAILED, e))?;
+            let output = stream_start_output(params)?;
+            engine.start(output).map_err(|e| ipc_err(code::ENGINE_START_FAILED, e))?;
             // Accepted means the request was taken, not that ingest works.
             Ok(json!({"accepted": true, "streaming_requested": true, "youtube_ingest_confirmed": false}))
         }
@@ -533,6 +552,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         calls: Mutex<Vec<&'static str>>,
+        outputs: Mutex<Vec<Option<String>>>,
         fail_start: bool,
         /// Models STEPHANIA_COMPOSITOR=0; the default fake is the default engine.
         compositor_off: bool,
@@ -544,8 +564,9 @@ mod tests {
             self.calls.lock().unwrap().push("status");
             EngineStatus { streaming_requested: false, native_worker_running: false, restart_attempts: 3, last_error: "x\"y".into(), native_worker_started_unix_ms: None }
         }
-        fn start(&self) -> Result<(), String> {
+        fn start(&self, output: Option<&str>) -> Result<(), String> {
             self.calls.lock().unwrap().push("start");
+            self.outputs.lock().unwrap().push(output.map(str::to_owned));
             if self.fail_start { Err("STEPHANIA_OUTPUT is not configured".into()) } else { Ok(()) }
         }
         fn stop(&self) { self.calls.lock().unwrap().push("stop"); }
@@ -610,6 +631,20 @@ mod tests {
     }
 
     #[test]
+    fn start_passes_output_to_engine_and_never_echoes_a_bad_one() {
+        let f = Fake::default();
+        let url = "rtmps://a.rtmps.youtube.com/live2/abcd-efgh-ijkl-mnop";
+        let r = call(&f, json!({"version":1,"request_id":"a","method":"stream.start","params":{"output":url}}));
+        assert_eq!(r["ok"], true, "{r}");
+        call(&f, json!({"version":1,"request_id":"b","method":"stream.start"}));
+        assert_eq!(*f.outputs.lock().unwrap(), vec![Some(url.to_string()), None]);
+        let secret = "rtmps://a.rtmps.youtube.com/live2/SECRET?x=1";
+        let r = call(&f, json!({"version":1,"request_id":"c","method":"stream.start","params":{"output":secret}}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS);
+        assert!(!r.to_string().contains("SECRET"));
+    }
+
+    #[test]
     fn rejects_malformed_requests_without_touching_engine() {
         let f = Fake::default();
         for (req, expected) in [
@@ -619,6 +654,9 @@ mod tests {
             (json!({"version":1,"request_id":"a","method":"x.y"}), code::UNKNOWN_METHOD),
             (json!({"version":1,"request_id":"a","method":"stream.start","params":{"force":true}}), code::INVALID_PARAMS),
             (json!({"version":1,"request_id":"a","method":"stream.start","params":[]}), code::INVALID_PARAMS),
+            (json!({"version":1,"request_id":"a","method":"stream.start","params":{"output":1}}), code::INVALID_PARAMS),
+            (json!({"version":1,"request_id":"a","method":"stream.start","params":{"output":"rtmp://a.rtmp.youtube.com/live2/k"}}), code::INVALID_PARAMS),
+            (json!({"version":1,"request_id":"a","method":"stream.start","params":{"output":"rtmps://a.rtmps.youtube.com/live2/k","force":true}}), code::INVALID_PARAMS),
             (json!({"version":1,"request_id":"a","method":"engine.status","extra":1}), code::INVALID_REQUEST),
             (json!([1]), code::INVALID_REQUEST),
         ] {

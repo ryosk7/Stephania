@@ -409,7 +409,8 @@ export interface paths {
          *     ({id, revision}), scene.deleted ({id}),
          *     maintenance.window_opened / maintenance.root_window_opened
          *     ({actor, window_id, expires_at, root}), maintenance.window_closed
-         *     ({actor}, when closed through the API). Comment lines are
+         *     ({actor}, when closed through the API), output.changed
+         *     ({configured}; never the URL or key). Comment lines are
          *     keepalives (every 15 s). Slow consumers are disconnected. Unknown
          *     event names must be ignored.
          */
@@ -497,7 +498,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Request stream start (IPC stream.start) */
+        /**
+         * Request stream start (IPC stream.start)
+         * @description Sends the destination stored with PUT /output to the engine as
+         *     `stream.start {output}` (engine socket only). With none stored the
+         *     engine uses its own STEPHANIA_OUTPUT (development) and otherwise
+         *     fails with 503 engine_start_failed.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -527,6 +534,113 @@ export interface paths {
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream destination status (stream key never returned)
+         * @description Admins get {configured, url, key_last4, updated_at_unix}; operators
+         *     get only {configured}. The stream key itself is never returned by
+         *     any route, event or log.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Destination status */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OutputStatus"] | {
+                            configured: boolean;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        /**
+         * Set or replace the stream destination (admin only)
+         * @description Stored by control in its state directory on /data (0600, not in
+         *     control.db, so not in update snapshots) and sent to the engine at
+         *     the next stream start; a running stream keeps its destination.
+         *     Only RTMPS is accepted. Operators get 403 forbidden_role.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description Ingest server URL without the key, e.g. rtmps://a.rtmps.youtube.com/live2. DNS name with a dot (no IP literals). */
+                        url: string;
+                        stream_key: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Stored */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OutputStatus"];
+                    };
+                };
+                /** @description invalid_request (body shape) or invalid_output (URL or key rejected; the message never contains the key) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        /** Clear the stream destination (admin only) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Cleared (also when none was stored) */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                default: components["responses"]["Error"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -1716,6 +1830,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        OutputStatus: {
+            configured: boolean;
+            /** @description Ingest server URL without the key */
+            url: string | null;
+            /** @description Last 4 characters of the stream key */
+            key_last4: string | null;
+            updated_at_unix: number | null;
+        };
         TemplateVar: {
             key: string;
             label: string;
@@ -1805,6 +1927,7 @@ export interface components {
                  *     unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
                  *     invalid_code(401, maintenance) code_throttled(429) window_open(409) window_closed(409)
                  *     maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
+                 *     invalid_output(422) storage_failed(503)
                  *     internal_error(500);
                  *     unrecognised engine codes are passed through with 502.
                  */

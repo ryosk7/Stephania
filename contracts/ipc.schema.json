@@ -390,6 +390,17 @@
         }
       }
     },
+    "stream_start_params": {
+      "description": "stream.start params (none, {} or {output}). output is the RTMPS destination including the stream key, sent by the control plane from its stored setting (PUT /api/v1/output); without it the engine uses STEPHANIA_OUTPUT. Secret: the engine never logs, reports or echoes it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "output": {
+          "type": "string",
+          "pattern": "^rtmps://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[^/?#@%\\\\]{1,128}/[^/?#@%\\\\]{1,256}$"
+        }
+      }
+    },
     "audio_configure_params": {
       "type": "object",
       "additionalProperties": false,

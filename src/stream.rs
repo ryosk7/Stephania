@@ -63,6 +63,10 @@ struct State {
     desired: bool,
     restarts: u64,
     last_error: String,
+    /// Destination of the current start request: the output control sent
+    /// with `stream.start` (stored on /data by control), else
+    /// `STEPHANIA_OUTPUT`. Contains the stream key: never log or report it.
+    output: String,
 }
 
 #[derive(Clone)]
@@ -77,7 +81,7 @@ impl Controller {
             state: Arc::new(Mutex::new(State {
                 #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
                 native: None,
-                desired: false, restarts: 0, last_error: String::new()
+                desired: false, restarts: 0, last_error: String::new(), output: String::new()
             })),
             config,
         };
@@ -112,8 +116,8 @@ impl Controller {
     }
 
     fn spawn(&self, state: &mut State) -> Result<(), String> {
-        if self.config.output.is_empty() { return Err("STEPHANIA_OUTPUT is not configured".into()); }
-        if self.config.test_sources || !self.config.output.starts_with("rtmps://") {
+        if state.output.is_empty() { return Err("no stream output is configured (Studio settings, or STEPHANIA_OUTPUT for development)".into()); }
+        if self.config.test_sources || !state.output.starts_with("rtmps://") {
             return Err("production requires hardware input and RTMPS output".into());
         }
         if self.config.preset != "ultrafast" || !self.config.width.is_multiple_of(2) || !self.config.height.is_multiple_of(2) {
@@ -132,7 +136,7 @@ impl Controller {
     fn spawn_native(&self, state: &mut State) -> Result<(), String> {
         use std::sync::atomic::{AtomicBool, Ordering};
         use stephania::{native_av, native_capture::CaptureSettings, media_core::PixelFormat};
-        if self.config.test_sources || !self.config.output.starts_with("rtmps://") {
+        if self.config.test_sources || !state.output.starts_with("rtmps://") {
             return Err("native controller requires hardware input and RTMPS output".into());
         }
         if self.config.preset != "ultrafast" {
@@ -141,7 +145,7 @@ impl Controller {
         if !self.config.width.is_multiple_of(2) || !self.config.height.is_multiple_of(2) {
             return Err("native controller requires even dimensions".into());
         }
-        stephania::rtmps_tls::Target::parse(&self.config.output).map_err(|e| e.to_string())?;
+        stephania::rtmps_tls::Target::parse(&state.output).map_err(|e| e.to_string())?;
         let preferred_format = match env::var("STEPHANIA_PIXEL_FORMAT").as_deref() {
             Ok("nv12") => PixelFormat::Nv12,
             Ok("yuyv") | Err(_) => PixelFormat::Yuyv422,
@@ -158,7 +162,7 @@ impl Controller {
             audio_bitrate: number("STEPHANIA_AUDIO_BITRATE_KBPS", 160, 64, 320)?,
             max_frames: 0,
         };
-        let url = self.config.output.clone();
+        let url = state.output.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&cancel);
         let handle = thread::Builder::new().name("stephania-native-publisher".into())
@@ -169,10 +173,15 @@ impl Controller {
         Ok(())
     }
 
-    pub fn start(&self) -> Result<(), String> {
+    /// Start streaming to `output` (an RTMPS URL including the stream key)
+    /// or, when None, to `STEPHANIA_OUTPUT` (development). The destination
+    /// is fixed for this start, including automatic retries; a new one
+    /// applies at the next start after a stop.
+    pub fn start(&self, output: Option<&str>) -> Result<(), String> {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.desired { return Ok(()); }
         if Self::running(&s) { return Err("previous stream is still stopping".into()); }
+        s.output = output.map_or_else(|| self.config.output.clone(), str::to_owned);
         self.spawn(&mut s)?;
         s.desired = true;
         Ok(())
@@ -181,6 +190,7 @@ impl Controller {
     pub fn stop(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.desired = false;
+        s.output.clear();
         #[cfg(all(target_os = "linux", feature = "native-capture", feature = "native-x264", feature = "native-aac"))]
         if let Some(worker) = &s.native {
             worker.cancel.store(true, std::sync::atomic::Ordering::Release);
@@ -224,7 +234,7 @@ mod tests {
             width: 1280, height: 720, bitrate_kbps: 3000, preset: "ultrafast".into(),
             output: "file:/tmp/test.flv".into(), test_sources: false };
         let controller = Controller::new(config);
-        assert!(controller.start().is_err());
+        assert!(controller.start(None).is_err());
         assert!(!controller.status().0);
     }
     #[test]
@@ -237,5 +247,27 @@ mod tests {
         let controller = Controller::new(config);
         controller.stop();
         assert!(!controller.status().0);
+    }
+    #[test]
+    fn output_from_control_overrides_env_and_is_never_echoed() {
+        // Test sources stop before any network I/O, right after the output
+        // check, so the error tells which destination was used.
+        let config = Config {
+            video_device: "".into(), audio_device: "".into(),
+            fps: 30, width: 1280, height: 720, bitrate_kbps: 3000,
+            preset: "ultrafast".into(), output: "".into(), test_sources: true,
+        };
+        let controller = Controller::new(config);
+        let unset = controller.start(None).unwrap_err();
+        assert!(unset.contains("no stream output is configured"), "{unset}");
+        let key = "SECRET-KEY-1234";
+        let given = controller.start(Some(&format!("rtmps://a.rtmps.youtube.com/live2/{key}"))).unwrap_err();
+        assert!(given.contains("hardware input"), "{given}");
+        assert!(!given.contains(key));
+        assert!(!controller.status().3.contains(key));
+        // The env value is the fallback when control sends none.
+        let env_config = Config { output: format!("rtmps://a.rtmps.youtube.com/live2/{key}"), ..controller.config.clone() };
+        let err = Controller::new(env_config).start(None).unwrap_err();
+        assert!(err.contains("hardware input"), "{err}");
     }
 }

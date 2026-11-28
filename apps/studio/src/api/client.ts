@@ -16,7 +16,10 @@ export type Login = paths['/auth/session']['post']['responses']['201']['content'
 export type SceneExport = components['schemas']['SceneExport'];
 export type Asset = components['schemas']['Asset'];
 export type OverlayTemplate = components['schemas']['OverlayTemplate'];
-export type Capabilities = paths['/capabilities']['get']['responses']['200']['content']['application/json'];
+export type OutputStatus = components['schemas']['OutputStatus'];
+/** GET /output: the full status for admins, only `configured` for operators. */
+export type OutputView = paths['/output']['get']['responses']['200']['content']['application/json'];
+export type Capabilities =paths['/capabilities']['get']['responses']['200']['content']['application/json'];
 
 /**
  * How requests authenticate: a bearer token (owner/bootstrap or enrolled
@@ -84,6 +87,9 @@ export function createClient(credentials: () => Credentials, fetcher: Fetch = (i
     status: () => call<EngineStatus>('/status'),
     start: () => call<Record<string, unknown>>('/stream/start', 'POST'),
     stop: () => call<Record<string, unknown>>('/stream/stop', 'POST'),
+    output: () => call<OutputView>('/output'),
+    saveOutput: (url: string, stream_key: string) => call<OutputStatus>('/output', 'PUT', {url, stream_key}),
+    clearOutput: () => call<void>('/output', 'DELETE'),
     scenes: () => call<StoredScene[]>('/scenes'),
     scene: (s: string) => call<StoredScene>(`/scenes/${id(s)}`),
     saveScene: (s: string, revision: number, document: SceneDocument) => call<StoredScene>(`/scenes/${id(s)}`, 'PUT', {revision, document}),

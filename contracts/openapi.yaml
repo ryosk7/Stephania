@@ -195,7 +195,8 @@ paths:
         ({id, revision}), scene.deleted ({id}),
         maintenance.window_opened / maintenance.root_window_opened
         ({actor, window_id, expires_at, root}), maintenance.window_closed
-        ({actor}, when closed through the API). Comment lines are
+        ({actor}, when closed through the API), output.changed
+        ({configured}; never the URL or key). Comment lines are
         keepalives (every 15 s). Slow consumers are disconnected. Unknown
         event names must be ignored.
       responses:
@@ -219,6 +220,11 @@ paths:
   /stream/start:
     post:
       summary: Request stream start (IPC stream.start)
+      description: |
+        Sends the destination stored with PUT /output to the engine as
+        `stream.start {output}` (engine socket only). With none stored the
+        engine uses its own STEPHANIA_OUTPUT (development) and otherwise
+        fails with 503 engine_start_failed.
       responses:
         "202":
           description: Request accepted by the engine; not confirmation of ingest.
@@ -231,6 +237,68 @@ paths:
                   accepted: {const: true}
                   streaming_requested: {const: true}
                   youtube_ingest_confirmed: {const: false}
+        default: {$ref: "#/components/responses/Error"}
+  /output:
+    get:
+      summary: Stream destination status (stream key never returned)
+      description: |
+        Admins get {configured, url, key_last4, updated_at_unix}; operators
+        get only {configured}. The stream key itself is never returned by
+        any route, event or log.
+      responses:
+        "200":
+          description: Destination status
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/OutputStatus"}
+                  - type: object
+                    additionalProperties: false
+                    required: [configured]
+                    properties:
+                      configured: {type: boolean}
+        default: {$ref: "#/components/responses/Error"}
+    put:
+      summary: Set or replace the stream destination (admin only)
+      description: |
+        Stored by control in its state directory on /data (0600, not in
+        control.db, so not in update snapshots) and sent to the engine at
+        the next stream start; a running stream keeps its destination.
+        Only RTMPS is accepted. Operators get 403 forbidden_role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [url, stream_key]
+              properties:
+                url:
+                  type: string
+                  pattern: "^rtmps://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~-]{1,128}$"
+                  description: Ingest server URL without the key, e.g. rtmps://a.rtmps.youtube.com/live2. DNS name with a dot (no IP literals).
+                stream_key:
+                  type: string
+                  pattern: "^[A-Za-z0-9._~-]{8,256}$"
+                  writeOnly: true
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OutputStatus"}
+        "422":
+          description: invalid_request (body shape) or invalid_output (URL or key rejected; the message never contains the key)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Clear the stream destination (admin only)
+      responses:
+        "204": {description: Cleared (also when none was stored)}
         default: {$ref: "#/components/responses/Error"}
   /stream/stop:
     post:
@@ -705,6 +773,15 @@ components:
     bearer: {type: http, scheme: bearer}
     session: {type: apiKey, in: cookie, name: stephania_session, description: "Studio account session; writes also need X-CSRF-Token"}
   schemas:
+    OutputStatus:
+      type: object
+      additionalProperties: false
+      required: [configured, url, key_last4, updated_at_unix]
+      properties:
+        configured: {type: boolean}
+        url: {type: [string, "null"], description: Ingest server URL without the key}
+        key_last4: {type: [string, "null"], description: Last 4 characters of the stream key, to recognise which key is set}
+        updated_at_unix: {type: [integer, "null"]}
     TemplateVar:
       type: object
       additionalProperties: false
@@ -819,6 +896,7 @@ components:
                 unknown_asset(422) invalid_asset(422) invalid_template(422) too_many_templates(409) asset_in_use(409) too_many_assets(409) unsupported_media_type(415)
                 invalid_code(401, maintenance) code_throttled(429) window_open(409) window_closed(409)
                 maintenance_failed(503) maintenance_unavailable(503) invalid_params(422, maintenance)
+                invalid_output(422) storage_failed(503)
                 internal_error(500);
                 unrecognised engine codes are passed through with 502.
             message: {type: string}

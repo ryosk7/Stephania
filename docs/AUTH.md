@@ -29,10 +29,34 @@ The control plane (services/control) accepts three kinds of credentials.
 | Start/stop stream, Program transition, audio gain/mute/inputs | ✓ | ✓ |
 | Create/edit/delete/import scenes | ✓ | – |
 | Users, camera credentials | ✓ | – |
+| Stream destination (`GET /api/v1/output`): URL and the key's last 4 characters | ✓ | only `configured` |
+| Set, replace or clear the stream destination (`PUT`/`DELETE /api/v1/output`) | ✓ | – |
 
 Operators are for running an event without being able to change its
 layouts. The rule is enforced in the API (`403 forbidden_role`); the Studio
 hides what an operator cannot do.
+
+## Stream destination
+
+The YouTube RTMPS server URL and stream key are set in the Studio
+(`#/settings`, "Stream destination") or with `PUT /api/v1/output
+{url, stream_key}`. Only `rtmps://` servers with a DNS name are accepted;
+the key is 8 to 256 of `A-Z a-z 0-9 - _ . ~`.
+
+- Control stores it in its own state directory on /data
+  (`/var/lib/stephania/control/output.json`, `STEPHANIA_CONTROL_OUTPUT_FILE`),
+  written atomically with mode 0600 in a 0700 directory owned by
+  `stephania-control`. It is not in `control.db`, so it is not copied
+  into update snapshots, and no other service can read it.
+- The engine never reads the file: control sends the full URL to the
+  engine socket as `stream.start {output}` (docs/IPC.md) each time a
+  stream starts. A new destination applies at the next start. Without
+  one stored, the engine uses `STEPHANIA_OUTPUT` (development only; no
+  unit sets it).
+- The key is never returned in full: admins see the server URL and the
+  last 4 characters (`key_last4`), operators only `configured`; the
+  `output.changed` event carries only `{configured}`. Validation errors,
+  engine errors and logs never contain it.
 
 ## Sessions
 
@@ -62,6 +86,7 @@ The counters are in memory (reset on restart); at most 4096 keys are kept.
 The Studio signs in with an account; a "Connect with the admin token" fallback is
 kept for first-time setup and maintenance. Routes: `#/` dashboard,
 `#/studio` scenes and layout, `#/audio` program audio, `#/settings`
+stream destination (admins edit it, operators see whether it is set),
 password and (admins) users.
 
 ## Phone app and PCs
