@@ -1,7 +1,8 @@
 """Drive stephania-provision over its socket (protocol v3) like the BLE adapter.
 
 Used by tests/wifi/run-nm-e2e.sh against the real NetworkManager backend.
-Usage: socket_client.py <socket> <ssid> <good-psk>
+Usage: socket_client.py <socket> <ssid> <good-psk> <wpa3-ssid> <wpa3-psk>
+The environment also has an open access point named <ssid> (an evil twin).
 """
 import hashlib
 import hmac
@@ -14,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-sock_path, ssid, good_psk = sys.argv[1:4]
+sock_path, ssid, good_psk, sae_ssid, sae_psk = sys.argv[1:6]
 
 
 def mac(key, *parts):
@@ -85,14 +86,21 @@ def configure(cfg):
     return rpc({"op": "wifi.configure", "sealed": sealed.hex(), "proof": mac(key, b"stephania-operation-v1", n, b"wifi.configure", sealed).hex()})
 
 
-found = []
-for attempt in range(5):  # hostapd may need a moment to start beaconing
+found, networks = [], []
+for attempt in range(8):  # hostapd may need a moment to start beaconing
     n = op_nonce()
     r = rpc({"op": "wifi.scan", "proof": mac(key, b"stephania-operation-v1", n, b"wifi.scan", b"").hex()})
-    found = [x for x in r.get("networks", []) if x["ssid"] == ssid]
-    if found:
+    networks = r.get("networks", [])
+    found = sorted(x["security"] for x in networks if x["ssid"] == ssid)
+    if found == ["open", "wpa-psk"] and any(x["ssid"] == sae_ssid for x in networks):
         break
-check(bool(found) and found[0]["security"] == "wpa-psk", f"real scan via NetworkManager found {found}")
+check(found == ["open", "wpa-psk"], f"real scan lists the secured network and its open twin separately: {networks}")
+check([x["security"] for x in networks if x["ssid"] == sae_ssid] == ["wpa-psk"], f"WPA3-only network listed as a passphrase network: {networks}")
+
+r = configure({"ssid": ssid, "security": "open"})
+check(r == {"error": "weaker_security"}, f"open twin of a secured network refused {r}")
+r = configure({"ssid": sae_ssid, "security": "wpa-psk", "psk": sae_psk})
+check(r == {"state": "CONNECTED"}, f"joined WPA3-only (SAE) AP {r}")
 
 r = configure({"ssid": ssid, "security": "wpa-psk", "psk": "wrong-passphrase"})
 check(r == {"state": "FAILED"}, f"wrong PSK rejected by the AP {r}")

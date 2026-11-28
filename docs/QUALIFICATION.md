@@ -63,11 +63,15 @@ with `journalctl -u stephania-ble -u bluetooth` excerpts.
 **Pass:** 100 % eventual success without power-cycling the device.
 
 ### Q-WIFI: networks
-1. WPA2-PSK, WPA3-SAE (if supported by the chosen NM build), open, hidden
-   SSID, wrong password, AP out of range.
+1. WPA2-PSK, WPA2/WPA3 transition, WPA3-SAE only (profile key-mgmt `sae`;
+   needs the Pi 5 Wi-Fi firmware's SAE support), open, hidden SSID, wrong
+   password, AP out of range.
 2. Reboot: device rejoins without the app.
 3. DHCP lease change: `stephania-pki` reissues the certificate within 5 min;
-   app reconnect with the same pin succeeds.
+   app reconnect with the same pin succeeds. A Wi-Fi drop shorter than an
+   hour that returns the same address reissues nothing (no control restart).
+4. An open AP with the SSID of the venue's WPA2 network: the app lists both,
+   marks the open one and cannot join it; the WPA2 profile is kept.
 **Pass:** correct state reported over BLE for every case; reconnection
 after reboot within 60 s of AP availability.
 
