@@ -69,7 +69,12 @@ access, so that a compromise of the control plane alone cannot.
   (0660), JSON requests like the engine IPC (`contracts/` gets a schema).
 - Starts and stops `stephania-sshd.service` through systemd D-Bus. A polkit
   rule (like `systemd/stephania-provision.polkit.rules`) lets the
-  `stephania-maint` user manage that one unit and nothing else.
+  `stephania-maint` user manage that unit, restart the units in the
+  [steph allowlist](#what-steph-may-change), install RAUC bundles and
+  reboot, and nothing else.
+- A second socket, `/run/stephania-maint/ops.sock`, group `maint` (0660),
+  is the broker for `steph` (see [steph](#steph-on-device-cli)). The
+  service is in group `stephania` to read engine status.
 
 Socket operations:
 
@@ -126,6 +131,7 @@ MaxAuthTries 2
 LoginGraceTime 20
 ClientAliveInterval 30
 ClientAliveCountMax 4
+ExposeAuthInfo yes                  # steph reads the certificate key ID for audit
 ```
 
 The host certificate is signed by the host CA for the names the TLS
@@ -146,8 +152,8 @@ other; switching means closing it and opening a new one with a new code.
 **`maint` (default).** Not root, no `sudo`.
 
 - Member of `systemd-journal` (read all logs).
-- polkit allows it to restart and stop the `stephania*.service` units and
-  read `rauc status`.
+- Changes go through `steph`, which asks `stephania-maint`; the `maint`
+  user itself has no polkit rights.
 - Read access to `/var/lib/stephania` except key material.
 
 **`root` (explicit).** Logs in as `root` with a certificate for the
@@ -286,6 +292,113 @@ started ends.
 | `ssh` not found | `OpenSSH client not found in PATH` (6) |
 | Device unreachable | `cannot reach <device> on the LAN` (2) |
 
+## steph (on-device CLI)
+
+`steph` is the command people use once they are on the device. It covers
+routine maintenance so that a root window is rarely needed, and it is the
+same for `maint` and `root` sessions. One Rust binary,
+`/usr/bin/steph` (`src/bin/steph.rs`), reusing the engine crate's IPC,
+`bootctl` and NetworkManager code.
+
+`stephctl` runs on the laptop and gets you in; `steph` runs on the device
+once you are in. `stephctl ssh -- steph status` runs one command.
+
+### Principles
+
+- **Reads directly, changes through the broker.** Read-only commands read
+  the journal, `/proc`, `rauc status`, `stephania-bootctl` state,
+  NetworkManager and `vcgencmd` themselves. Anything that changes the
+  device goes to `stephania-maint` over `ops.sock`, which checks it,
+  performs it and audits it. Root uses the same path, so its routine
+  changes are audited the same way.
+- **Audited with the certificate.** sshd's `ExposeAuthInfo` gives the
+  session's certificate; `steph` sends its key ID (`<account>@<window>`)
+  with every change, and `stephania-maint` logs it with the result.
+- **Broadcast first.** A command that would interrupt the stream (restart
+  the engine or the phone receiver, reboot, apply an update) is refused
+  while on air. `--while-live` overrides it after the device name is
+  typed back.
+- **Machine-readable.** Every read command takes `--json`; the shapes are
+  in `contracts/steph.schema.json` and are the same the maintenance API
+  would return, so a Studio page can reuse them later.
+- Plain output, no colour when not a TTY, exit code 0 on success.
+
+### Commands
+
+```text
+steph status                    one screen: version, slot, uptime, engine and
+                                stream state, sources, network, temperature,
+                                throttling, data partition use, window time left
+steph whoami                    session: user, level (maint/root), account,
+                                window ID, certificate expiry, window time left
+steph version                   OS version, slot, engine/control/Studio versions
+
+steph logs [<service>] [-f] [-n <lines>] [--since <time>] [--boot <n>]
+                                journal of one service or of all Stephania
+                                units; services by short name (below)
+steph services                  every Stephania unit: active state, since,
+                                restarts, memory
+steph restart <service>         restart one service (allowlist, broker)
+steph reboot                    reboot into the committed slot (broker)
+
+steph update status             slots A/B, booted, primary, state, trial boot
+steph update apply <bundle>     verify and install a .raucb, then trial boot
+                                (copy it first with `stephctl cp`)
+
+steph net                       interfaces, addresses, Wi-Fi SSID and signal,
+                                mDNS name, management URLs, default route
+steph hw                        temperature, throttling history, bootloader,
+                                USB tree, capture devices (V4L2), audio inputs
+steph time                      device clock, NTP sync, RTC presence and
+                                battery, offset to the laptop (given by stephctl)
+steph disk                      data partition and overlay usage
+
+steph diag [-o <file>|-]        evidence bundle (tar.gz) as collect.sh does,
+                                secrets excluded; `-` writes to stdout:
+                                stephctl ssh -- steph diag -o - > diag.tar.gz
+
+steph window close              end this window and its sessions now
+```
+
+Service short names: `engine` (`stephania`), `control`, `phone`, `ble`,
+`provision`, `pki`, `update` (`stephania-update-confirm` and the deadline
+timer).
+
+### What steph may change
+
+| Command | Done by | `maint` | `root` | Refused while on air |
+|---|---|---|---|---|
+| `restart control`, `ble`, `provision`, `pki` | broker | yes | yes | no |
+| `restart engine`, `phone` | broker | yes | yes | yes |
+| `reboot` | broker | yes | yes | yes |
+| `update apply` | broker (`stephania-update`) | yes | yes | yes |
+| `window close` | broker | yes | yes | no |
+| everything else that changes the system | root shell | no | yes | — |
+
+Not in `steph` on purpose: Wi-Fi changes, accounts, tokens and factory
+reset. They stay with the owner-authenticated paths (Connect over BLE,
+the Studio, the physical reset button), so a maintenance window cannot
+take over the device.
+
+`ops.sock` operations: `ops.restart {unit, actor, force}`,
+`ops.reboot {actor, force}`, `ops.update_apply {path, actor, force}`,
+`ops.window_close {actor}`. `unit` must be in the allowlist; `path` must be
+a regular file under `/var/lib/stephania/inbox` and is verified by RAUC
+as usual. The inbox (group `maint`, 0770, cleared at boot and when the
+window closes) is where `stephctl cp <file> device:` puts uploads by
+default; it is separate from `/var/lib/stephania/maint`, which only the
+broker can read.
+
+### Errors
+
+| Situation | Message (exit code) |
+|---|---|
+| Change refused while on air | `on air: this would interrupt the stream (use --while-live)` (3) |
+| Unit not in the allowlist | `steph cannot restart <unit>` (4) |
+| Bundle rejected by RAUC | RAUC's message (5) |
+| Broker unreachable | `stephania-maint is not running` (6) |
+| Window expired during the command | `maintenance window closed` (7) |
+
 ## Revocation and reset
 
 - Certificates expire in 5 minutes; closing a window stops sshd and ends
@@ -317,6 +430,8 @@ started ends.
 3. Connect: secret storage, code view with Face ID, clock offset,
    fingerprint.
 4. `stephctl`: login, ssh, cp, window, devices; release builds.
+   `steph`: read commands first (status, logs, services, update status,
+   net, hw, time, disk, diag), then the brokered changes.
 5. CI: virtual-lab test opening a window, signing a certificate and
    logging in with the real OpenSSH client; negative tests (wrong code,
    replay, expired certificate, non-private source, window closed).
