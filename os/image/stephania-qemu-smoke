@@ -43,6 +43,38 @@ host=$(hostname)
 check "per-device host name kept on data" sh -c "echo '$host' | grep -qE '^stephania-[0-9a-f]{4}$' && grep -qx '$host' /data/stephania/config/hostname"
 check "device certificate names the host" grep -q "\"host\":\"$host.local\"" /var/lib/stephania/pki/endpoint.json
 check "avahi-daemon active" systemctl is-active avahi-daemon
+# Maintenance SSH (docs/MAINTENANCE.md): nothing listens on 22 until a window
+# opens; a window opened with a code lets maint log in by certificate only.
+check "stephania-maint active" systemctl is-active stephania-maint
+check "maintenance CAs created on data" test -s /var/lib/stephania/maint/user_ca.pub
+check "no maintenance sshd without a window" sh -c '! systemctl is-active -q stephania-sshd && ! ss -Hltn "sport = :22" | grep -q .'
+check "Debian ssh units masked" sh -c '[ "$(systemctl is-enabled ssh.service 2>&1)" = masked ]'
+check "nftables limits SSH to LAN sources" sh -c 'nft list table inet stephania | grep -q "tcp dport 22 drop"'
+maint_rpc() {
+  ruby -rjson -rsocket -e 's = UNIXSocket.new("/run/stephania-maint/maint.sock"); b = {version: 1, request_id: "smoke", method: ARGV[0], params: JSON.parse(ARGV[1])}.to_json
+    s.write([b.bytesize].pack("N") + b); n = s.read(4).unpack1("N"); r = JSON.parse(s.read(n)); puts(r["ok"] ? r["result"].to_json : {error: r["error"]["code"]}.to_json)' "$1" "$2"
+}
+maint_code=$(ruby -rjson -ropenssl -e 'k = [JSON.parse(File.read("/var/lib/stephania/maint/state.json"))["otp_secret"]].pack("H*")
+  m = OpenSSL::HMAC.digest("SHA1", k, [Time.now.to_i / 30].pack("Q>")); o = m.bytes[19] & 15
+  printf("%06d", (m[o, 4].unpack1("N") & 0x7fffffff) % 1_000_000)')
+win=$(maint_rpc window.open "{\"actor\":\"smoke\",\"client_addr\":\"127.0.0.1\",\"code\":\"$maint_code\"}" | ruby -rjson -e 'puts JSON.parse($stdin.read)["window_id"].to_s')
+if [ -n "$win" ]; then ok "maintenance window opened with a code"; else bad "maintenance window: $(journalctl -b -u stephania-maint -n 5 --no-pager | tr '\n' ' ')"; fi
+for i in $(seq 20); do systemctl is-active -q stephania-sshd && break; sleep 1; done
+check "maintenance sshd started for the window (polkit rule)" systemctl is-active stephania-sshd
+mk=$(mktemp -d)
+ssh-keygen -q -t ed25519 -N '' -f "$mk/id"
+maint_rpc cert.sign "{\"window_id\":\"$win\",\"public_key\":\"$(cat "$mk/id.pub")\",\"client_addr\":\"127.0.0.1\"}" >"$mk/sign.json"
+ruby -rjson -e 'r = JSON.parse(File.read(ARGV[0])); File.write(ARGV[1], r["certificate"].to_s + "\n"); File.write(ARGV[2], "@cert-authority " + ARGV[3] + " " + r["host_ca"].to_s + "\n")' \
+  "$mk/sign.json" "$mk/id-cert.pub" "$mk/known_hosts" "$host.local"
+ssh_maint() { ssh -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile="$mk/id" -o CertificateFile="$mk/id-cert.pub" \
+  -o UserKnownHostsFile="$mk/known_hosts" -o StrictHostKeyChecking=yes -o HostKeyAlias="$host.local" -o ConnectTimeout=10 "$1@127.0.0.1" "$2"; }
+login_user=$(ssh_maint maint 'id -un' 2>/dev/null)
+if [ "$login_user" = maint ]; then ok "maint logs in with a 5-minute certificate (host certificate verified)"; else bad "maint login ($login_user)"; fi
+if ssh_maint root true >/dev/null 2>&1; then bad "a maint certificate logged in as root"; else ok "a maint certificate cannot log in as root"; fi
+maint_rpc window.close '{"actor":"smoke"}' >/dev/null
+for i in $(seq 20); do systemctl is-active -q stephania-sshd || break; sleep 1; done
+check "maintenance sshd stopped with the window" sh -c '! systemctl is-active -q stephania-sshd'
+rm -rf "$mk"
 # DNS-SD: the management service is browsable with its port.
 for i in $(seq 30); do avahi-browse -rpt _stephania._tcp 2>/dev/null | grep -q '^=.*;9443;' && break; sleep 1; done
 check "mDNS publishes _stephania._tcp on 9443" sh -c "avahi-browse -rpt _stephania._tcp | grep -q '^=.*;9443;'"

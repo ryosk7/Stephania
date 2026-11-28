@@ -6,7 +6,7 @@
 # A/B GPT layout of docs/UPDATE.md.
 #
 # Usage (root): os/image/build.sh <out-dir> <bin-dir>
-#   <bin-dir> holds stephania, stephania-phone, stephania-provision, stephania-pki, stephania-bootctl built
+#   <bin-dir> holds stephania, stephania-phone, stephania-provision, stephania-pki, stephania-bootctl, stephania-maint built
 #   for the target architecture against Debian trixie
 #   (ci/images/device-build.Dockerfile), so library sonames match.
 # Environment:
@@ -53,13 +53,13 @@ components=${STEPHANIA_IMAGE_COMPONENTS:-main}
 root="$out/rootfs"
 . "$repo/os/layout.env"
 
-for b in stephania stephania-phone stephania-provision stephania-pki stephania-bootctl; do
+for b in stephania stephania-phone stephania-provision stephania-pki stephania-bootctl stephania-maint; do
   [ -x "$bins/$b" ] || { echo "missing $bins/$b" >&2; exit 1; }
 done
 
 # Runtime packages only. Ruby gems with native extensions are built with
 # temporary build packages that are purged again (no compilers on device).
-runtime=systemd,systemd-sysv,udev,dbus,kmod,iproute2,util-linux,mount,network-manager,bluez,avahi-daemon,avahi-utils,rauc,rauc-service,sqlite3,ca-certificates,ruby,curl,openssl,polkitd,$kernel,initramfs-tools${extra:+,$extra}
+runtime=systemd,systemd-sysv,udev,dbus,kmod,iproute2,util-linux,mount,network-manager,bluez,avahi-daemon,avahi-utils,rauc,rauc-service,sqlite3,openssh-server,nftables,ca-certificates,ruby,curl,openssl,polkitd,$kernel,initramfs-tools${extra:+,$extra}
 build=build-essential,ruby-dev,libsqlite3-dev,libssl-dev,pkgconf
 
 rm -rf "$root"

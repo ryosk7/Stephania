@@ -21,6 +21,10 @@ pub mod provisioning;
 pub mod provisioning_gatt;
 pub mod pki;
 pub mod management_tokens;
+pub mod sshcert;
+pub mod totp;
+#[cfg(unix)]
+pub mod maint;
 pub mod bootctl;
 #[cfg(unix)]
 pub mod nm;

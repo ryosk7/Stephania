@@ -9,7 +9,7 @@ echo "$version" >"$r/etc/stephania-version"
 echo stephania >"$r/etc/hostname"
 
 # Binaries and helpers.
-install -m 0755 "$bins"/stephania "$bins"/stephania-phone "$bins"/stephania-provision "$bins"/stephania-pki "$bins"/stephania-bootctl "$r/usr/local/bin/"
+install -m 0755 "$bins"/stephania "$bins"/stephania-phone "$bins"/stephania-provision "$bins"/stephania-pki "$bins"/stephania-bootctl "$bins"/stephania-maint "$r/usr/local/bin/"
 install -m 0755 "$repo/os/rauc/stephania-update" "$r/usr/local/bin/stephania-update"
 install -d "$r/usr/local/lib/stephania" "$r/usr/local/sbin"
 install -m 0755 "$repo/os/rauc/rauc-pre-install" "$r/usr/local/lib/stephania/rauc-pre-install"
@@ -55,6 +55,16 @@ install -m 0644 "$repo/os/systemd/10-stephania-watchdog.conf" "$r/etc/systemd/sy
 install -m 0644 "$repo/os/rauc/system.conf" "$r/etc/rauc/system.conf"
 install -m 0644 "$repo/systemd/stephania-ble.dbus.conf" "$r/etc/dbus-1/system.d/stephania-ble.conf"
 install -m 0644 "$repo/systemd/stephania-provision.polkit.rules" "$r/etc/polkit-1/rules.d/50-stephania-provision.rules"
+install -m 0644 "$repo/systemd/stephania-maint.polkit.rules" "$r/etc/polkit-1/rules.d/50-stephania-maint.rules"
+# Maintenance SSH (docs/MAINTENANCE.md): only stephania-sshd.service, run by
+# stephania-maint for a window. Debian's own ssh units stay masked and the
+# package's host keys are dropped (the device's host key is on data).
+install -D -m 0644 "$repo/os/ssh/sshd_config" "$r/etc/stephania/sshd_config"
+install -d -m 0755 "$r/etc/stephania/ssh_principals"
+install -m 0644 "$repo/os/ssh/principals/maint" "$repo/os/ssh/principals/root" "$r/etc/stephania/ssh_principals/"
+rm -f "$r"/etc/ssh/ssh_host_*
+in_root systemctl mask ssh.service ssh.socket >/dev/null 2>&1
+install -m 0644 "$repo/os/nftables/stephania.nft" "$r/etc/nftables.conf"
 install -m 0644 "$repo/os/bluez/main.conf" "$r/etc/bluetooth/main.conf"
 # Release keyring is provisioned by the release pipeline; the reference
 # image ships an empty placeholder so RAUC refuses every bundle until then.
@@ -78,6 +88,7 @@ sed -i 's#^ExecStart=/usr/bin/bundle#ExecStart=/usr/local/bin/bundle#' "$r/etc/s
 
 in_root systemctl enable stephania-hostname.service avahi-daemon.service stephania-firstboot.service stephania.service stephania-control.service stephania-provision.service \
   stephania-phone.service stephania-pki.timer stephania-update-confirm.service stephania-data-restore.service stephania-update-deadline.timer \
+  stephania-maint.service nftables.service \
   stephania-qemu-smoke.service
 # Initramfs must mount a SquashFS root from virtio or SD.
 printf 'squashfs\noverlay\nvirtio_blk\nvirtio_pci\n' >>"$r/etc/initramfs-tools/modules"

@@ -1,0 +1,12 @@
+// Install as /etc/polkit-1/rules.d/50-stephania-maint.rules
+// Lets stephania-maint start and stop the maintenance sshd unit, and
+// nothing else (docs/MAINTENANCE.md).
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "stephania-maint") return polkit.Result.NOT_HANDLED;
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") === "stephania-sshd.service" &&
+        ["start", "stop"].indexOf(action.lookup("verb")) >= 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

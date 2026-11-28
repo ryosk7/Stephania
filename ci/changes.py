@@ -62,6 +62,9 @@ RULES = [
     ("contracts/fixtures/*", ["rust", "control", "studio", "provisioning"]), ("contracts/*", ["control", "studio", "provisioning"]),
     # OS, updates, image
     ("os/*", ["os"]), ("systemd/*", ["control", "os"]), ("src/bootctl.rs", ["rust", "os"]), ("src/bin/stephania-bootctl.rs", ["rust", "os"]),
+    # Maintenance SSH (docs/MAINTENANCE.md): device service and image.
+    ("src/maint.rs", ["rust", "os"]), ("src/sshcert.rs", ["rust", "os"]), ("src/totp.rs", ["rust", "os"]),
+    ("src/bin/stephania-maint.rs", ["rust", "os"]), ("ci/maint-ssh-e2e.sh", ["rust", "os"]),
     ("ci/update-e2e.sh", ["os"]), ("ci/installer-e2e.sh", ["os"]), ("ci/fake_engine.py", ["os"]), ("ci/qemu-smoke.sh", ["os"]), ("ci/build-device-bins.sh", ["os"]),
     ("ci/check-qualification.py", ["rust"]), ("tools/qualification/*", ["rust"]),
     ("src/*", ["rust"]), ("src/bin/*", ["rust"]),
