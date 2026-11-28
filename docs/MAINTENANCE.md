@@ -28,7 +28,8 @@ access, an audit trail), cut down to one device on a LAN with no proxy.
 ## Non-goals (for now)
 
 - Access from outside the LAN, relays or tunnels.
-- Root by default (see [Privileges](#privileges)).
+- Root by default: root is a separate, explicit request (see
+  [Privileges](#privileges)).
 - A browser terminal. The same window and certificate API could back one
   later.
 - Android Connect (paused) and Windows-specific polish beyond what the
@@ -74,8 +75,8 @@ Socket operations:
 
 | Operation | Request | Result |
 |---|---|---|
-| `window.open` | `{actor, client_addr, code}` | `{window_id, expires_at}`; starts sshd |
-| `cert.sign` | `{window_id, public_key, client_addr}` | `{certificate, valid_before, host_ca, principal, port}` |
+| `window.open` | `{actor, client_addr, code, root}` | `{window_id, expires_at, root}`; starts sshd |
+| `cert.sign` | `{window_id, public_key, client_addr, root}` | `{certificate, valid_before, host_ca, principal, port}` |
 | `window.close` | `{window_id}` | `{}`; stops sshd and ends its sessions |
 | `status` | `{}` | `{open, expires_at, sessions}` |
 
@@ -89,7 +90,9 @@ Rules enforced here, not in control:
   early by `window.close`. Sessions started in the window may run to an
   absolute limit of 60 minutes; closing the window or reaching the limit
   ends them (`KillMode=control-group`).
-- **Certificate.** Signed with the user CA: principal `maint`, validity
+- **Certificate.** Signed with the user CA: principal `maint`, or
+  `maint-root` when the window was opened with `root` (see
+  [Privileges](#privileges)), validity
   from now − 30 s to now + 5 min, key ID `"<actor>@<window_id>"`, serial
   from a counter, `source-address=<client_addr>/32`, and only the
   `permit-pty` extension (no agent, port or X11 forwarding, no user rc).
@@ -109,14 +112,14 @@ HostKey /var/lib/stephania/maint/ssh_host_ed25519_key
 HostCertificate /var/lib/stephania/maint/ssh_host_ed25519_key-cert.pub
 TrustedUserCAKeys /var/lib/stephania/maint/user_ca.pub
 RevokedKeys /var/lib/stephania/maint/revoked.krl
-AuthorizedPrincipalsFile /etc/stephania/ssh_principals/%u   # "maint" for user maint
+AuthorizedPrincipalsFile /etc/stephania/ssh_principals/%u   # maint: "maint"; root: "maint-root"
 AuthorizedKeysFile none
 AuthenticationMethods publickey
 PubkeyAcceptedAlgorithms ssh-ed25519-cert-v01@openssh.com
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-PermitRootLogin no
-AllowUsers maint
+PermitRootLogin prohibit-password   # certificate only, principal maint-root
+AllowUsers maint root
 DisableForwarding yes
 PermitUserRC no
 MaxAuthTries 2
@@ -137,16 +140,31 @@ ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fc00::/7`,
 
 ### Privileges
 
-The `maint` user is not root and has no `sudo`.
+Two levels, chosen when the window is opened. A window is one or the
+other; switching means closing it and opening a new one with a new code.
+
+**`maint` (default).** Not root, no `sudo`.
 
 - Member of `systemd-journal` (read all logs).
 - polkit allows it to restart and stop the `stephania*.service` units and
   read `rauc status`.
 - Read access to `/var/lib/stephania` except key material.
 
-Root access is an open question: if needed, add a second principal
-`maint-root` that the window must request explicitly, with its own audit
-event, rather than widening `maint`.
+**`root` (explicit).** Logs in as `root` with a certificate for the
+principal `maint-root`; `/etc/stephania/ssh_principals/root` lists only
+that principal, so a `maint` certificate can never log in as root.
+
+- Requested with `stephctl ssh --root`; the window request carries
+  `root: true` and Connect is not involved beyond the normal code.
+- Admin role required, as for `maint`. The window lasts 5 minutes to start
+  sessions instead of 10, and sessions end after 30 minutes instead of 60.
+- Audited as its own event type (`maintenance.root_window_opened`,
+  `maintenance.root_certificate_issued`), shown in the Studio event log
+  with the account name.
+- Root can change the running system (the root file system is read-only
+  SquashFS with an overlay, so changes outside `/var/lib/stephania` are
+  lost on reboot or update). It is the escape hatch, not the way to do
+  routine work.
 
 ### control (changes)
 
@@ -156,8 +174,8 @@ a Studio session (cookie + CSRF) or an enrolled owner token.
 | Method and path | Body | Result |
 |---|---|---|
 | `GET /maintenance` | | `{open, expires_at, sessions}` |
-| `POST /maintenance/window` | `{code}` | `201 {window_id, expires_at}` · `401 invalid_code` · `429 code_throttled` |
-| `POST /maintenance/certificate` | `{window_id, public_key}` | `{certificate, valid_before, host_ca, host, port, user}` · `409 window_closed` |
+| `POST /maintenance/window` | `{code, root?}` | `201 {window_id, expires_at, root}` · `401 invalid_code` · `429 code_throttled` |
+| `POST /maintenance/certificate` | `{window_id, public_key}` | `{certificate, valid_before, host_ca, host, port, user}` (`user` is `maint` or `root`) · `409 window_closed` |
 | `DELETE /maintenance/window` | | `204` |
 
 Control passes the account name as `actor` and the TLS peer address as
@@ -199,7 +217,7 @@ Released with each `v*` tag next to the OS image.
 stephctl login [<device>]          trust a device and sign in to it
 stephctl logout [<device>]         forget the session (keeps the CA pin)
 stephctl devices                   list known devices, session state
-stephctl ssh [<device>] [-- <command…>]   open a maintenance shell or run a command
+stephctl ssh [<device>] [--root] [-- <command…>]   open a maintenance shell or run a command
 stephctl cp <src> <dst>            copy files (scp syntax; device:path)
 stephctl window [<device>] [--close]      show or close the current window
 stephctl forget <device>           remove the device, its pin and session
@@ -229,8 +247,9 @@ no secrets), per-OS equivalent on Windows.
 ### `stephctl ssh`
 
 1. Use the saved session; if it has expired, run the login prompt again.
-2. If no window is open (`GET /maintenance`), prompt
-   `Code from Stephania Connect:` and `POST /maintenance/window`.
+2. If no window of the requested level is open (`GET /maintenance`),
+   prompt `Code from Stephania Connect:` and `POST /maintenance/window`
+   (with `root: true` for `--root`; the prompt then says `root window`).
 3. Generate a fresh Ed25519 key pair in memory. Write the private key, the
    certificate and a `known_hosts` file into a new 0700 temporary
    directory.
@@ -243,7 +262,7 @@ no secrets), per-OS equivalent on Windows.
        -o IdentityFile=<tmp>/id -o CertificateFile=<tmp>/id-cert.pub \
        -o UserKnownHostsFile=<tmp>/known_hosts -o GlobalKnownHostsFile=none \
        -o StrictHostKeyChecking=yes -o HostKeyAlias=<host>.local \
-       maint@<address> [-- command…]
+       maint@<address> [-- command…]          # root@<address> with --root
    ```
 
    with `known_hosts` holding
@@ -287,6 +306,7 @@ started ends.
 | Leaked certificate or key | Valid ≤ 5 min, bound to the client address, KRL |
 | Port scanning from outside | sshd not running outside a window; nftables drops non-private sources |
 | Host impersonation | Host certificate from the device's host CA; no TOFU prompt |
+| `maint` certificate used for root | Root accepts only the `maint-root` principal, issued only for a root window |
 
 ## Plan
 
@@ -303,7 +323,6 @@ started ends.
 
 ## Open questions
 
-- Root access: a separate `maint-root` principal, or never?
 - Should operators (not only admins) be able to read logs through a
   narrower principal?
 - Window and certificate lifetimes (10 min / 5 min / 60 min) need a
