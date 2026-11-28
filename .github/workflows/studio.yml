@@ -248,6 +248,27 @@ jobs:
       - run: tar -xf ci-bins.tar && ls -la ci-bins
       - name: LAN TLS end to end
         run: ci/lan-tls-e2e.sh "$PWD/ci-bins"
+  # Maintenance CLI: stephctl against the real control plane (TLS, pinned
+  # CA), stephania-maint and OpenSSH. ci/stephctl-e2e.sh.
+  stephctl-e2e:
+    needs: [changes, bins]
+    if: needs.changes.outputs.lan == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: services/control
+          bundler-cache: true
+      - run: command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || { sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server >/dev/null; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-bins-x64
+      - run: tar -xf ci-bins.tar && ls -la ci-bins
+      - name: stephctl end to end
+        run: ci/stephctl-e2e.sh "$PWD/ci-bins"
   # Phone camera path: aiortc sends two H.264 tracks over real WebRTC →
   # control signaling → stephania-phone (webrtc-rs) → engine ingest → libavcodec
   # decode → compositor sources, checked by content (tests/phone).

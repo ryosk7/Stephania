@@ -18,5 +18,8 @@ cargo build --locked --no-default-features --features ci-virtual,networkmanager 
 cp target/debug/stephania-provision target/debug/stephania-pki target/debug/stephania-bootctl target/debug/stephania-maint "$out/"
 cargo build --locked -p stephania-phone
 cp target/debug/stephania-phone "$out/"
+# The maintenance CLI (ci/stephctl-e2e.sh).
+cargo build --locked -p stephctl
+cp target/debug/stephctl "$out/"
 strip "$out"/*
 ls -la "$out"

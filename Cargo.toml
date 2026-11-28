@@ -1,7 +1,7 @@
 [workspace]
 # The BLE adapter needs libdbus; keep it out of default root builds so the
 # existing --all-features media CI does not require it.
-members = [".", "services/ble", "services/phone"]
+members = [".", "services/ble", "services/phone", "tools/stephctl"]
 default-members = ["."]
 
 [package]

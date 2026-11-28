@@ -10,7 +10,7 @@ runs:
   steps:
     - id: key
       shell: bash
-      run: echo "key=ci-bins-x64-${{ hashFiles('src/**', 'services/phone/**', 'services/ble/Cargo.toml', 'Cargo.toml', 'Cargo.lock', 'build.rs', 'ci/build-bins.sh', 'ci/images/build.Dockerfile') }}" >> "$GITHUB_OUTPUT"
+      run: echo "key=ci-bins-x64-${{ hashFiles('src/**', 'services/phone/**', 'services/ble/Cargo.toml', 'tools/stephctl/**', 'Cargo.toml', 'Cargo.lock', 'build.rs', 'ci/build-bins.sh', 'ci/images/build.Dockerfile') }}" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       id: reuse
       with:
