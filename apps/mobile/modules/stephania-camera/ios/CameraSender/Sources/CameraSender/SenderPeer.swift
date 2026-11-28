@@ -201,22 +201,19 @@ public final class SenderPeer: NSObject, RTCPeerConnectionDelegate {
     e.scaleResolutionDownBy = NSNumber(value: max(1.0, Double(from) / Double(max(plan.height, 1))))
   }
 
-  private func waitForGathering() async throws {
-    try await withThrowingTaskGroup(of: Void.self) { group in
-      group.addTask {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-          self.lock.lock()
-          if self.gathered { self.lock.unlock(); c.resume(); return }
-          self.gatherWaiters.append { c.resume() }
-          self.lock.unlock()
-        }
-      }
-      group.addTask {
-        try await Task.sleep(nanoseconds: UInt64(Self.gatherTimeout * 1_000_000_000))
-        throw SenderError.gatherTimeout
-      }
-      try await group.next()
-      group.cancelAll()
+  /// Returns once ICE gathering is complete, or throws `gatherTimeout`.
+  /// One continuation, resumed by whichever of the gathering callback and
+  /// the timer comes first: a task-group timeout cannot work here, because
+  /// the group would still wait for a continuation that ignores
+  /// cancellation (and that never resumes for a closed peer connection).
+  func waitForGathering(timeout: TimeInterval = SenderPeer.gatherTimeout) async throws {
+    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+      let once = ResumeOnce(c)
+      lock.lock()
+      if gathered { lock.unlock(); once.resume(.success(())); return }
+      gatherWaiters.append { once.resume(.success(())) }
+      lock.unlock()
+      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { once.resume(.failure(SenderError.gatherTimeout)) }
     }
   }
 
@@ -254,4 +251,20 @@ public final class SenderPeer: NSObject, RTCPeerConnectionDelegate {
   public func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {}
   public func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
   public func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
+}
+
+/// Resumes a continuation at most once; later calls are ignored.
+private final class ResumeOnce: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<Void, Error>?
+
+  init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+
+  func resume(_ result: Result<Void, Error>) {
+    lock.lock()
+    let c = continuation
+    continuation = nil
+    lock.unlock()
+    c?.resume(with: result)
+  }
 }
