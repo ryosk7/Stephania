@@ -45,6 +45,12 @@ pub enum MaintError {
     WindowClosed,
     InvalidParams(String),
     Internal(String),
+    /// steph asked for a unit outside its allowlist.
+    NotAllowed(String),
+    /// The change would interrupt the stream and was not forced.
+    OnAir,
+    /// A command failed (systemctl, RAUC); the message says why.
+    Failed(String),
 }
 
 impl MaintError {
@@ -56,6 +62,9 @@ impl MaintError {
             Self::WindowClosed => "window_closed",
             Self::InvalidParams(_) => "invalid_params",
             Self::Internal(_) => "internal",
+            Self::NotAllowed(_) => "not_allowed",
+            Self::OnAir => "on_air",
+            Self::Failed(_) => "failed",
         }
     }
     pub fn message(&self) -> String {
@@ -64,7 +73,9 @@ impl MaintError {
             Self::Throttled { retry_after } => format!("too many wrong codes, retry in {retry_after} s"),
             Self::WindowOpen => "a maintenance window is already open".into(),
             Self::WindowClosed => "no open maintenance window with that id".into(),
-            Self::InvalidParams(m) | Self::Internal(m) => m.clone(),
+            Self::InvalidParams(m) | Self::Internal(m) | Self::Failed(m) => m.clone(),
+            Self::NotAllowed(u) => format!("steph cannot restart {u}"),
+            Self::OnAir => "on air: this would interrupt the stream".into(),
         }
     }
 }

@@ -14,14 +14,23 @@ Environment=STEPHANIA_PKI_DIR=/var/lib/stephania/pki
 # the provisioning core (stephania-provision, uid 853) for otp.rotate only.
 Environment=STEPHANIA_IPC_ALLOWED_UIDS=852
 Environment=STEPHANIA_MAINT_ENROLL_UIDS=853
-ReadWritePaths=/var/lib/stephania/maint
+# steph's broker: the maint login user (uid and group 857) and root.
+Environment=STEPHANIA_MAINT_OPS_SOCKET=/run/stephania-maint/ops.sock
+Environment=STEPHANIA_MAINT_OPS_UIDS=857
+Environment=STEPHANIA_MAINT_OPS_GID=857
+# Engine status for the on-air check (the engine allows uid 856).
+Environment=STEPHANIA_ENGINE_SOCKET=/run/stephania/engine.sock
+Environment=STEPHANIA_MAINT_INBOX=/var/lib/stephania/inbox
+ReadWritePaths=/var/lib/stephania/maint /var/lib/stephania/inbox
 RuntimeDirectory=stephania-maint
-# 0750 + group stephania-maint (control and provision are members) reaches the 0660 socket.
-RuntimeDirectoryMode=0750
+# 0751: maint.sock (0660, group stephania-maint: control and provision)
+# and ops.sock (0660, group maint) are each reachable only by their group.
+RuntimeDirectoryMode=0751
 Restart=on-failure
 RestartSec=3
-# systemctl start/stop of stephania-sshd goes through polkit
-# (stephania-maint.polkit.rules), so no privileges are needed here.
+# systemctl (sshd, steph's restarts, reboot) goes through polkit
+# (stephania-maint.polkit.rules) and RAUC through D-Bus
+# (stephania-maint-rauc.dbus.conf), so no privileges are needed here.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

@@ -81,6 +81,58 @@ pub fn split_key_id(key_id: &str) -> (String, String) {
     }
 }
 
+// --- Broker (stephania-maint ops.sock) ---------------------------------------
+
+pub fn ops_socket() -> std::path::PathBuf {
+    std::env::var_os("STEPHANIA_MAINT_OPS_SOCKET").map(Into::into).unwrap_or_else(|| "/run/stephania-maint/ops.sock".into())
+}
+
+/// One broker call. `Err((code, message))`; `unreachable` when the broker
+/// cannot be reached.
+pub fn ops_call(method: &str, params: Value, timeout: std::time::Duration) -> Result<Value, (String, String)> {
+    use std::os::unix::net::UnixStream;
+    let unreachable = |e: String| ("unreachable".to_string(), e);
+    let mut s = UnixStream::connect(ops_socket()).map_err(|e| unreachable(e.to_string()))?;
+    s.set_read_timeout(Some(timeout)).ok();
+    s.set_write_timeout(Some(crate::ipc::IO_TIMEOUT)).ok();
+    let req = json!({"version": 1, "request_id": "steph", "method": method, "params": params}).to_string();
+    crate::ipc::write_frame(&mut s, req.as_bytes()).map_err(|e| unreachable(e.to_string()))?;
+    let frame = crate::ipc::read_frame(&mut s).map_err(|e| unreachable(format!("{e:?}")))?
+        .ok_or_else(|| ("window_closed".to_string(), "the broker closed the connection".to_string()))?;
+    let v: Value = serde_json::from_slice(&frame).map_err(|e| unreachable(e.to_string()))?;
+    if v["ok"] == json!(true) {
+        Ok(v["result"].clone())
+    } else {
+        Err((v["error"]["code"].as_str().unwrap_or("error").to_string(), v["error"]["message"].as_str().unwrap_or("").to_string()))
+    }
+}
+
+/// Who to name in the broker's audit: the certificate's key ID
+/// (`<account>@<window>`), else the login name.
+pub fn actor() -> String {
+    let w = whoami();
+    match (w["account"].as_str(), w["window_id"].as_str()) {
+        (Some(a), Some(id)) if !id.is_empty() => format!("{a}@{id}"),
+        _ => w["user"].as_str().unwrap_or("unknown").to_string(),
+    }
+}
+
+/// The open window as the broker sees it, for `steph status`.
+pub fn window() -> Value {
+    match ops_call("ops.status", json!({}), crate::ipc::IO_TIMEOUT) {
+        Ok(st) => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let w = &st["window"];
+            json!({
+                "open": st["open"], "on_air": st["on_air"],
+                "new_sessions_seconds_left": w["expires_at"].as_u64().map(|t| t.saturating_sub(now)),
+                "sessions_end_seconds_left": w["sessions_end_at"].as_u64().map(|t| t.saturating_sub(now)),
+            })
+        }
+        Err((_, e)) => json!({"error": e}),
+    }
+}
+
 // --- Probes ------------------------------------------------------------------
 
 pub fn version() -> Value {
@@ -239,6 +291,7 @@ pub fn status() -> Value {
         "throttling": hw["throttling"],
         "disk": disk(),
         "session": whoami(),
+        "window": window(),
     })
 }
 

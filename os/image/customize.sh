@@ -56,6 +56,7 @@ install -m 0644 "$repo/os/rauc/system.conf" "$r/etc/rauc/system.conf"
 install -m 0644 "$repo/systemd/stephania-ble.dbus.conf" "$r/etc/dbus-1/system.d/stephania-ble.conf"
 install -m 0644 "$repo/systemd/stephania-provision.polkit.rules" "$r/etc/polkit-1/rules.d/50-stephania-provision.rules"
 install -m 0644 "$repo/systemd/stephania-maint.polkit.rules" "$r/etc/polkit-1/rules.d/50-stephania-maint.rules"
+install -m 0644 "$repo/systemd/stephania-maint-rauc.dbus.conf" "$r/etc/dbus-1/system.d/stephania-maint-rauc.conf"
 # Maintenance SSH (docs/MAINTENANCE.md): only stephania-sshd.service, run by
 # stephania-maint for a window. Debian's own ssh units stay masked and the
 # package's host keys are dropped (the device's host key is on data).

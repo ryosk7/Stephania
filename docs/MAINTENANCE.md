@@ -1,6 +1,6 @@
 # Maintenance shell access (design)
 
-Status: steps 1 to 3 of the [plan](#plan) are implemented.
+Status: steps 1 to 4 of the [plan](#plan) are implemented.
 `stephania-maint` (`src/maint.rs`, `src/sshcert.rs`, `src/totp.rs`),
 `stephania-sshd`, the polkit rule and the nftables table are in the image,
 tested by `ci/maint-ssh-e2e.sh` (real OpenSSH) and the QEMU smoke test.
@@ -14,10 +14,11 @@ TypeScript module opens a window on the real `stephania-maint` in CI.
 logs in and copies files with the system OpenSSH client, tested end to end
 against the real control plane, `stephania-maint` and OpenSSH by
 `ci/stephctl-e2e.sh`, and is built for Linux, macOS and Windows with each
-release. `steph` (`src/bin/steph.rs`) has its read commands (status, whoami,
-version, logs, services, update status, net, hw, time, disk, diag), checked
-inside a real maintenance session by the QEMU smoke test; the brokered
-changes (restart, reboot, update apply, window close) are next.
+release. `steph` (`src/bin/steph.rs`) reads the device directly (status,
+whoami, version, logs, services, update status, net, hw, time, disk, diag)
+and changes it through `stephania-maint`'s broker socket (restart, reboot,
+update apply, window close), tested with the real OpenSSH session by
+`ci/maint-ssh-e2e.sh` and on the image by the QEMU smoke test.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as
