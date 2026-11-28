@@ -7,8 +7,8 @@ import * as Haptics from 'expo-haptics';
 import {router} from 'expo-router';
 import {useEffect, useState} from 'react';
 import {View} from 'react-native';
-import {shortFingerprint, type ManagementEnrollment} from '@stephania/provisioning-client';
-import {DeviceGate, loadEnrollment, useDeviceClient, type DeviceClient} from '@/shared/device';
+import {shortFingerprint} from '@stephania/provisioning-client';
+import {DeviceGate, loadEnrollment, useDeviceClient, type DeviceClient, type Enrollment} from '@/shared/device';
 import {Card, Footnote, Icon, List, ListIcon, Mono, Notice, Overline, PrimaryButton, Screen, SectionHeading, StatusView, Title, TopBar} from '@/shared/ui';
 import {CodeCard} from './code-card';
 import {useMaintenanceCode} from './use-maintenance-code';
@@ -17,12 +17,12 @@ const header = <TopBar onBack={() => router.back()} title="Maintenance" />;
 
 export function MaintenanceScreen({deviceId}: {deviceId: string}) {
   const handle = useDeviceClient(deviceId);
-  const [e, setE] = useState<ManagementEnrollment | null>();
+  const [e, setE] = useState<Enrollment | null>();
   useEffect(() => { loadEnrollment(deviceId).then(setE).catch(() => setE(null)); }, [deviceId]);
   return (
     <DeviceGate handle={handle}>
-      {handle.state === 'ready' && e !== undefined && (e?.otpSecret
-        ? <Maintenance client={handle.client} enrollment={e} otpSecret={e.otpSecret} />
+      {handle.state === 'ready' && e !== undefined && (e && e.maintenance !== 'none'
+        ? <Maintenance client={handle.client} deviceId={deviceId} enrollment={e} maintenance={e.maintenance} />
         : <Screen header={header}><StatusView icon="maintenance" tone="warning" title="No maintenance codes yet"
             body="This phone was set up before maintenance codes existed, or the device could not provide them. Set the device up again over Bluetooth to get them.">
             <PrimaryButton title="Set up" icon="bluetooth" accessibilityLabel="Set it up again next to the device" onPress={() => router.replace('/')} />
@@ -31,8 +31,8 @@ export function MaintenanceScreen({deviceId}: {deviceId: string}) {
   );
 }
 
-function Maintenance({client, enrollment, otpSecret}: {client: DeviceClient; enrollment: ManagementEnrollment; otpSecret: string}) {
-  const {view, unlock} = useMaintenanceCode(client, otpSecret);
+function Maintenance({client, deviceId, enrollment, maintenance}: {client: DeviceClient; deviceId: string; enrollment: Enrollment; maintenance: Exclude<Enrollment['maintenance'], 'none'>}) {
+  const {view, unlock} = useMaintenanceCode(client, deviceId, maintenance);
   const [copied, setCopied] = useState(false);
   useEffect(() => { if (!copied) return; const t = setTimeout(() => setCopied(false), 1500); return () => clearTimeout(t); }, [copied]);
   const shown = view.state === 'shown';

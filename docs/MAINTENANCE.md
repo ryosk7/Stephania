@@ -231,11 +231,21 @@ fingerprint before trusting it.
 
 - **Secret delivery.** `management.enroll` (BLE, sealed to the owner key)
   returns one more field, `otp_secret` (20 random bytes, base64). Connect
-  stores it in the keychain with the device's token and CA pin. No QR
-  code, no key shown to the user. A re-enroll rotates it.
+  stores it in its own secure-store item with `requireAuthentication`
+  (iOS keychain access control for the current Face ID / Touch ID set,
+  Android Keystore user authentication), separate from the device's token
+  and CA pin, so the OS releases it only after biometrics, not merely
+  because the phone is unlocked. On a phone without biometrics it stays
+  in the token's item and only the in-app Face ID or passcode prompt
+  guards it; it moves to the protected item once biometrics are set up
+  (and secrets stored by older app versions move the same way). Changing
+  the enrolled faces or fingerprints invalidates the protected item; the
+  app then asks to set the device up again. No QR code, no key shown to
+  the user. A re-enroll rotates it.
 - **Codes.** The device screen links to a "Maintenance" screen: the current
   6 digits, a countdown ring, tap to copy. Showing it requires Face ID or
-  the passcode, and leaving the app hides it again. Phones set up before
+  Touch ID (the passcode on phones without biometrics), the secret is read
+  only then, and leaving the app hides it and drops it from memory again. Phones set up before
   this get a prompt to set the device up again.
 - **Clock.** The device may have no RTC battery and no internet, so its
   clock can be off. When Connect reaches the device over the LAN it
@@ -451,7 +461,7 @@ broker can read.
 | Threat | Mitigation |
 |---|---|
 | Stolen Studio password | Also needs the code from the owner's phone |
-| Stolen phone | Code display needs Face ID or the passcode; still needs the Studio password |
+| Stolen phone | The code secret is released by the OS only after Face ID / Touch ID (in-app passcode prompt on phones without biometrics); still needs the Studio password |
 | Control plane compromised | Holds no CA key or OTP secret; can only relay a code the user types |
 | Code phishing | LAN only, pinned TLS in `stephctl`; codes are single-use and live 30–90 s |
 | Leaked certificate or key | Valid ≤ 5 min, bound to the client address, KRL |
