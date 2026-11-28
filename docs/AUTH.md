@@ -41,36 +41,12 @@ address.
 | Start/stop stream, Program transition, audio gain/mute/inputs | ✓ | ✓ |
 | Create/edit/delete/import scenes | ✓ | – |
 | Users, camera credentials | ✓ | – |
-| Stream destination (`GET /api/v1/output`): URL and the key's last 4 characters | ✓ | only `configured` |
-| Set, replace or clear the stream destination (`PUT`/`DELETE /api/v1/output`) | ✓ | – |
 
 Operators are for running an event without being able to change its
 layouts. The rule is enforced in the API (`403 forbidden_role`); the Studio
 hides what an operator cannot do. Role checks are made against the route
 the request is dispatched to (e.g. `/api/v1/users`), not the raw path, so
 percent-encoded spellings such as `/api/v1/%75sers` get the same answer.
-
-## Stream destination
-
-The YouTube RTMPS server URL and stream key are set in the Studio
-(`#/settings`, "Stream destination") or with `PUT /api/v1/output
-{url, stream_key}`. Only `rtmps://` servers with a DNS name are accepted;
-the key is 8 to 256 of `A-Z a-z 0-9 - _ . ~`.
-
-- Control stores it in its own state directory on /data
-  (`/var/lib/stephania/control/output.json`, `STEPHANIA_CONTROL_OUTPUT_FILE`),
-  written atomically with mode 0600 in a 0700 directory owned by
-  `stephania-control`. It is not in `control.db`, so it is not copied
-  into update snapshots, and no other service can read it.
-- The engine never reads the file: control sends the full URL to the
-  engine socket as `stream.start {output}` (docs/IPC.md) each time a
-  stream starts. A new destination applies at the next start. Without
-  one stored, the engine uses `STEPHANIA_OUTPUT` (development only; no
-  unit sets it).
-- The key is never returned in full: admins see the server URL and the
-  last 4 characters (`key_last4`), operators only `configured`; the
-  `output.changed` event carries only `{configured}`. Validation errors,
-  engine errors and logs never contain it.
 
 ## Sessions
 
@@ -133,7 +109,6 @@ everywhere (`415 unsupported_media_type`).
 The Studio signs in with an account; a "Connect with the admin token" fallback is
 kept for first-time setup and maintenance. Routes: `#/` dashboard,
 `#/studio` scenes and layout, `#/audio` program audio, `#/settings`
-stream destination (admins edit it, operators see whether it is set),
 password and (admins) users.
 
 ## Phone app and PCs
@@ -146,7 +121,49 @@ anchor (dates, signatures, host name), and system roots, proxies, cookies
 and redirects are not used. It tries the device's URLs in order (name, then
 addresses) and never falls back to weaker trust.
 
-A PC has no such pin. `GET /ca.pem` (no credentials; on the LAN only over
-TLS to a certified name) serves the device CA certificate; the phone app's
-"Open on PC" screen shows the URL and the CA fingerprint so the user
-can compare before installing it as a trusted root.
+A PC has no such pin. `GET /ca.pem` and `GET /ca.crt` (no credentials; on
+the LAN only over TLS to a certified name) serve the device CA certificate
+in PEM and DER. The download is not authenticated: the PC does not trust
+the device yet (the browser shows a certificate warning), and anyone on the
+LAN can answer mDNS for `<host>.local` and serve their own CA. The only
+protection is comparing fingerprints, so the phone app's "Open on PC"
+screen shows the URL and the full CA SHA-256 and walks the user through it:
+
+1. Join the same network and download `https://<host>.local:9443/ca.crt`.
+   Accept the browser warning for this download only; do not sign in there.
+2. Hash the file: `certutil -hashfile stephania-ca.crt SHA256` (Windows),
+   `shasum -a 256 stephania-ca.crt` (macOS), `sha256sum stephania-ca.crt`
+   (Linux). The DER file's hash is the certificate fingerprint.
+3. Install it as a trusted root only if all 64 hex characters match the
+   phone; otherwise delete it, since something on the network is
+   impersonating the device.
+
+What a PC trusts by installing the device CA (crate::pki):
+
+- Extended key usage `serverAuth` only, path length 0, key usage
+  `keyCertSign`/`cRLSign`: on platforms that enforce EKU chaining (Windows,
+  macOS, Chrome, OpenSSL) it cannot vouch for code signing, S/MIME or
+  client authentication.
+- Name constraints: DNS `<host>.local`, and the IPv4 private and
+  link-local ranges and IPv6 ULA (10/8, 172.16/12, 192.168/16, 169.254/16,
+  fd00::/8), because the phone and `stephctl` reach the device by address
+  when mDNS does not resolve, and the pin must survive DHCP changes. A
+  permitted e-mail subtree `invalid` excludes every real address. URI and
+  directory-name forms are not constrained (rcgen cannot encode URI
+  constraints, and rustls rejects every directory-name constraint), so they
+  rely on the EKU.
+- 10-year validity; the CA key never leaves the device (`ca-key.pem`,
+  0600 root).
+
+Residual risk: anyone who obtains `ca-key.pem` (e.g. by reading the SD
+card) can issue certificates for other hosts' private addresses, such as a
+router at `192.168.1.1`, that PCs which installed the CA accept. Remove the
+certificate from a PC when it no longer manages the device. The CA is not
+replaced on a factory reset.
+
+The CA changes only when the device's host name changes (its name
+constraint cannot cover the new name; logged, and phones and PCs must be
+set up again) or when no client can have pinned it yet. A missing or
+damaged CA file is otherwise an error, not a new CA: `ca.pem` is restored
+from the chain in `server.pem` when possible, and a lost `ca-key.pem` stops
+`stephania-pki` until it is restored or the PKI directory is removed.

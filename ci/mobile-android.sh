@@ -6,7 +6,7 @@ set -Eeuo pipefail
 bins=$(realpath "${1:?dir with stephania-pki}")
 work=$(mktemp -d)
 export STEPHANIA_PKI_DIR="$work/pki"
-"$bins/stephania-pki" ensure --host stephania-ci --ip 127.0.0.1 --port 9443 > "$work/pki.json" || [ $? = 10 ]
+"$bins/stephania-pki" ensure --test-loopback --host stephania-ci --ip 127.0.0.1 --port 9443 > "$work/pki.json" || [ $? = 10 ]
 pin=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["endpoint"]["ca_sha256"])' "$work/pki.json")
 openssl pkcs12 -export -inkey "$STEPHANIA_PKI_DIR/server-key.pem" -in "$STEPHANIA_PKI_DIR/server.pem" -passout pass:stephania -out "$work/server.p12"
 export STEPHANIA_PKI_P12="$work/server.p12" STEPHANIA_PKI_CA_SHA256="$pin"

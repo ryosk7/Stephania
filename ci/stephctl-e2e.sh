@@ -34,7 +34,7 @@ trap cleanup EXIT
 
 # Device PKI, as stephania-pki issues it on the device.
 export STEPHANIA_PKI_DIR=$w/pki
-"$bins/stephania-pki" ensure --host stephania-ci --ip 127.0.0.1 --port "$port" >/dev/null || [ $? = 10 ] || fail "pki"
+"$bins/stephania-pki" ensure --test-loopback --host stephania-ci --ip 127.0.0.1 --port "$port" >/dev/null || [ $? = 10 ] || fail "pki"
 fp=$(openssl x509 -in "$w/pki/ca.pem" -outform der | sha256sum | cut -c1-32 | tr a-f A-F | sed 's/..../& /g; s/ $//')
 
 # stephania-maint with sshd started through a stand-in for systemctl.

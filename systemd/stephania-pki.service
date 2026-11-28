@@ -1,7 +1,10 @@
 [Unit]
 Description=Stephania device PKI (LAN TLS certificate)
 # Re-run by stephania-pki.timer; restarts the control plane only when a new
-# certificate was issued (exit 10).
+# certificate was issued (exit 10). New addresses are certified at once; one
+# that disappears stays certified for an hour (addresses.json), so a Wi-Fi
+# drop does not restart the control plane on the way down and back up. A
+# damaged CA fails the unit (exit 1) instead of silently changing the pin.
 Before=stephania-control.service
 After=network.target
 

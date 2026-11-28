@@ -1069,6 +1069,22 @@ class Control < Sinatra::Base
     send_file path, type: "application/x-pem-file"
   end
 
+  # The same certificate in DER for PCs: `certutil -hashfile stephania-ca.crt
+  # SHA256` (Windows) or `shasum -a 256` prints exactly the SHA-256 the phone
+  # app shows, and double-clicking it opens the system certificate dialog.
+  get "/ca.crt" do
+    path = settings.lan&.ca_path
+    fail_with 404, "not_found", "device PKI is not configured" unless path && File.file?(path)
+    der = begin
+      OpenSSL::X509::Certificate.new(File.read(path, 65_536)).to_der
+    rescue OpenSSL::X509::CertificateError
+      fail_with 500, "internal_error", "device CA certificate is unreadable"
+    end
+    headers "Content-Disposition" => 'attachment; filename="stephania-ca.crt"'
+    content_type "application/pkix-cert"
+    der
+  end
+
   get "/" do
     index = File.join(settings.public_folder, "index.html")
     fail_with 404, "not_found", "studio is not built" unless File.file?(index)
