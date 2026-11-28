@@ -5,7 +5,9 @@
 //!   `session.offer {sdp, tracks:{<track id>: "rear"|"front"}, replace?}` →
 //!   `{sdp}` (non-trickle answer); `session.close`; `session.status`.
 //! - Media: ICE host candidates on one UDP port (`STEPHANIA_PHONE_UDP_PORT`,
-//!   default 40100) on the device's private addresses; DTLS-SRTP; H.264
+//!   default 40100) on the device's private addresses, re-read for every
+//!   offer so a session follows Wi-Fi provisioning or a DHCP renumbering
+//!   without a restart; DTLS-SRTP; H.264
 //!   only. RTP is reassembled into access units (assembler.rs) and
 //!   forwarded to the engine's ingest socket (`STEPHANIA_MEDIA_SOCKET`,
 //!   crate `stephania::phone_ingest`), which decodes them. Keyframe requests
@@ -68,7 +70,6 @@ struct Shared {
     session: tokio::sync::Mutex<Option<Session>>,
     to_engine: mpsc::Sender<Vec<u8>>,
     keyframe_requests: broadcast::Sender<u8>,
-    udp_addrs: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -196,6 +197,10 @@ async fn new_session(shared: &Shared, offer_sdp: String, tracks: HashMap<String,
         payload_type: 102,
     }, RtpCodecKind::Video).map_err(|e| e.to_string())?;
     let registry = register_default_interceptors(Registry::new(), &mut media).map_err(|e| e.to_string())?;
+    // Read now, not at startup: the address set changes after BLE Wi-Fi
+    // provisioning, a network switch or a new DHCP lease.
+    let udp_addrs = udp_addrs();
+    if udp_addrs.is_empty() { return Err("no private IPv4 address; the network is not up".into()); }
     let stats = Arc::new(Mutex::new(Stats { state: "new".into(), since: Some(Instant::now()), ..Default::default() }));
     let (gather_tx, gather_rx) = oneshot::channel();
     let handler = Arc::new(Handler {
@@ -211,7 +216,7 @@ async fn new_session(shared: &Shared, offer_sdp: String, tracks: HashMap<String,
         .with_media_engine(media)
         .with_interceptor_registry(registry)
         .with_handler(handler as Arc<dyn PeerConnectionEventHandler>)
-        .with_udp_addrs(shared.udp_addrs.clone())
+        .with_udp_addrs(udp_addrs)
         .build()
         .await
         .map_err(|e| format!("peer connection: {e}"))?;
@@ -323,12 +328,19 @@ async fn engine_link(path: String, mut rx: mpsc::Receiver<Vec<u8>>, keyframe_req
     }
 }
 
+/// ICE bind addresses: `STEPHANIA_PHONE_ADDRS` if set, otherwise the
+/// device's current private IPv4 addresses.
 fn udp_addrs() -> Vec<String> {
     let port = env("STEPHANIA_PHONE_UDP_PORT", "40100");
-    if let Ok(list) = std::env::var("STEPHANIA_PHONE_ADDRS") {
+    let fixed = std::env::var("STEPHANIA_PHONE_ADDRS").ok();
+    select_udp_addrs(fixed.as_deref(), stephania::pki::interface_addresses(), &port)
+}
+
+fn select_udp_addrs(fixed: Option<&str>, interfaces: Vec<IpAddr>, port: &str) -> Vec<String> {
+    if let Some(list) = fixed {
         return list.split(',').filter(|a| !a.is_empty()).map(|a| format!("{a}:{port}")).collect();
     }
-    let mut ips: Vec<IpAddr> = stephania::pki::interface_addresses().into_iter()
+    let mut ips: Vec<IpAddr> = interfaces.into_iter()
         .filter(|ip| ip.is_ipv4() && stephania::pki::certifiable(ip) && !ip.is_loopback()).collect();
     ips.sort();
     ips.dedup();
@@ -341,12 +353,12 @@ async fn main() {
     let media = env("STEPHANIA_MEDIA_SOCKET", "/run/stephania/media.sock");
     let addrs = udp_addrs();
     if addrs.is_empty() {
-        eprintln!("stephania-phone: no private IPv4 address yet; sessions will fail until the network is up");
+        eprintln!("stephania-phone: no private IPv4 address yet; offers are refused until the network is up");
     }
     let (to_engine, rx) = mpsc::channel(ENGINE_QUEUE);
     let (keyframe_requests, _) = broadcast::channel(16);
     tokio::spawn(engine_link(media, rx, keyframe_requests.clone()));
-    let shared = Arc::new(Shared { session: tokio::sync::Mutex::new(None), to_engine, keyframe_requests, udp_addrs: addrs.clone() });
+    let shared = Arc::new(Shared { session: tokio::sync::Mutex::new(None), to_engine, keyframe_requests });
     let _ = std::fs::remove_file(&socket);
     let listener = match UnixListener::bind(&socket) {
         Ok(l) => l,
@@ -357,10 +369,25 @@ async fn main() {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660));
     }
-    eprintln!("stephania-phone: control {socket}, media UDP {addrs:?}");
+    eprintln!("stephania-phone: control {socket}, media UDP now {addrs:?} (re-read per offer)");
     loop {
         let Ok((mut stream, _)) = listener.accept().await else { continue };
         let shared = Arc::clone(&shared);
         tokio::spawn(async move { let _ = serve_control(&mut stream, &shared).await; });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_addresses_follow_the_current_interfaces() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(select_udp_addrs(None, vec![ip("127.0.0.1")], "40100").is_empty(), "loopback only: not up yet");
+        assert_eq!(select_udp_addrs(None, vec![ip("192.168.1.20"), ip("127.0.0.1"), ip("192.168.1.20")], "40100"),
+                   vec!["192.168.1.20:40100"]);
+        assert!(select_udp_addrs(None, vec![ip("8.8.8.8"), ip("fd00::1")], "40100").is_empty(), "public and IPv6 skipped");
+        assert_eq!(select_udp_addrs(Some("10.0.0.5,"), vec![ip("192.168.1.20")], "5000"), vec!["10.0.0.5:5000"]);
     }
 }

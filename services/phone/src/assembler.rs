@@ -6,12 +6,22 @@
 //! is forwarded until the next keyframe (IDR or SPS) and the caller is told
 //! to request one. This trades a short freeze for never showing smeared
 //! garbage on the program output.
+//!
+//! Payloads come from an authenticated but untrusted peer: STAP-A framing
+//! is checked before it reaches the depacketizer (which indexes without
+//! bounds checks), FU-A fragments count against MAX_ACCESS_UNIT while they
+//! are still being reassembled, and the depacketizer's fragment state is
+//! dropped at every access-unit boundary.
 use bytes::Bytes;
 use rtc::rtp::codec::h264::H264Packet;
 use rtc::rtp::packetizer::Depacketizer;
 
 /// Largest access unit forwarded (matches the engine's bound).
 pub const MAX_ACCESS_UNIT: usize = 2 * 1024 * 1024;
+
+const STAP_A: u8 = 24;
+const FU_A: u8 = 28;
+const FU_END: u8 = 0x40;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Output {
@@ -24,6 +34,8 @@ pub enum Output {
 pub struct Assembler {
     depacketizer: H264Packet,
     buffer: Vec<u8>,
+    /// FU-A payload bytes held inside the depacketizer (not yet in `buffer`).
+    fragment_bytes: usize,
     timestamp: Option<u32>,
     last_seq: Option<u16>,
     broken: bool,
@@ -33,8 +45,19 @@ pub struct Assembler {
 
 impl Default for Assembler {
     fn default() -> Self {
-        Self { depacketizer: H264Packet::default(), buffer: Vec::new(), timestamp: None, last_seq: None, broken: false, awaiting_keyframe: true }
+        Self { depacketizer: H264Packet::default(), buffer: Vec::new(), fragment_bytes: 0, timestamp: None, last_seq: None, broken: false, awaiting_keyframe: true }
     }
+}
+
+/// True when a STAP-A payload (RFC 6184 §5.7.1) is a whole number of
+/// size-prefixed NAL units that fit the packet.
+fn stap_a_well_formed(payload: &[u8]) -> bool {
+    let mut offset = 1;
+    while offset < payload.len() {
+        let Some(size) = payload.get(offset..offset + 2) else { return false };
+        offset += 2 + (usize::from(size[0]) << 8 | usize::from(size[1]));
+    }
+    offset == payload.len()
 }
 
 /// True when the Annex-B data contains an IDR slice or an SPS.
@@ -72,12 +95,23 @@ impl Assembler {
         }
         self.timestamp = Some(timestamp);
         if !self.broken {
-            match self.depacketizer.depacketize(payload) {
-                Ok(nal) => {
-                    self.buffer.extend_from_slice(&nal);
-                    if self.buffer.len() > MAX_ACCESS_UNIT { self.lose(&mut out); }
+            let nal_type = payload.first().map(|b| b & 0x1f);
+            let malformed = nal_type == Some(STAP_A) && !stap_a_well_formed(payload);
+            let oversized = nal_type == Some(FU_A) && payload.len() > 2
+                && self.buffer.len() + self.fragment_bytes + payload.len() - 2 > MAX_ACCESS_UNIT;
+            if malformed || oversized {
+                self.lose(&mut out);
+            } else {
+                match self.depacketizer.depacketize(payload) {
+                    Ok(nal) => {
+                        if nal_type == Some(FU_A) {
+                            self.fragment_bytes = if payload[1] & FU_END != 0 { 0 } else { self.fragment_bytes + payload.len() - 2 };
+                        }
+                        self.buffer.extend_from_slice(&nal);
+                        if self.buffer.len() > MAX_ACCESS_UNIT { self.lose(&mut out); }
+                    }
+                    Err(_) => self.lose(&mut out),
                 }
-                Err(_) => self.lose(&mut out),
             }
         }
         if marker {
@@ -90,6 +124,8 @@ impl Assembler {
                 }
             }
             self.buffer.clear();
+            // A fragment never spans access units: drop any partial FU-A.
+            self.reset_depacketizer();
             self.broken = false;
             self.timestamp = None;
         }
@@ -98,10 +134,15 @@ impl Assembler {
 
     fn lose(&mut self, out: &mut Vec<Output>) {
         self.buffer.clear();
-        self.depacketizer = H264Packet::default();
+        self.reset_depacketizer();
         self.broken = true;
         if !out.contains(&Output::NeedKeyframe) { out.push(Output::NeedKeyframe); }
         self.awaiting_keyframe = true;
+    }
+
+    fn reset_depacketizer(&mut self) {
+        self.depacketizer = H264Packet::default();
+        self.fragment_bytes = 0;
     }
 }
 
@@ -185,6 +226,55 @@ mod tests {
         assert!(a.push(0, 3000, true, &b(P)).is_empty(), "duplicate");
         assert!(a.push(65530, 0, true, &b(P)).is_empty(), "late");
         assert!(matches!(a.push(1, 6000, true, &b(P))[..], [Output::AccessUnit { .. }]));
+    }
+
+    #[test]
+    fn malformed_stap_a_is_dropped_without_panicking() {
+        let mut a = Assembler::default();
+        a.push(1, 0, true, &b(IDR));
+        // One complete aggregated NAL, then a lone byte where a size belongs.
+        assert_eq!(a.push(2, 3000, true, &b(&[0x18, 0x00, 0x01, 0x41, 0x00])), vec![Output::NeedKeyframe]);
+        // A size that runs past the end, and trailing bytes after a size.
+        assert_eq!(a.push(3, 6000, true, &b(&[0x18, 0x00, 0x09, 0x41])), vec![Output::NeedKeyframe]);
+        assert!(!stap_a_well_formed(&[0x18, 0x00, 0x01, 0x41, 0x00, 0x05]));
+        assert!(stap_a_well_formed(&[0x18, 0x00, 0x01, 0x41, 0x00, 0x02, 0x41, 0x9a]));
+        let mut stap = vec![0x18];
+        for n in [IDR, P] { stap.extend_from_slice(&(n.len() as u16).to_be_bytes()); stap.extend_from_slice(n); }
+        assert_eq!(a.push(4, 9000, true, &Bytes::from(stap)),
+                   vec![Output::AccessUnit { timestamp: 9000, keyframe: true, data: annexb(&[IDR, P]) }]);
+    }
+
+    #[test]
+    fn fragment_state_does_not_survive_a_marker() {
+        let mut a = Assembler::default();
+        a.push(1, 0, true, &b(IDR));
+        let frags = fu_a(P, 3);
+        // Start fragment with the marker set (malformed), then the rest of
+        // the NAL in the next access unit: the stale start is not glued on.
+        a.push(2, 3000, true, &frags[0]);
+        let out = a.push(3, 6000, true, &frags[2]);
+        let [Output::AccessUnit { data, .. }] = &out[..] else { panic!("expected one access unit, got {out:?}") };
+        assert_eq!(data.len(), 4 + 1 + (frags[2].len() - 2), "no bytes from the previous access unit");
+    }
+
+    #[test]
+    fn endless_fu_a_fragments_are_bounded() {
+        let mut a = Assembler::default();
+        a.push(0, 0, true, &b(IDR));
+        let mut middle = vec![0x5c, 0x01];
+        middle.resize(60_000, 0xab);
+        let middle = Bytes::from(middle);
+        let mut needed = false;
+        // Same access unit, no marker: fragments accumulate until the cap.
+        for seq in 1..=(MAX_ACCESS_UNIT / 59_998 + 2) as u16 {
+            needed |= a.push(seq, 3000, false, &middle).contains(&Output::NeedKeyframe);
+        }
+        assert!(needed, "oversized FU-A reassembly is dropped");
+        assert!(a.fragment_bytes <= MAX_ACCESS_UNIT);
+        // Marker on every fragment with a new timestamp: nothing builds up.
+        let mut a = Assembler::default();
+        for seq in 1..100u16 { a.push(seq, u32::from(seq) * 3000, true, &middle); }
+        assert_eq!(a.fragment_bytes, 0);
     }
 
     #[test]

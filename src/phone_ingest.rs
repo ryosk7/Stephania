@@ -11,7 +11,8 @@
 //!   sync, or the stream started without one). Rate-limited per source.
 //!
 //! Sources: `0x01` = `phone:rear`, `0x02` = `phone:front`.
-//! One client at a time (one phone, §12); a new connection replaces the old.
+//! One client at a time (one phone, §12); a new connection from a permitted
+//! peer replaces (shuts down) the old one.
 use crate::colorspace::I420Frame;
 use crate::h264_decode::{DecodeError, H264Decoder, MAX_ACCESS_UNIT};
 use std::io::{self, Read, Write};
@@ -117,18 +118,78 @@ pub fn serve_client<S: Read + Write>(stream: &mut S, sink: &mut dyn FnMut(&'stat
 #[cfg(unix)]
 pub fn serve(listener: std::os::unix::net::UnixListener, policy: crate::ipc::PeerPolicy) {
     let own = unsafe { libc::getuid() };
-    for conn in listener.incoming() {
-        let Ok(mut stream) = conn else { continue };
-        let permitted = match crate::ipc::peer_uid(&stream) { Some(uid) => policy.allows(uid, own), None => !cfg!(target_os = "linux") };
-        if !permitted { continue; }
+    let permitted = move |stream: &std::os::unix::net::UnixStream| match crate::ipc::peer_uid(stream) {
+        Some(uid) => policy.allows(uid, own),
+        None => !cfg!(target_os = "linux"),
+    };
+    serve_latest(listener, permitted, |stream| {
         let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
         let registry = crate::composition::sources();
-        let result = serve_client(&mut stream, &mut |name, frame| registry.submit(name, frame));
-        match result {
+        match serve_client(stream, &mut |name, frame| registry.submit(name, frame)) {
             Ok(s) => eprintln!("Stephania phone ingest: client closed ({} AUs, {} frames, {} keyframe requests)", s.access_units, s.frames, s.keyframe_requests),
             Err(e) => eprintln!("Stephania phone ingest: client dropped: {e}"),
         }
+    });
+}
+
+/// Serves permitted connections one at a time on a worker thread. A new
+/// permitted connection shuts the previous one down (a half-open or
+/// trickling old client must not hold the phone sources) and waits for its
+/// worker to finish before serving, so two clients never overlap.
+#[cfg(unix)]
+fn serve_latest<P, H>(listener: std::os::unix::net::UnixListener, permitted: P, handle: H)
+where
+    P: Fn(&std::os::unix::net::UnixStream) -> bool,
+    H: Fn(&mut std::os::unix::net::UnixStream) + Send + Clone + 'static,
+{
+    let mut current: Option<(std::os::unix::net::UnixStream, std::thread::JoinHandle<()>)> = None;
+    for conn in listener.incoming() {
+        let Ok(mut stream) = conn else { continue };
+        if !permitted(&stream) { continue; }
+        if let Some((old, worker)) = current.take() {
+            let _ = old.shutdown(std::net::Shutdown::Both);
+            let _ = worker.join();
+        }
+        let Ok(control) = stream.try_clone() else { continue };
+        let handle = handle.clone();
+        match std::thread::Builder::new().name("stephania-phone-client".into()).spawn(move || handle(&mut stream)) {
+            Ok(worker) => current = Some((control, worker)),
+            Err(e) => eprintln!("Stephania phone ingest: cannot start client thread: {e}"),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod takeover_tests {
+    use super::*;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::mpsc;
+
+    #[test]
+    fn a_new_connection_replaces_a_stalled_one() {
+        let path = std::env::temp_dir().join(format!("stephania-ingest-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let (tx, rx) = mpsc::channel::<u8>();
+        std::thread::spawn(move || serve_latest(listener, |_| true, move |s: &mut UnixStream| {
+            let mut id = [0u8; 1];
+            if s.read_exact(&mut id).is_err() { return; }
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest); // until EOF or shutdown
+            let _ = tx.send(id[0]);
+        }));
+        let mut old = UnixStream::connect(&path).unwrap();
+        old.write_all(&[1]).unwrap(); // stays open and silent
+        std::thread::sleep(Duration::from_millis(100));
+        let mut new = UnixStream::connect(&path).unwrap();
+        new.write_all(&[2]).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(1), "old client is shut down");
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "new client is being served");
+        drop(new);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(2));
+        drop(old);
+        let _ = std::fs::remove_file(&path);
     }
 }
 

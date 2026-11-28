@@ -14,13 +14,19 @@ stephania-phone ──Unix socket (H.264 access units)──▶ engine ── li
 - **stephania-phone** (`services/phone`, webrtc-rs): terminates WebRTC in its
   own unprivileged process (uid 855). H.264 only
   (`packetization-mode=1`, constrained baseline 42e01f), LAN host
-  candidates on one UDP port, no STUN/TURN, non-trickle answer. RTP is
-  reassembled into Annex-B access units; after any loss nothing is
+  candidates on one UDP port, no STUN/TURN, non-trickle answer. The host
+  addresses are read again for every offer, so sessions work after BLE
+  Wi-Fi provisioning or an address change without restarting the service
+  (an offer while the device has no private IPv4 address fails with
+  `invalid_offer`). RTP is reassembled into Annex-B access units;
+  malformed STAP-A packets are dropped, and a partial FU-A never outlives
+  its access unit or grows past 2 MiB; after any loss or drop nothing is
   forwarded until the next keyframe and a PLI is sent, so the program
   output freezes briefly instead of showing corrupt frames. A crash or
   restart never touches the engine.
 - **engine** (`src/phone_ingest.rs`, `src/h264_decode.rs`): ingest socket
-  `/run/stephania/media.sock`, only uid 855. One libavcodec decoder per source
+  `/run/stephania/media.sock`, only uid 855, one client at a time: a new
+  permitted connection shuts the previous one down. One libavcodec decoder per source
   (slice threads, low delay); decoded I420 frames go to the
   `SourceRegistry`, where frames older than 500 ms are not composed (the
   layer falls back). Decoder errors and streams joined mid-GOP produce
@@ -54,8 +60,9 @@ real stack: answer via control, ICE + DTLS connected, second phone
 refused, both sources decoded and fresh with the right geometry and
 content (not swapped), access units at frame rate, sources stale after
 close. Unit tests: RTP reassembly (FU-A, loss, lost marker, wrap,
-duplicates), decoder round-trip with the engine's own x264 encoder,
-ingest protocol and keyframe requests.
+duplicates, malformed STAP-A, FU-A bounds), bind-address selection,
+decoder round-trip with the engine's own x264 encoder, ingest protocol,
+keyframe requests and a new ingest connection replacing a stalled one.
 
 ## Phone app sender (iOS)
 `apps/mobile/modules/stephania-camera` (native) + `apps/mobile/src/features/camera`
