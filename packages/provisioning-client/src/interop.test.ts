@@ -157,6 +157,40 @@ describe.skipIf(!bin)('interop with Rust stephania-provision (protocol v3)', () 
     await expect(other.enrollManagement()).rejects.toMatchObject({code: 'bad_proof'});
   });
 
+  it('never reuses a nonce when challenges are lost or ids repeat across sessions', async () => {
+    // Fresh device: the claim above owns the shared one.
+    const d = mkdtempSync(join(tmpdir(), 'stephania-ts2-'));
+    const c = spawn(bin!, [], {env: {...process.env, STEPHANIA_PROVISION_SOCKET: join(d, 'p.sock'), STEPHANIA_CREDENTIALS_DIR: d,
+      STEPHANIA_NETWORK_BACKEND: 'virtual'}, stdio: 'ignore'});
+    try {
+      for (let i = 0; i < 100 && !existsSync(join(d, 'p.sock')); i++) await new Promise(r => setTimeout(r, 30));
+      const s2 = await new Promise<Socket>((resolve, reject) => { const s = connect(join(d, 'p.sock'), () => resolve(s)); s.on('error', reject); });
+      // An attacker pre-caches pairing challenges under every message id.
+      const attacker = new SocketTransport(s2, 'EE:00:00:00:00:01');
+      for (let id = 0; id < 256; id++) await attacker.request(id, new TextEncoder().encode('{"op":"pairing.challenge"}'));
+      // The owner's challenge response is lost too; the retry is fresh and
+      // the key stored before the claim is the one the device holds.
+      const t = new SocketTransport(s2, 'AA:00:00:00:00:09');
+      t.loseResponseOf(0);
+      let pending: Uint8Array | undefined;
+      const owner = new ProvisioningSession(t);
+      const key = await owner.claim('ts-phone', randomBytes(32), async k => { pending = k; });
+      expect(pending).toEqual(key);
+      expect(t.reconnects).toBe(1);
+      // Two sessions that use the same message ids each get a fresh nonce.
+      for (let i = 0; i < 2; i++) {
+        const s = new ProvisioningSession(new SocketTransport(s2, `AA:00:00:00:01:0${i}`));
+        (s as unknown as {messageId: number}).messageId = 40;
+        s.useOwnerKey(key);
+        expect(await s.scan()).toHaveLength(1);
+      }
+      s2.destroy();
+    } finally {
+      c.kill();
+      rmSync(d, {recursive: true, force: true});
+    }
+  });
+
   it('does not retry non-retriable device errors', async () => {
     const t = new SocketTransport(sock, 'CC:00:00:00:00:03');
     const s = new ProvisioningSession(t);
