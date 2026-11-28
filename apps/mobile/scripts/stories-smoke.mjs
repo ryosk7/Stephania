@@ -3,19 +3,23 @@
 // <out> for review (uploaded by CI).
 //   node scripts/stories-smoke.mjs storybook-static <out-dir>
 import {createServer} from 'node:http';
-import {mkdirSync, readFileSync, existsSync} from 'node:fs';
+import {mkdirSync, readFileSync, statSync} from 'node:fs';
 import {extname, join} from 'node:path';
 import {chromium} from 'playwright-core';
+import {staticPath} from './static-path.mjs';
 
 const [dir = 'storybook-static', out = 'storybook-shots'] = process.argv.slice(2);
 mkdirSync(out, {recursive: true});
 const types = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.png': 'image/png'};
+// Loopback only, and only files under <dir>: the server is up for the
+// whole run and must not expose the developer's machine to the LAN.
 const server = createServer((req, res) => {
-  const path = join(dir, decodeURIComponent(new URL(req.url, 'http://x').pathname));
-  if (!existsSync(path) || path.endsWith('/')) { res.writeHead(404); res.end(); return; }
+  const path = staticPath(dir, req.url);
+  if (!path || !statSync(path, {throwIfNoEntry: false})?.isFile()) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, {'content-type': types[extname(path)] ?? 'application/octet-stream'});
   res.end(readFileSync(path));
-}).listen(0);
+});
+await new Promise((ok, fail) => server.once('error', fail).listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 const stories = Object.values(JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8')).entries).filter(e => e.type === 'story');
