@@ -95,7 +95,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" --draft --verify-tag --title "Stephania ${{ steps.v.outputs.version }}" \
-            --notes "Verify: os/release/verify.sh with the published release-signing.pub. Not hardware-qualified unless docs/QUALIFICATION.md lists results for this version." \
+            --notes "Verify: os/release/verify.sh with the published release-signing.pub." \
             "$RUNNER_TEMP"/dist/*
       - if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
