@@ -1,0 +1,36 @@
+name: stephctl
+# The maintenance CLI builds and passes its tests on macOS and Windows too
+# (Linux is covered by rust-check and ci/stephctl-e2e.sh).
+on:
+  pull_request:
+    paths:
+      - tools/stephctl/**
+      - Cargo.lock
+      - .github/workflows/stephctl.yml
+  push:
+    branches: [main]
+    paths:
+      - tools/stephctl/**
+      - Cargo.lock
+      - .github/workflows/stephctl.yml
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stephctl
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --locked -p stephctl
+      - run: cargo clippy --locked -p stephctl --all-targets -- -D warnings

@@ -94,6 +94,8 @@ jobs:
             cargo test --locked --all-features -- --skip accelerated_ci::
             ${{ github.event_name == 'pull_request' && 'cargo check --locked --no-default-features --all-targets' || 'cargo test --locked --no-default-features' }}
             cargo test --locked -p stephania-phone
+            cargo clippy --locked -p stephctl --all-targets -- -D warnings
+            cargo test --locked -p stephctl
 
   arm64-build:
     needs: plan

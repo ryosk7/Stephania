@@ -103,3 +103,47 @@ jobs:
           name: release-dry-run
           path: ${{ runner.temp }}/dist
           retention-days: 7
+
+  # The maintenance CLI (docs/MAINTENANCE.md), added to the draft release.
+  stephctl:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu}
+          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu}
+          - {os: macos-15, target: aarch64-apple-darwin}
+          - {os: macos-15, target: x86_64-apple-darwin}
+          - {os: windows-latest, target: x86_64-pc-windows-msvc}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked -p stephctl --target ${{ matrix.target }}
+      - name: Package
+        id: pkg
+        run: |
+          v="${{ github.event.inputs.version || github.ref_name }}"; v="${v#v}"
+          name="stephctl-$v-${{ matrix.target }}"
+          mkdir "$name" && cp LICENSE "$name/"
+          if [ "${{ runner.os }}" = Windows ]; then
+            cp "target/${{ matrix.target }}/release/stephctl.exe" "$name/"
+            7z a -bd "$name.zip" "$name" >/dev/null; file="$name.zip"
+          else
+            cp "target/${{ matrix.target }}/release/stephctl" "$name/"
+            tar -czf "$name.tar.gz" "$name"; file="$name.tar.gz"
+          fi
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+      - name: Add to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" "${{ steps.pkg.outputs.file }}" --clobber
+      - if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: stephctl-${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.file }}
+          retention-days: 7

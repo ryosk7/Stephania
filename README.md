@@ -70,6 +70,7 @@ failure never stops a healthy HDMI broadcast.
 | `os/` | Debian 13 / Raspberry Pi OS image, RAM installer, RAUC, systemd units |
 | `contracts/` | OpenAPI, IPC and scene schemas, BLE protocol, shared test fixtures |
 | `ci/`, `tests/` | CI scripts, QEMU and virtual-lab tests, end-to-end suites |
+| `tools/stephctl` | Maintenance CLI for laptops (docs/MAINTENANCE.md) |
 | `site/` | The website on GitHub Pages (`.github/workflows/pages.yml`) |
 | `docs/` | Architecture, install, update, licensing and component documents |
 | `DESIGN.md` | Design system and UI architecture for Connect and Studio |

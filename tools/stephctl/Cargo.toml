@@ -1,0 +1,21 @@
+[package]
+name = "stephctl"
+version = "0.1.0"
+edition = "2021"
+description = "Maintenance access to a Stephania device from a laptop (docs/MAINTENANCE.md)"
+license = "MIT"
+
+[dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+mdns-sd = "0.13"
+rpassword = "7"
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+
+[[bin]]
+name = "stephctl"
+path = "src/main.rs"

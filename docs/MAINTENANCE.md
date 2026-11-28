@@ -10,7 +10,11 @@ Connect (tested from the TypeScript client through the real
 `stephania-provision` and `stephania-maint`). Connect shows the code behind Face ID or the passcode
 (`apps/mobile/src/features/maintenance`); a code computed by the shared
 TypeScript module opens a window on the real `stephania-maint` in CI.
-`stephctl` and `steph` are not built yet.
+`stephctl` (`tools/stephctl`) signs in with the pinned CA, opens windows,
+logs in and copies files with the system OpenSSH client, tested end to end
+against the real control plane, `stephania-maint` and OpenSSH by
+`ci/stephctl-e2e.sh`, and is built for Linux, macOS and Windows with each
+release. `steph` is not built yet.
 
 The owner sometimes needs a shell on the device: read logs, restart a
 service, look at the network, collect evidence. Stephania gives that as
