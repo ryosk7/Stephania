@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 # Scene validation (contract versions 1 and 2, docs/SCENE.md) for the
 # management plane. Mirrors src/scene.rs; Rust, Ruby and TypeScript are all
 # exercised against contracts/fixtures/scenes so they cannot drift.
@@ -27,10 +29,21 @@ module SceneValidator
   TEMPLATE_ID = /\A[a-z0-9-]{1,32}\z/
   TEMPLATE_KEY = /\A[a-z][a-z0-9_.]{0,31}\z/
   MAX_CROP_SUM = 9000
+  # A stored scene must fit one engine IPC frame (EngineClient::MAX_FRAME_BYTES,
+  # 64 KiB) together with the scene.apply envelope; 1 KiB is left for it.
+  MAX_DOCUMENT_BYTES = 63 * 1024
 
   module_function
 
   def validate(doc)
+    violation = validate_structure(doc)
+    return violation if violation
+    return ["", "document_too_large"] if JSON.generate(doc).bytesize > MAX_DOCUMENT_BYTES
+
+    nil
+  end
+
+  def validate_structure(doc)
     return validate_v2(doc) if doc.is_a?(Hash) && doc["version"] == 2 && doc["version"].is_a?(Integer)
 
     validate_v1(doc)

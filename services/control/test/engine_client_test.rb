@@ -40,4 +40,24 @@ class EngineClientTest < Minitest::Test
   ensure
     hang&.close
   end
+
+  def test_oversized_request_is_refused_before_sending
+    c = EngineClient.new(socket_path: @engine.path)
+    error = assert_raises(EngineClient::RequestTooLarge) { c.call("scene.apply", {"pad" => "x" * EngineClient::MAX_FRAME_BYTES}) }
+    assert_kind_of EngineClient::RemoteError, error
+    assert_equal "request_too_large", error.code
+    assert_equal 0, @engine.requests.size
+  end
+
+  # scene.apply waits longer than the default timeout: the engine's own
+  # deadline for it (load + prepare + ack, 4 s) exceeds the 2 s default.
+  def test_scene_apply_outlasts_the_default_timeout
+    slow = FakeEngine.new { |req| sleep 0.5; FakeEngine.ok(req, {"applied" => true}) }
+    c = EngineClient.new(socket_path: slow.path, timeout: 0.2)
+    assert_raises(EngineClient::Unavailable) { c.call("engine.status") }
+    c2 = EngineClient.new(socket_path: slow.path, timeout: 0.2)
+    assert_equal({"applied" => true}, c2.call("scene.apply", {}))
+  ensure
+    slow&.close
+  end
 end

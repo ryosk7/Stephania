@@ -20,7 +20,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const SOURCE_MAX_AGE: Duration = Duration::from_millis(500);
-pub const APPLY_TIMEOUT: Duration = Duration::from_secs(2);
+/// Bound on a whole `scene.apply` call: asset load, Program preparation and
+/// the frame-boundary ack. After it the Program is never put on air, so a
+/// caller waiting longer (control: 6 s) never sees a failure for a scene
+/// that later airs (docs/IPC.md).
+pub const SCENE_APPLY_DEADLINE: Duration = Duration::from_secs(4);
 
 static SWITCH: OnceLock<ProgramSwitch> = OnceLock::new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -61,18 +65,29 @@ pub enum ApplyError {
 /// Program is prepared for the running output size first (static layers
 /// rendered here, not on the media thread).
 pub fn apply(program: Program, transition: Transition, timeout: Duration) -> Result<ApplyAck, ApplyError> {
+    apply_until(program, transition, Instant::now() + timeout)
+}
+
+/// Like [`apply`], with an absolute deadline that may have started before
+/// the Program was built (the caller's whole request budget). The Program
+/// is either acknowledged by the deadline or never applied.
+pub fn apply_until(program: Program, transition: Transition, deadline: Instant) -> Result<ApplyAck, ApplyError> {
     if !active() {
         return Err(ApplyError::Inactive);
     }
     let (w, h) = *OUTPUT_SIZE.lock().unwrap_or_else(|e| e.into_inner());
     let program = if w > 0 && h > 0 { program.for_output(w, h) } else { program };
-    let rx = switch().request_with(program, transition);
-    match rx.recv_timeout(timeout) {
+    let Some(wait) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else {
+        return Err(ApplyError::Timeout);
+    };
+    let (generation, rx) = switch().request_until(program, transition, Some(deadline));
+    match rx.recv_timeout(wait) {
         Ok(ack) => Ok(ack),
         Err(_) => {
-            // Never let an unacknowledged request take effect later.
-            switch().cancel_pending();
-            // It may have been applied between the timeout and the cancel.
+            // Never let an unacknowledged request take effect later. Cancel
+            // only this request: a newer one (which superseded it) stays.
+            switch().cancel(generation);
+            // After cancel either the ack was sent (applied) or never will be.
             rx.try_recv().map_err(|_| ApplyError::Timeout)
         }
     }
@@ -163,6 +178,8 @@ pub struct CompositionStage {
 impl CompositionStage {
     pub fn new(width: usize, height: usize) -> Self {
         *OUTPUT_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = (width, height);
+        // Fade timing is relative to the session timeline, which restarts.
+        switch().complete_fade();
         Self { compositor: None, fade_compositor: None, frame_index: 0, width, height, prepared: Vec::new(), last_report: None, _active: ActiveGuard::acquire() }
     }
 
