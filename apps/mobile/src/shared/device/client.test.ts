@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {DeviceClient, DeviceError, formatFingerprint, type NativePinned} from './client';
+import {clockFromHeaders, DeviceClient, DeviceError, formatFingerprint, type NativePinned} from './client';
 
 const PIN = 'ab'.repeat(32);
 const enrollment = {token: 't3b_' + '0'.repeat(64), tokenId: 'x', urls: ['https://stephania.local:9443/', 'https://192.168.1.20:9443/'], caSha256: PIN};
@@ -63,5 +63,23 @@ describe('DeviceClient', () => {
 
   it('formats fingerprints for comparison', () => {
     expect(formatFingerprint('ab12cd34ef')).toBe('AB12 CD34 EF');
+  });
+
+  it('measures the device clock from the Date header', async () => {
+    let t = 1_000_000;
+    const native: NativePinned = {
+      async request() {
+        t += 200; // round trip 200 ms
+        return {status: 200, body: '{}', headers: JSON.stringify({date: new Date(1_000_000 + 90_000).toUTCString()})};
+      },
+    };
+    const c = new DeviceClient(enrollment, native, () => t);
+    expect(c.clock).toBeNull();
+    const clock = await c.syncClock();
+    // Device is 90 s ahead: server 1,090,000 (+500 for truncation) vs midpoint 1,000,100.
+    expect(clock).toEqual({offsetMs: 90_400, atMs: 1_000_200});
+    expect(clockFromHeaders('{}', 0, 0)).toBeNull();
+    expect(clockFromHeaders('{"date":"nonsense"}', 0, 0)).toBeNull();
+    expect(clockFromHeaders('not json', 0, 0)).toBeNull();
   });
 });

@@ -132,6 +132,7 @@ class MaintenanceTest < Minitest::Test
   def test_status_close_and_unavailable
     get "/api/v1/maintenance"
     assert_equal 200, last_response.status
+    assert_in_delta Time.now.to_i, Time.httpdate(last_response.headers["Date"]).to_i, 2
     assert_equal false, body["open"]
     delete "/api/v1/maintenance/window"
     assert_equal 204, last_response.status
