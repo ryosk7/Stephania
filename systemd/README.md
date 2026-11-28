@@ -7,7 +7,9 @@
 | `stephania-provision.service` | `/etc/systemd/system/stephania-provision.service` — provisioning core on `/run/stephania-provision/provisioning.sock` |
 | `stephania-provision.polkit.rules` | `/etc/polkit-1/rules.d/50-stephania-provision.rules` |
 | `stephania-ble.service` | `/etc/systemd/system/stephania-ble.service` — BlueZ GATT adapter; `BindsTo=bluetooth.service`, `Restart=always` |
-| `stephania-ble.dbus.conf` | `/etc/dbus-1/system.d/stephania-ble.conf` |
+| `stephania-ble.dbus.conf` | `/etc/dbus-1/system.d/stephania-ble.conf` — method calls to `org.bluez` only |
+| `stephania-maint-rauc.dbus.conf` | `/etc/dbus-1/system.d/stephania-maint-rauc.conf` — RAUC: status for everyone, `InstallBundle` for stephania-maint, everything else root only |
+| `stephania-time-sync.service` | `/etc/systemd/system/` — waits (at most 45 s) for systemd-timesyncd before the engine starts |
 | `../os/bluez/main.conf` | `/etc/bluetooth/main.conf` (LE-only, static address, MTU 517) |
 | `stephania.sysusers.conf` | `/usr/lib/sysusers.d/stephania.conf` |
 | `stephania.tmpfiles.conf` | `/usr/lib/tmpfiles.d/stephania.conf` — shared LAN token directory |

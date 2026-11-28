@@ -56,7 +56,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq
-          sudo apt-get install -y -qq sqlite3 squashfs-tools dosfstools meson ninja-build pkg-config \
+          sudo apt-get install -y -qq sqlite3 squashfs-tools dosfstools mtools meson ninja-build pkg-config \
             libglib2.0-dev libssl-dev libcurl4-openssl-dev libjson-glib-dev libnl-genl-3-dev libdbus-1-dev libfdisk-dev >/dev/null
       # RAUC v1.15 pinned and built from source once (installs its own
       # D-Bus policy). Units in systemd/ are verified by studio.yml.
@@ -162,7 +162,7 @@ jobs:
       - name: Pack for the checks
         run: |
           cd "$RUNNER_TEMP"
-          sudo tar --sparse -cf - image/stephania.img image/vmlinuz image/initrd.img image/rootfs.squashfs image/boot-a.vfat image/dpkg.tsv \
+          sudo tar --sparse -cf - image/stephania.img image/vmlinuz image/initrd.img image/rootfs.squashfs image/boot-a.vfat image/boot-b.vfat image/dpkg.tsv \
             image/rootfs/usr/share/doc installer/zip installer/stephania-os.zip keys | zstd -q -T0 -1 -o "$GITHUB_WORKSPACE/x64.tar.zst"
           ls -la "$GITHUB_WORKSPACE/x64.tar.zst"
       - uses: actions/upload-artifact@v4
@@ -189,7 +189,7 @@ jobs:
       - name: Host packages (background)
         run: |
           pkgs="qemu-system-x86 dosfstools mtools fdisk zstd"
-          [ "${{ matrix.check }}" = release ] && pkgs="rauc xz-utils unzip zstd"
+          [ "${{ matrix.check }}" = release ] && pkgs="rauc squashfs-tools mtools xz-utils unzip zstd"
           nohup bash -c "sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list && sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends $pkgs >/dev/null && touch /tmp/apt.ok" >/tmp/apt.log 2>&1 &
       - uses: actions/download-artifact@v4
         with:
@@ -256,7 +256,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone -p stephania-ble
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -310,7 +310,7 @@ jobs:
         with:
           profile: arm64-image
           image: device-build
-          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone
+          command: cargo build --release --locked --bin stephania --bin stephania-provision --bin stephania-pki --bin stephania-bootctl --bin stephania-maint --bin steph && cargo build --release --locked -p stephania-phone -p stephania-ble
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

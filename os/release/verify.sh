@@ -24,6 +24,19 @@ printf '[system]\ncompatible=stephania-pi5\nbootloader=noop\n[keyring]\npath=%s\
 rauc -c "$w/rauc.conf" info "$dist/$name.raucb" >"$w/rauc.txt" 2>&1 || { cat "$w/rauc.txt"; fail "RAUC bundle signature"; }
 grep -q "Compatible: *'stephania-pi5'" "$w/rauc.txt" || grep -q "stephania-pi5" "$w/rauc.txt" || fail "bundle compatible"
 echo "PASS update bundle verifies against the release keyring"
+# Each boot slot gets the boot image of its own pair (os/rauc/bundle-hook):
+# a B install must boot rootfs-b with rauc.slot=B.
+unsquashfs -q -n -d "$w/bundle" "$dist/$name.raucb" manifest.raucm hook boot-a.vfat boot-b.vfat >/dev/null 2>&1 || fail "bundle content"
+grep -qx 'filename=hook' "$w/bundle/manifest.raucm" && grep -qE '^hooks=install;?$' "$w/bundle/manifest.raucm" && [ -x "$w/bundle/hook" ] \
+  || fail "bundle installs the boot slots without the per-slot hook"
+for slot in a b; do
+  upper=$(echo "$slot" | tr a-z A-Z)
+  cmd=$(mtype -i "$w/bundle/boot-$slot.vfat" ::/cmdline.txt) || fail "bundle boot-$slot.vfat"
+  for want in "root=PARTLABEL=rootfs-$slot" "rauc.slot=$upper"; do
+    case " $cmd " in *" $want "*) ;; *) fail "bundle boot-$slot.vfat cmdline lacks $want: $cmd" ;; esac
+  done
+done
+echo "PASS update bundle carries a boot image per slot, each naming its own rootfs and slot"
 python3 - "$dist/sbom.spdx.json" <<'PY' || fail "SBOM"
 import json, sys
 d = json.load(open(sys.argv[1]))

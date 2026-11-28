@@ -9,7 +9,7 @@ echo "$version" >"$r/etc/stephania-version"
 echo stephania >"$r/etc/hostname"
 
 # Binaries and helpers.
-install -m 0755 "$bins"/stephania "$bins"/stephania-phone "$bins"/stephania-provision "$bins"/stephania-pki "$bins"/stephania-bootctl "$bins"/stephania-maint "$bins"/steph "$r/usr/local/bin/"
+install -m 0755 "$bins"/stephania "$bins"/stephania-phone "$bins"/stephania-ble "$bins"/stephania-provision "$bins"/stephania-pki "$bins"/stephania-bootctl "$bins"/stephania-maint "$bins"/steph "$r/usr/local/bin/"
 install -m 0755 "$repo/os/rauc/stephania-update" "$r/usr/local/bin/stephania-update"
 install -d "$r/usr/local/lib/stephania" "$r/usr/local/sbin"
 install -m 0755 "$repo/os/rauc/rauc-pre-install" "$r/usr/local/lib/stephania/rauc-pre-install"
@@ -71,10 +71,17 @@ install -m 0644 "$repo/os/bluez/main.conf" "$r/etc/bluetooth/main.conf"
 # image ships an empty placeholder so RAUC refuses every bundle until then.
 : >"$r/etc/rauc/keyring.pem"
 
+# Without a battery-backed RTC the clock starts at systemd's build epoch;
+# /usr/lib/clock-epoch (mtime = SOURCE_DATE_EPOCH in the SquashFS) raises
+# that floor to the release date until systemd-timesyncd has synchronised.
+: >"$r/usr/lib/clock-epoch"
+
 # Read-only root: persistent state lives on the data partition.
+# The boot selector (autoboot.txt) is written by root only
+# (stephania-bootctl) and readable by all, e.g. `steph update status`.
 cat >"$r/etc/fstab" <<'FSTAB'
 PARTLABEL=data      /data          ext4  defaults,noatime  0 2
-PARTLABEL=selector  /boot/selector vfat  defaults,uid=0,gid=853,fmask=0117,dmask=0007  0 2
+PARTLABEL=selector  /boot/selector vfat  defaults,uid=0,gid=0,fmask=0133,dmask=0022  0 2
 /data/stephania/varlib  /var/lib/stephania none  bind,x-systemd.requires-mounts-for=/data  0 0
 FSTAB
 install -d "$r/data" "$r/boot/selector" "$r/var/lib/stephania" "$r/overlay" "$r/etc/stephania"
@@ -89,7 +96,7 @@ sed -i 's#^ExecStart=/usr/bin/bundle#ExecStart=/usr/local/bin/bundle#' "$r/etc/s
 
 in_root systemctl enable stephania-hostname.service avahi-daemon.service stephania-firstboot.service stephania.service stephania-control.service stephania-provision.service \
   stephania-phone.service stephania-pki.timer stephania-update-confirm.service stephania-data-restore.service stephania-update-deadline.timer \
-  stephania-maint.service nftables.service \
+  stephania-maint.service nftables.service stephania-ble.service systemd-timesyncd.service stephania-time-sync.service \
   stephania-qemu-smoke.service
 # Initramfs must mount a SquashFS root from virtio or SD.
 printf 'squashfs\noverlay\nvirtio_blk\nvirtio_pci\n' >>"$r/etc/initramfs-tools/modules"

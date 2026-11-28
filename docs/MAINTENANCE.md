@@ -169,11 +169,14 @@ The host certificate is signed by the host CA for the names the TLS
 certificate already covers (`<host>.local` and the current LAN addresses)
 and is reissued when they change, alongside `stephania-pki`.
 
-**Firewall.** The image has no packet filter today; port 9443 relies on
-the control plane's own host checks. sshd needs one: an nftables table
-loaded at boot that accepts TCP 22 only from private and link-local
-ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fc00::/7`,
-`fe80::/10`) and drops it otherwise. It is part of this work.
+**Firewall.** An nftables table loaded at boot (`os/nftables/stephania.nft`)
+accepts TCP 22 (sshd), TCP 9443 (the management plane's TLS listener)
+and UDP 40100 (phone media) only from private, link-local and loopback
+ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `127/8`,
+`fc00::/7`, `fe80::/10`, `::1`) and drops them otherwise. On a venue
+network that hands out public addresses these services are unreachable,
+from the internet and from that network alike; the control plane's host
+checks stay as a second layer.
 
 ### Privileges
 

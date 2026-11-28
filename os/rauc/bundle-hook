@@ -1,0 +1,29 @@
+#!/bin/sh
+# RAUC bundle hook (shipped inside the signed update bundle; manifest
+# [hooks] filename=hook, [image.boot] hooks=install).
+#
+# Each boot slot needs its own boot image: cmdline.txt names the root
+# filesystem and RAUC slot of its pair (boot-a: root=PARTLABEL=rootfs-a
+# rauc.slot=A; boot-b: rootfs-b, rauc.slot=B; os/image/build.sh). RAUC has
+# one image per slot class, so the slot-install hook writes the image built
+# for the target slot from the bundle: boot-<slot>.vfat, chosen by the
+# bootname of the boot slot's parent (RAUC_SLOT_BOOTNAME).
+set -eu
+case ${1:-} in
+  slot-install) ;;
+  *) exit 0 ;;
+esac
+[ "${RAUC_SLOT_CLASS:-}" = boot ] || { echo "bundle hook: unexpected slot class '${RAUC_SLOT_CLASS:-}'" >&2; exit 1; }
+case ${RAUC_SLOT_BOOTNAME:-} in
+  A) img=boot-a.vfat ;;
+  B) img=boot-b.vfat ;;
+  *) echo "bundle hook: unknown bootname '${RAUC_SLOT_BOOTNAME:-}' for ${RAUC_SLOT_NAME:-?}" >&2; exit 1 ;;
+esac
+src="$(dirname "$0")/$img"
+dev=${RAUC_SLOT_DEVICE:?RAUC_SLOT_DEVICE is not set}
+[ -f "$src" ] || { echo "bundle hook: $img missing from the bundle" >&2; exit 1; }
+size=$(stat -L -c %s "$src")
+cap=$(blockdev --getsize64 "$dev" 2>/dev/null || stat -L -c %s "$dev")
+[ "$size" -le "$cap" ] || { echo "bundle hook: $img ($size bytes) does not fit $dev ($cap bytes)" >&2; exit 1; }
+echo "bundle hook: writing $img to $dev (${RAUC_SLOT_NAME:-boot}, slot ${RAUC_SLOT_BOOTNAME})"
+dd if="$src" of="$dev" bs=1M conv=fsync status=none

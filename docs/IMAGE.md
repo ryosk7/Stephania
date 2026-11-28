@@ -9,14 +9,18 @@ it on arm64 and boots it in QEMU.
   Debian 13 "trixie" — the base of Raspberry Pi OS — plus, for the Pi
   variant, the Raspberry Pi archive (`archive.raspberrypi.com`, key pinned
   by fingerprint) for the kernel and device trees, the way pi-gen builds
-  Raspberry Pi OS Lite. Packages: systemd, NetworkManager, BlueZ, Avahi,
+  Raspberry Pi OS Lite. Packages: systemd, systemd-timesyncd (NTP; listed
+  explicitly because it is only a Recommends of systemd and the build
+  autoremoves everything not listed), NetworkManager, BlueZ, Avahi,
   RAUC (+ D-Bus service), SQLite, Ruby, the native engine's runtime
   libraries (x264, libavcodec 61, ALSA). The QEMU variant uses the same
   Debian packages with Debian's generic kernel.
 - Stephania binaries built in the same distribution as the image (build image
   `ci/images/device-build.Dockerfile`, `debian:trixie`) so library sonames
   match; tests on CI runners keep using `ci/images/build.Dockerfile`: `stephania` (all native features), `stephania-provision`, `stephania-pki`,
-  `stephania-bootctl`; control plane in `/opt/stephania/control` with production
+  `stephania-bootctl`, `stephania-maint`, `steph`, `stephania-phone` and the
+  BLE adapter `stephania-ble` (enabled; it starts with bluetoothd once a
+  controller exists, and is the claim and Wi-Fi setup path); control plane in `/opt/stephania/control` with production
   gems; Studio in `/opt/stephania/studio`.
 - Gems with native extensions are compiled with temporary build packages
   that are then purged; the build fails if `gcc`, `cc`, `g++` or `make`
@@ -42,14 +46,27 @@ rootfs-b (empty until the first update), data (ext4). The root is never
 written: `init=/usr/local/sbin/stephania-overlay-init` mounts a tmpfs overlay
 over the read-only SquashFS before exec'ing systemd. Persistent state is on
 `/data` (fstab), and `/var/lib/stephania` is bind-mounted from it. The first
-boot creates the loopback bootstrap token on `/data`.
+boot creates the loopback bootstrap token on `/data`. The boot selector is
+mounted root-owned, files 0644: only stephania-bootctl (root) writes
+`autoboot.txt`, everyone can read it (`steph update status`).
+
+## Clock
+A Pi 5 without an RTC battery starts with the clock systemd was built
+with. `/usr/lib/clock-epoch` (its SquashFS mtime is the release commit
+time) raises that floor to the release date, `systemd-timesyncd` then
+synchronises it, and `stephania-time-sync.service` holds the engine back
+until it has, for at most 45 s, so RTMPS certificate checks run on a real
+clock when NTP is reachable. Without NTP the device still starts after
+the bound.
 
 ## QEMU smoke test (`ci/qemu-smoke.sh`)
 Direct kernel boot (Debian's generic `linux-image-<arch>` kernel, virtio disk,
 `stephania.smoke=1`) runs `stephania-qemu-smoke.service`, which checks: overlay
 over read-only SquashFS and that the lower root cannot be written; data
 partition and bind mount; first-boot token; no compiler; engine, control and
-first-boot units active; control API with the bootstrap token and through
+first-boot units active; stephania-ble installed and enabled with its BlueZ-only
+D-Bus policy; systemd-timesyncd enabled and running; boot selector root-only
+writable; nftables limiting 22, 9443 and UDP 40100 to LAN sources; control API with the bootstrap token and through
 to the engine over IPC; Studio served; engine health via `stephania-bootctl`;
 device PKI endpoint; LAN TLS listener verified against the device CA and
 refusing without an issued token. It powers off and the harness requires
